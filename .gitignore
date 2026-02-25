@@ -1,0 +1,33 @@
+# --- System Junk (Global) ---
+**/.vscode/
+**/.DS_Store
+**/*.pyc
+**/__pycache__/
+**/.ipynb_checkpoints/
+
+# --- Wheat-3DGS Specific (Recursive Snipe) ---
+# These rules look for these names at ANY depth, but ONLY inside Wheat-3DGS
+Wheat-3DGS/**/data/
+Wheat-3DGS/**/dataset/
+Wheat-3DGS/**/output/
+Wheat-3DGS/**/outputs/
+Wheat-3DGS/**/results/
+Wheat-3DGS/**/build/
+Wheat-3DGS/**/tensorboard_3d/
+Wheat-3DGS/**/screenshots/
+Wheat-3DGS/**/sbatch_log/
+Wheat-3DGS/**/cameras.json
+Wheat-3DGS/**/input.ply
+
+# --- Wheat-3DGS Submodule & Junk Cleanup ---
+# This targets those 3,000+ HTML files and build artifacts ONLY in the Wheat folder
+Wheat-3DGS/**/*.html
+Wheat-3DGS/**/*.htm
+Wheat-3DGS/**/doc/
+Wheat-3DGS/**/docs/
+Wheat-3DGS/**/*.so
+Wheat-3DGS/**/*.egg-info/
+Wheat-3DGS/diff_rasterization/dist/
+
+# --- Phase1 Safety ---
+# No global HTML/Doc ignores are set, so Phase1 remains fully tracked.
