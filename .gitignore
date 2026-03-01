@@ -1,12 +1,25 @@
+# ==============================================================================
+# BACHELOR THESIS - MASTER GITIGNORE
+# ==============================================================================
+
 # --- System Junk (Global) ---
 **/.vscode/
 **/.DS_Store
 **/*.pyc
 **/__pycache__/
 **/.ipynb_checkpoints/
+**/pip-log.txt
+**/pip-delete-this-directory.txt
+**/*.log
+**/.idea/
+**/.DS_Store
+**/.AppleDouble
+**/.LSOverride
+**/Icon
+**/Icon?
+**/._*
 
-# --- Wheat-3DGS Specific (Recursive Snipe) ---
-# These rules look for these names at ANY depth, but ONLY inside Wheat-3DGS
+# --- Phase 2 & 3: Wheat-3DGS Specific ---
 Wheat-3DGS/**/data/
 Wheat-3DGS/**/dataset/
 Wheat-3DGS/**/output/
@@ -18,9 +31,6 @@ Wheat-3DGS/**/screenshots/
 Wheat-3DGS/**/sbatch_log/
 Wheat-3DGS/**/cameras.json
 Wheat-3DGS/**/input.ply
-
-# --- Wheat-3DGS Submodule & Junk Cleanup ---
-# This targets those 3,000+ HTML files and build artifacts ONLY in the Wheat folder
 Wheat-3DGS/**/*.html
 Wheat-3DGS/**/*.htm
 Wheat-3DGS/**/doc/
@@ -29,5 +39,134 @@ Wheat-3DGS/**/*.so
 Wheat-3DGS/**/*.egg-info/
 Wheat-3DGS/diff_rasterization/dist/
 
-# --- Phase1 Safety ---
-# No global HTML/Doc ignores are set, so Phase1 remains fully tracked.
+# --- Phase 1: Wheat3DGS-Yolo-SAM Specific (YOLOv5 Coverage) ---
+Wheat3DGS-Yolo-SAM/data/
+Wheat3DGS-Yolo-SAM/weights/
+Wheat3DGS-Yolo-SAM/weights/*.pt
+Wheat3DGS-Yolo-SAM/weights/*.pth
+
+# 1. Media & Data Files
+Wheat3DGS-Yolo-SAM/**/*.[jJ][pP][gG]
+Wheat3DGS-Yolo-SAM/**/*.[jJ][pP][eE][gG]
+Wheat3DGS-Yolo-SAM/**/*.[pP][nN][gG]
+Wheat3DGS-Yolo-SAM/**/*.[bB][mM][pP]
+Wheat3DGS-Yolo-SAM/**/*.[tT][iI][fF]*
+Wheat3DGS-Yolo-SAM/**/*.[hH][eE][iI][cC]
+Wheat3DGS-Yolo-SAM/**/*.[mM][pP]4
+Wheat3DGS-Yolo-SAM/**/*.[mM][oO][vV]
+Wheat3DGS-Yolo-SAM/**/*.[aA][vV][iI]
+Wheat3DGS-Yolo-SAM/**/*.data
+Wheat3DGS-Yolo-SAM/**/*.json
+Wheat3DGS-Yolo-SAM/**/*.cfg
+Wheat3DGS-Yolo-SAM/**/results*.csv
+!Wheat3DGS-Yolo-SAM/**/setup.cfg
+!Wheat3DGS-Yolo-SAM/**/cfg/yolov3*.cfg
+
+# 2. YOLOv5 Folders & Large Datasets
+Wheat3DGS-Yolo-SAM/**/runs/*
+Wheat3DGS-Yolo-SAM/**/data/*
+Wheat3DGS-Yolo-SAM/**/coco/
+Wheat3DGS-Yolo-SAM/**/coco128/
+Wheat3DGS-Yolo-SAM/**/VOC/
+Wheat3DGS-Yolo-SAM/**/wandb/
+Wheat3DGS-Yolo-SAM/**/storage.googleapis.com
+Wheat3DGS-Yolo-SAM/**/yolo_vis/
+Wheat3DGS-Yolo-SAM/**/sam_vis/
+Wheat3DGS-Yolo-SAM/**/yolo_results/
+Wheat3DGS-Yolo-SAM/**/bboxes/
+Wheat3DGS-Yolo-SAM/**/masks/
+
+# 3. YOLOv5 Data Exceptions (Keep Configs)
+!Wheat3DGS-Yolo-SAM/**/data/*.yaml
+!Wheat3DGS-Yolo-SAM/**/data/hyps/
+!Wheat3DGS-Yolo-SAM/**/data/scripts/
+!Wheat3DGS-Yolo-SAM/**/data/images/
+!Wheat3DGS-Yolo-SAM/**/data/images/zidane.jpg
+!Wheat3DGS-Yolo-SAM/**/data/images/bus.jpg
+!Wheat3DGS-Yolo-SAM/**/data/*.sh
+
+# 4. Neural Network Weights & Models
+Wheat3DGS-Yolo-SAM/**/*.weights
+Wheat3DGS-Yolo-SAM/**/*.pt
+Wheat3DGS-Yolo-SAM/**/*.pb
+Wheat3DGS-Yolo-SAM/**/*.onnx
+Wheat3DGS-Yolo-SAM/**/*.engine
+Wheat3DGS-Yolo-SAM/**/*.mlmodel
+Wheat3DGS-Yolo-SAM/**/*.mlpackage
+Wheat3DGS-Yolo-SAM/**/*.torchscript
+Wheat3DGS-Yolo-SAM/**/*.tflite
+Wheat3DGS-Yolo-SAM/**/*.h5
+Wheat3DGS-Yolo-SAM/**/*_saved_model/
+Wheat3DGS-Yolo-SAM/**/*_web_model/
+Wheat3DGS-Yolo-SAM/**/*_openvino_model/
+Wheat3DGS-Yolo-SAM/**/*_paddle_model/
+Wheat3DGS-Yolo-SAM/**/darknet53.conv.74
+Wheat3DGS-Yolo-SAM/**/yolov3-tiny.conv.15
+
+# 5. MATLAB Specific
+Wheat3DGS-Yolo-SAM/**/*.m~
+Wheat3DGS-Yolo-SAM/**/*.mat
+!Wheat3DGS-Yolo-SAM/**/targets*.mat
+
+# --- Global Python/Dev Junk ---
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+*.manifest
+*.spec
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+*.mo
+*.pot
+*.log
+local_settings.py
+instance/
+.webassets-cache
+.scrapy
+docs/_build/
+target/
+.python-version
+celerybeat-schedule
+*.sage.py
+.env
+.venv*
+venv*/
+ENV*/
+.spyderproject
+.spyproject
+.ropeproject
+/site
+.mypy_cache/
+
+# --- IDE Specific (JetBrains, etc.) ---
+.idea/*
+.idea/**/workspace.xml
+.idea/**/tasks.xml
+.idea/dictionaries
+.idea/**/dataSources/
+cmake-build-debug/
+cmake-build-release/
+out/
+
