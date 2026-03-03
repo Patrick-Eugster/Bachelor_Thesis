@@ -209,6 +209,8 @@ def run_segmentation():
             
             # Predict masks
             masks, _, _ = predictor.predict_torch(
+                point_coords=None,      
+                point_labels=None,
                 boxes=transformed_boxes,
                 multimask_output=False
             )

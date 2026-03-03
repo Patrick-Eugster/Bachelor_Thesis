@@ -45,12 +45,12 @@ else:
 print("-----------------------\n")
 
 # --- TEST CONTROLS ---
-SHOW_TIME_YOLO = True  # Set to False to silence the report
-SHOW_DEBUG_YOLO_RESIZE = True
+SHOW_TIME_YOLO = True
+SHOW_DEBUG_YOLO_RESIZE = False
 
-ONLY_YOLO = True      # Set to False if you want to run SAM too
-LIMIT_PLOTS = 1       # How many plots to process (0 for all)
-LIMIT_IMAGES = 0      # How many images per plot (0 for all)
+ONLY_YOLO = False      # Set to False if you want to run SAM too
+LIMIT_PLOTS = 0       # How many plots to process for YOLO and SAM (0 for all)
+LIMIT_IMAGES = 0      # How many images per plot or YOLO and SAM (0 for all)
 
 
 
@@ -93,7 +93,7 @@ def resize_single_image(img_path, size=640):
     return np.array(img_resized), np.array(img_orig)
   
 def save_single_result(i, result, original_img, original_path, bbox_folder, yolo_vis_folder):
-    """Parallelized: Scales boxes, saves .pt, and saves the high-res PNG."""
+    """Parallelized: Scales boxes, saves .pt, and saves the high-res /JPG."""
     save_name = os.path.splitext(os.path.basename(original_path))[0]
     orig_h, orig_w = original_img.shape[:2]
     
@@ -101,18 +101,18 @@ def save_single_result(i, result, original_img, original_path, bbox_folder, yolo
     x_scale, y_scale = orig_w / 640, orig_h / 640
     preds = result.xyxy[0].cpu()
     scaled_boxes = preds.clone()
+    # every box has 4 coordinates (the corners), which need to be scaled back
     scaled_boxes[:, [0, 2]] *= x_scale
     scaled_boxes[:, [1, 3]] *= y_scale
     
     # 2. Save Scaled Tensor for SAM
     torch.save(scaled_boxes[:, :4], os.path.join(bbox_folder, f"{save_name}.pt"))
     
-    # 3. Render boxes on high-res and save as PNG
+    # 3. Render boxes on high-res and save as PNG or JPG
     result.ims = [original_img]
     result.xyxy[0] = scaled_boxes.to(result.xyxy[0].device)
     annotated_img = result.render(labels=False)[0]
     
-    # Saving as PNG as requested
     # out_path = os.path.join(yolo_vis_folder, f"{save_name}.png")
     # Image.fromarray(annotated_img).save(out_path)
     out_path = os.path.join(yolo_vis_folder, f"{save_name}.jpg")
@@ -141,6 +141,22 @@ def save_debug_image_yolo(resized_imgs, folder):
         Image.fromarray(resized_imgs[0]).save(os.path.join(folder, "DEBUG_RESIZED.jpg"))
         print(f"DEBUG: Resized sample saved to {folder}")
 
+
+def print_sam_step_report(idx, total_imgs, name, n_heads, t_embed, t_pred, t_save):
+    """Prints a single line report for one image in the SAM process."""
+    t_total = t_embed + t_pred + t_save
+    print(f"  [{idx+1}/{total_imgs}] {name:<20} | "
+          f"Embed: {t_embed:>5.2f}s | Pred: {t_pred:>5.2f}s | "
+          f"Save: {t_save:>5.2f}s | Heads: {n_heads:>3} | Total: {t_total:>6.2f}s")
+
+def print_sam_plot_summary(num_images, total_time):
+    """Prints the final summary for the entire plot's SAM processing."""
+    print(f"\n" + "="*45)
+    print(f"      SAM PLOT SUMMARY ({num_images} images)")
+    print("="*45)
+    print(f"{'Total SAM Processing Time:':<25} {total_time:>8.2f}s")
+    print(f"{'Average Time Per Image:':<25} {total_time/num_images:>8.2f}s")
+    print("="*45 + "\n")
 
 
 
@@ -264,7 +280,9 @@ def run_segmentation():
 
 
         # --- SAM INFERENCE ---
-        print("  Running SAM...")
+        print(f"\n--- Running SAM on {len(image_files)} images ---")
+        start_sam_plot = time.time()
+        
         sam = sam_model_registry["vit_h"](checkpoint=SAM_CHECKPOINT).to(device=DEVICE)
         predictor = SamPredictor(sam)
 
@@ -272,49 +290,60 @@ def run_segmentation():
             image_name = os.path.basename(image_file)
             save_name = os.path.splitext(image_name)[0]
             
-            # Skip if already done
             if os.path.exists(os.path.join(sam_vis_folder, image_name)):
                 continue
-
-            # Load Image & Boxes
+            
+            # 1. Load Data
             image = cv2.imread(image_file)
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            
             bbox_path = os.path.join(bbox_folder, save_name + ".pt")
             if not os.path.exists(bbox_path):
                 print(f"    Warning: No boxes found for {image_name}, skipping SAM.")
                 continue
                 
-            bbox = torch.load(bbox_path).to(DEVICE)
+            bbox = torch.load(bbox_path).to(DEVICE) # loads the boxes from yolo
             
             if len(bbox) == 0:
                 print(f"    No wheat heads detected in {image_name}")
                 continue
+              
+            # Start individual image timer 
+            t_start_img = time.time()
 
+            # 2. Image Embedding (Heavy Part)
             predictor.set_image(image)
+            t_embed = time.time() - t_start_img
             
+            # 3. Predict Masks (Batch)
+            t_start_pred = time.time()
             # Transform boxes for SAM
             transformed_boxes = predictor.transform.apply_boxes_torch(bbox, image.shape[:2])
             
-            # Predict masks
+            # Predict masks (True/False, True means pixel is wheat, False means pixel is backgrounds)
             masks, _, _ = predictor.predict_torch(
+                point_coords=None,      
+                point_labels=None,      
                 boxes=transformed_boxes,
                 multimask_output=False
             )
+            t_pred = time.time() - t_start_pred
 
-            # --- SAVING RESULTS ---
-            # 1. Save individual masks
+            # 4. Saving & Visualization
+            t_start_save = time.time()
+            
+            # Save individual masks for 3DGS
             objects = np.zeros((masks.size(2), masks.size(3)))
             for idx, mask in enumerate(masks.cpu().numpy()):
                 # Create a composite object map (each wheat head gets an ID)
-                objects[mask.squeeze()] = idx + 1
+                m_sq = mask.squeeze()
+                objects[m_sq] = idx + 1
                 
-                # Save binary mask for 3DGS
+                # Save binary mask for 3DGS (binary=black white mask)
                 mask_uint8 = (mask.squeeze() * 255).astype(np.uint8)
                 mask_filename = f"{save_name}_{idx:03}.png"
                 Image.fromarray(mask_uint8).save(os.path.join(mask_folder, mask_filename))
 
-            # 2. Save Visualization (Overlay)
+            # Save Visualization Overlay
             color_mask = visualize_obj(objects.astype(np.uint8)) / 255.0
             color_img = image / 255.0
             non_black_pixels = np.any(color_mask > 0, axis=-1)
@@ -327,10 +356,17 @@ def run_segmentation():
             Image.fromarray((overlayed_img * 255).astype(np.uint8)).save(
                 os.path.join(sam_vis_folder, image_name.replace(".png", ".jpg"))
             )
+            
+            t_save = time.time() - t_start_save
+            print_sam_step_report(i, len(image_files), image_name, len(bbox), t_embed, t_pred, t_save)
 
-            # Cleanup loop
+            # Cleanup loop to prevent VRAM overflow
             predictor.reset_image()
             torch.cuda.empty_cache()
+        
+        # Final Summary
+        sam_total_plot = time.time() - start_sam_plot
+        print_sam_plot_summary(len(image_files), sam_total_plot)
 
         # Free SAM memory
         del sam

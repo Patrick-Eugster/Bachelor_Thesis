@@ -44,9 +44,10 @@ else:
 print("-----------------------\n")
 
 # --- TEST CONTROLS ---
-ONLY_YOLO = True      # Set to False if you want to run SAM too
+ONLY_YOLO = False      # Set to False if you want to run SAM too
+SKIP_YOLO = True      # Set to True to skip YOLO and use existing .pt files
 LIMIT_PLOTS = 1       # How many plots to process (0 for all)
-LIMIT_IMAGES = 0      # How many images per plot (0 for all)
+LIMIT_IMAGES = 1      # How many images per plot (0 for all)
 
 
 
@@ -150,7 +151,7 @@ def run_segmentation():
         start_gpu = time.time()
         
         # 1. Run inference on ALL images at once (Batching) for speed.
-        results = model(image_files) 
+        results = model(image_files) # resizing is happening here, we do it as a matrix
         torch.cuda.synchronize()
         gpu_time = time.time() - start_gpu
         
@@ -232,6 +233,8 @@ def run_segmentation():
             
             # Predict masks
             masks, _, _ = predictor.predict_torch(
+                point_coords=None,      
+                point_labels=None,
                 boxes=transformed_boxes,
                 multimask_output=False
             )
@@ -272,6 +275,7 @@ def run_segmentation():
         torch.cuda.empty_cache()
         gc.collect()
         print(f"  Finished Plot: {plot_name}")
+        
 
 if __name__ == "__main__":
     run_segmentation()
