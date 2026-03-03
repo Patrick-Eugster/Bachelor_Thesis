@@ -113,7 +113,6 @@ def run_segmentation():
         print(f"No image folders found in {DATA_DIR}. Check your folder structure!")
         # Debug helper
         print(f"Looking in: {os.path.join(DATA_DIR, '*', 'images')}")
-        
     
     
     # 3. Main Processing Loop
@@ -140,28 +139,54 @@ def run_segmentation():
             image_files = image_files[:LIMIT_IMAGES]
         
         
-    
-      # --- YOLO INFERENCE --------
-        print(f"Running YOLO on {len(image_files)} images...")
-        for image_file in image_files:
-            results = model(image_file)
-            
-            # Save YOLO visualization
-            results.save(labels=False, save_dir=yolo_vis_folder, exist_ok=True)
-            
-            # Save Bounding Boxes, Convert xyxy to tensor and save
-            # results.xyxy[0] contains [x1, y1, x2, y2, conf, class]
-            preds = results.xyxy[0].cpu()
-            
-            # Save only boxes (first 4 columns) for SAM
-            box_tensor = preds[:, :4]
-            save_name = os.path.splitext(os.path.basename(image_file))[0]
-            torch.save(box_tensor, os.path.join(bbox_folder, save_name + ".pt"))
         
-        # --- MEMORY CLEANUP --- Clean up YOLO to free memory
+        # --- YOLO INFERENCE (BATCHED) -----------------
+        print(f"Running YOLO on {len(image_files)} images...")
+        
+        start_total = time.time()
+        
+        # Start GPU Timer
+        torch.cuda.synchronize()
+        start_gpu = time.time()
+        
+        # 1. Run inference on ALL images at once (Batching) for speed.
+        results = model(image_files) 
+        torch.cuda.synchronize()
+        gpu_time = time.time() - start_gpu
+        
+        # Start Disk/Processing Timer
+        start_disk = time.time()
+        # 2. Iterate through the results to save them
+        for i, result in enumerate(results.tolist()):
+            image_path = image_files[i]
+            save_name = os.path.splitext(os.path.basename(image_path))[0]
+            
+            # Save YOLO visualization slow because of disk I/O)
+            # with Labels=True to show the probability of being a wheat head
+            result.save(labels=False, save_dir=yolo_vis_folder, exist_ok=True)
+            
+            # 3. Process the results for SAM
+            # .xyxy[0] is the tensor for the i-th image
+            preds = result.xyxy[0].cpu() 
+            box_tensor = preds[:, :4]
+            
+            # Save bounding box tensor (.pt)
+            torch.save(box_tensor, os.path.join(bbox_folder, save_name + ".pt"))
+            
+        disk_time = time.time() - start_disk
+        total_time = time.time() - start_total
+        print(f"\n--- PERFORMANCE REPORT ---")
+        print(f"GPU Inference Time: {gpu_time:.2f}s ({gpu_time/len(image_files):.4f}s per image)")
+        print(f"Disk Write/Vis Time: {disk_time:.2f}s")
+        print(f"Total Time for {len(image_files)} images: {total_time:.2f}s")
+        print(f"---------------------------\n")
+
+
+        # --- MEMORY CLEANUP ---
         del results
         torch.cuda.empty_cache()
         gc.collect()
+
         # --- THE STOP SIGN ---
         if ONLY_YOLO:
             print(f"YOLO finished for {plot_name}.")
@@ -169,9 +194,7 @@ def run_segmentation():
             if LIMIT_PLOTS == 1:
                 import sys; sys.exit() # Hard stop after one plot
             else:
-                continue # Skip SAM and move to the NEXT plot folder
-              
-              
+                continue
 
 
         # --- SAM INFERENCE ---

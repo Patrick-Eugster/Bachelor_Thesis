@@ -16,6 +16,7 @@ from PIL import Image
 from segment_anything import sam_model_registry, SamPredictor
 
 
+
 # --- CONFIGURATION ---
 # We assume the script is run from Phase1_Segmentation folder
 BASE_DIR = os.getcwd()
@@ -44,6 +45,9 @@ else:
 print("-----------------------\n")
 
 # --- TEST CONTROLS ---
+SHOW_TIME_YOLO = True  # Set to False to silence the report
+SHOW_DEBUG_YOLO_RESIZE = True
+
 ONLY_YOLO = True      # Set to False if you want to run SAM too
 LIMIT_PLOTS = 1       # How many plots to process (0 for all)
 LIMIT_IMAGES = 0      # How many images per plot (0 for all)
@@ -68,6 +72,7 @@ def id2rgb(id, max_num_obj=256):
     rgb[0], rgb[1], rgb[2] = int(r*255), int(g*255), int(b*255)
     return rgb
 
+
 # for visualize color mask, basically every wheat head another color
 def visualize_obj(objects):
     assert len(objects.shape) == 2
@@ -77,6 +82,64 @@ def visualize_obj(objects):
         colored_mask = id2rgb(id)
         rgb_mask[objects == id] = colored_mask
     return rgb_mask
+
+
+# For Parallelized CPU Image Resizing
+def resize_single_image(img_path, size=640):
+    """Loads and resizes one image on one CPU thread."""
+    img_orig = Image.open(img_path).convert('RGB')
+    # Use LANCZOS (high quality) or BILINEAR (faster)
+    img_resized = img_orig.resize((size, size), resample=Image.LANCZOS) 
+    return np.array(img_resized), np.array(img_orig)
+  
+def save_single_result(i, result, original_img, original_path, bbox_folder, yolo_vis_folder):
+    """Parallelized: Scales boxes, saves .pt, and saves the high-res PNG."""
+    save_name = os.path.splitext(os.path.basename(original_path))[0]
+    orig_h, orig_w = original_img.shape[:2]
+    
+    # 1. Scale Boxes from 640 to Original
+    x_scale, y_scale = orig_w / 640, orig_h / 640
+    preds = result.xyxy[0].cpu()
+    scaled_boxes = preds.clone()
+    scaled_boxes[:, [0, 2]] *= x_scale
+    scaled_boxes[:, [1, 3]] *= y_scale
+    
+    # 2. Save Scaled Tensor for SAM
+    torch.save(scaled_boxes[:, :4], os.path.join(bbox_folder, f"{save_name}.pt"))
+    
+    # 3. Render boxes on high-res and save as PNG
+    result.ims = [original_img]
+    result.xyxy[0] = scaled_boxes.to(result.xyxy[0].device)
+    annotated_img = result.render(labels=False)[0]
+    
+    # Saving as PNG as requested
+    # out_path = os.path.join(yolo_vis_folder, f"{save_name}.png")
+    # Image.fromarray(annotated_img).save(out_path)
+    out_path = os.path.join(yolo_vis_folder, f"{save_name}.jpg")
+    Image.fromarray(annotated_img).save(out_path, quality=90) # Quality 90 is very high
+  
+
+
+def print_performance_report_yolo(num_images, prep_t, gpu_t, disk_t):
+    comb_inf = prep_t + gpu_t
+    total_t = prep_t + gpu_t + disk_t
+    # Using fixed-width labels to fix the alignment issue
+    print(f"\n" + "="*45)
+    print(f"       PLOT PERFORMANCE REPORT ({num_images} images)")
+    print("="*45)
+    print(f"{'CPU Parallel Resize Time:':<26} {prep_t:>8.2f}s")
+    print(f"{'Pure GPU YOLO Math Time:':<26} {gpu_t:>8.2f}s")
+    print(f"{'Total GPU Inference Time:':<26} {comb_inf:>8.2f}s")
+    print(f"{'Disk Write Time:':<26} {disk_t:>8.2f}s")
+    print("-" * 45)
+    print(f"{'TOTAL PLOT TIME:':<26} {total_t:>8.2f}s")
+    print("="*45 + "\n")
+    
+# Debug, for checking the resized image
+def save_debug_image_yolo(resized_imgs, folder):         
+    if resized_imgs:
+        Image.fromarray(resized_imgs[0]).save(os.path.join(folder, "DEBUG_RESIZED.jpg"))
+        print(f"DEBUG: Resized sample saved to {folder}")
 
 
 
@@ -113,7 +176,6 @@ def run_segmentation():
         print(f"No image folders found in {DATA_DIR}. Check your folder structure!")
         # Debug helper
         print(f"Looking in: {os.path.join(DATA_DIR, '*', 'images')}")
-        
     
     
     # 3. Main Processing Loop
@@ -140,28 +202,55 @@ def run_segmentation():
             image_files = image_files[:LIMIT_IMAGES]
         
         
-    
-      # --- YOLO INFERENCE --------
-        print(f"Running YOLO on {len(image_files)} images...")
-        for image_file in image_files:
-            results = model(image_file)
-            
-            # Save YOLO visualization
-            results.save(labels=False, save_dir=yolo_vis_folder, exist_ok=True)
-            
-            # Save Bounding Boxes, Convert xyxy to tensor and save
-            # results.xyxy[0] contains [x1, y1, x2, y2, conf, class]
-            preds = results.xyxy[0].cpu()
-            
-            # Save only boxes (first 4 columns) for SAM
-            box_tensor = preds[:, :4]
-            save_name = os.path.splitext(os.path.basename(image_file))[0]
-            torch.save(box_tensor, os.path.join(bbox_folder, save_name + ".pt"))
+        # --- YOLO INFERENCE (BATCHED) with CPU Parallel Resize ---
+        # --- 1. PARALLEL PRE-PROCESSING (RESIZE & CACHE) ---
+        print(f"Parallel resizing and caching {len(image_files)} images...")
+        start_prep = time.time()
         
-        # --- MEMORY CLEANUP --- Clean up YOLO to free memory
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            # results_data contains tuples of (resized_np, original_np)
+            results_data = list(executor.map(lambda p: resize_single_image(p, 640), image_files))
+        
+        resized_images = [x[0] for x in results_data]
+        original_images = [x[1] for x in results_data]
+        prep_time = time.time() - start_prep
+
+        # --- 2. GPU INFERENCE ---
+        torch.cuda.synchronize()
+        start_gpu = time.time()
+        
+        # results.tolist() gives us the individual Detections objects
+        results = model(resized_images)
+        det_list = results.tolist()
+        
+        torch.cuda.synchronize()
+        gpu_time = time.time() - start_gpu
+
+        # --- 3. PARALLEL POST-PROCESSING & DISK SAVE ---
+        print(f"Parallel scaling and saving images...")
+        start_disk = time.time()
+        
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            # Use all CPU cores to scale and save images at once
+            list(executor.map(lambda i: save_single_result(
+                i, det_list[i], original_images[i], image_files[i], bbox_folder, yolo_vis_folder
+            ), range(len(det_list))))
+            
+        disk_time = time.time() - start_disk
+
+        # --- 4. PERFORMANCE REPORT ---
+        SHOW_DEBUG_YOLO_RESIZE and save_debug_image_yolo(resized_images, yolo_vis_folder)
+        SHOW_TIME_YOLO and print_performance_report_yolo(len(image_files), prep_time, gpu_time, disk_time)
+        
+        # Clean up memory to keep the 64GB RAM free for SAM
+        del results_data, resized_images, original_images, det_list
+
+
+        # --- MEMORY CLEANUP ---
         del results
         torch.cuda.empty_cache()
         gc.collect()
+
         # --- THE STOP SIGN ---
         if ONLY_YOLO:
             print(f"YOLO finished for {plot_name}.")
@@ -170,8 +259,8 @@ def run_segmentation():
                 import sys; sys.exit() # Hard stop after one plot
             else:
                 continue # Skip SAM and move to the NEXT plot folder
-              
-              
+
+
 
 
         # --- SAM INFERENCE ---
