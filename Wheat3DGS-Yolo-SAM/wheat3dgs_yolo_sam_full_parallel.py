@@ -11,18 +11,26 @@ import torch
 import colorsys
 import time
 import concurrent.futures
+import shutil
 
 from PIL import Image
 from segment_anything import sam_model_registry, SamPredictor
 
 
-
 # --- CONFIGURATION ---
-# We assume the script is run from Phase1_Segmentation folder
+# Script must be run in the same folder as this file!
 BASE_DIR = os.getcwd()
-DATA_DIR = os.path.join(BASE_DIR, "data")  # Where your images are
 WEIGHTS_DIR = os.path.join(BASE_DIR, "weights")
 YOLO_DIR = os.path.join(BASE_DIR, "yolov5")
+
+# --- DATASET TOGGLE ---
+USE_PHONE_DATA = False  
+if USE_PHONE_DATA:
+    DATA_DIR = os.path.join(BASE_DIR, "data_phone")
+    print("-> Target Dataset: PHONE DATA")
+else:
+    DATA_DIR = os.path.join(BASE_DIR, "data")
+    print("-> Target Dataset: PLOT DATA")
 
 # Model Paths
 WHEAT_YOLO_MODEL = os.path.join(WEIGHTS_DIR, "wheat_head_detection_model.pt")
@@ -36,7 +44,7 @@ CLASSES_TO_DETECT = [0]  # Only show class 0 (usually 'wheat')
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # Print hardware/device status
-print(f"--- DEVICE STATUS ---")
+print(f"--- Device Status ---")
 print(f"Using device: {DEVICE}")
 if DEVICE == 'cuda':
     print(f"GPU Name: {torch.cuda.get_device_name(0)}")
@@ -46,15 +54,15 @@ print("-----------------------\n")
 
 # --- TEST CONTROLS ---
 SHOW_TIME_YOLO = True
-SHOW_DEBUG_YOLO_RESIZE = False
+SHOW_DEBUG_YOLO_RESIZE = True
 
-ONLY_YOLO = False      # Set to False if you want to run SAM too
-LIMIT_PLOTS = 0       # How many plots to process for YOLO and SAM (0 for all)
-LIMIT_IMAGES = 0      # How many images per plot or YOLO and SAM (0 for all)
+ONLY_YOLO = True      # Set to False if you want to run SAM too
+LIMIT_PLOTS = 1       # How many plots to process for YOLO and SAM (0 for all)
+LIMIT_IMAGES = 1      # How many images per plot or YOLO and SAM (0 for all)
 
 
-
-# SAM-visualization functions --- HELPER FUNCTIONS ---
+#--- HELPER FUNCTIONS ---
+# SAM-visualization functions 
 # Color Generator, turns a single number into a specific rgb color
 def id2rgb(id, max_num_obj=256):
     if not 0 <= id <= max_num_obj:
@@ -91,7 +99,7 @@ def resize_single_image(img_path, size=640):
     # Use LANCZOS (high quality) or BILINEAR (faster)
     img_resized = img_orig.resize((size, size), resample=Image.LANCZOS) 
     return np.array(img_resized), np.array(img_orig)
-  
+
 def save_single_result(i, result, original_img, original_path, bbox_folder, yolo_vis_folder):
     """Parallelized: Scales boxes, saves .pt, and saves the high-res /JPG."""
     save_name = os.path.splitext(os.path.basename(original_path))[0]
@@ -158,70 +166,79 @@ def print_sam_plot_summary(num_images, total_time):
     print(f"{'Average Time Per Image:':<25} {total_time/num_images:>8.2f}s")
     print("="*45 + "\n")
 
+def reset_folder(folder_path):
+    """Deletes all contents of a folder and recreates it."""
+    if os.path.exists(folder_path):
+        shutil.rmtree(folder_path) # Deletes the folder and everything inside
+    os.makedirs(folder_path, exist_ok=True) # Recreates the empty folder
 
 
+
+
+# =====================================================================
 # --- SEGMENTATION PART ---
+# =====================================================================
 def run_segmentation():
+    global_start_time = time.time()
     print(f"--- Starting Segmentation ---")
     
-    # 1. Load YOLO Model
-    print("Loading YOLOv5...")
+    # 0. Find Image Folders (Do this once at the very beginning)
+    # Looking for structure: data/plot_XXX/images/*.jpg
+    image_folders = sorted(glob.glob(os.path.join(DATA_DIR, '*', 'images')))
+    
+    if LIMIT_PLOTS > 0: # Limit Plots if wanted
+        image_folders = image_folders[:LIMIT_PLOTS]
+    
+    print(f"Found {len(image_folders)} folders to process.")
+    if not image_folders:
+        print(f"No image folders found in {DATA_DIR}. Check your folder structure!")
+        return
+
+
+    # =====================================================================
+    # MASTER LOOP 1: YOLO INFERENCE (ALL PLOTS)
+    # =====================================================================
+    print("\n" + "="*45)
+    print(" PHASE 1: LOADING YOLO AND PROCESSING ALL PLOTS")
+    print("="*45)
+    
     if not os.path.exists(WHEAT_YOLO_MODEL):
         print(f"ERROR: Wheat model not found at {WHEAT_YOLO_MODEL}")
         return
 
-    # Load custom model using local repo
+    # Load YOLO Model ONCE & Load custom model using local repo
     model = torch.hub.load(YOLO_DIR, 'custom', path=WHEAT_YOLO_MODEL, source='local')
-    
+    # to fix the "aggressive" boxes or adjust as seen fit
     model.conf = CONF_THRESHOLD  
     model.iou = IOU_THRESHOLD    
     model.classes = CLASSES_TO_DETECT  
-    
-    # 2. Find Image Folders
-    # Looking for structure: data/plot_XXX/images/*.jpg
-    image_folders = sorted(glob.glob(os.path.join(DATA_DIR, '*', 'images')))
-    
-    # --- OPTION 2 & 3: Limit Plots ---
-    if LIMIT_PLOTS > 0:
-        image_folders = image_folders[:LIMIT_PLOTS]
-    
-    print(f"Found {len(image_folders)} folders to process.")
 
-    if not image_folders:
-        print(f"No image folders found in {DATA_DIR}. Check your folder structure!")
-        # Debug helper
-        print(f"Looking in: {os.path.join(DATA_DIR, '*', 'images')}")
-    
-    
-    # 3. Main Processing Loop
     for folder in image_folders:
         plot_name = folder.split(os.sep)[-2] # Get parent folder name (e.g. plot_461)
-        print(f"\nProcessing Plot: {plot_name}")
+        print(f"\n[YOLO Phase] Processing Plot: {plot_name}")
         
         # Setup Output Directories
         base_plot_path = os.path.dirname(folder)
         yolo_vis_folder = os.path.join(base_plot_path, "yolo_vis")
-        yolo_results_folder = os.path.join(base_plot_path, "yolo_results")
+        # yolo_results_folder = os.path.join(base_plot_path, "yolo_results")
         bbox_folder = os.path.join(base_plot_path, "bboxes")
-        sam_vis_folder = os.path.join(base_plot_path, "sam_vis")
-        mask_folder = os.path.join(base_plot_path, "masks")
-
-        for d in [yolo_vis_folder, yolo_results_folder, bbox_folder, sam_vis_folder, mask_folder]:
-            os.makedirs(d, exist_ok=True)
+        
+        reset_folder(yolo_vis_folder)
+        # reset_folder(yolo_results_folder)
+        reset_folder(bbox_folder)
+        
+        # for d in [yolo_vis_folder, yolo_results_folder, bbox_folder]:
+        #     os.makedirs(d, exist_ok=True)
 
         # Get Images
         image_files = glob.glob(os.path.join(folder, '*.png')) + glob.glob(os.path.join(folder, '*.jpg'))
-        
-        # --- OPTION 1: Limit Images per plot ---
-        if LIMIT_IMAGES > 0:
+        if LIMIT_IMAGES > 0: # Limit Images per plot if wanted
             image_files = image_files[:LIMIT_IMAGES]
-        
-        
-        # --- YOLO INFERENCE (BATCHED) with CPU Parallel Resize ---
-        # --- 1. PARALLEL PRE-PROCESSING (RESIZE & CACHE) ---
+
+
+        # 1. Parallel Pre-Processing (Resizing & Caching)
         print(f"Parallel resizing and caching {len(image_files)} images...")
         start_prep = time.time()
-        
         with concurrent.futures.ThreadPoolExecutor() as executor:
             # results_data contains tuples of (resized_np, original_np)
             results_data = list(executor.map(lambda p: resize_single_image(p, 640), image_files))
@@ -230,60 +247,77 @@ def run_segmentation():
         original_images = [x[1] for x in results_data]
         prep_time = time.time() - start_prep
 
-        # --- 2. GPU INFERENCE ---
+        # 2. GPU Inference
         torch.cuda.synchronize()
         start_gpu = time.time()
-        
-        # results.tolist() gives us the individual Detections objects
         results = model(resized_images)
         det_list = results.tolist()
-        
         torch.cuda.synchronize()
         gpu_time = time.time() - start_gpu
 
-        # --- 3. PARALLEL POST-PROCESSING & DISK SAVE ---
+        # 3. Parallel Post-Processing & Disk Save
         print(f"Parallel scaling and saving images...")
         start_disk = time.time()
-        
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            # Use all CPU cores to scale and save images at once
+            # Use all CPU cores to scale back and save images at once
             list(executor.map(lambda i: save_single_result(
                 i, det_list[i], original_images[i], image_files[i], bbox_folder, yolo_vis_folder
             ), range(len(det_list))))
-            
         disk_time = time.time() - start_disk
 
-        # --- 4. PERFORMANCE REPORT ---
+        # 4. Performance Report & Memory Clean-Up
         SHOW_DEBUG_YOLO_RESIZE and save_debug_image_yolo(resized_images, yolo_vis_folder)
         SHOW_TIME_YOLO and print_performance_report_yolo(len(image_files), prep_time, gpu_time, disk_time)
         
-        # Clean up memory to keep the 64GB RAM free for SAM
-        del results_data, resized_images, original_images, det_list
-
-
-        # --- MEMORY CLEANUP ---
-        del results
+        del results_data, resized_images, original_images, det_list, results
         torch.cuda.empty_cache()
         gc.collect()
 
-        # --- THE STOP SIGN ---
-        if ONLY_YOLO:
-            print(f"YOLO finished for {plot_name}.")
-            
-            if LIMIT_PLOTS == 1:
-                import sys; sys.exit() # Hard stop after one plot
-            else:
-                continue # Skip SAM and move to the NEXT plot folder
+    # --- End of Yolo Master Loop ---
+    # Yolo is done: Delete the model to free up VRAM for SAM.
+    del model
+    torch.cuda.empty_cache()
+    gc.collect()
 
+    # --- ONLY_YOLO Stop Sign ---
+    if ONLY_YOLO:
+        print(f"YOLO finished for {plot_name}.")
+        print("\n ONLY_YOLO is set to True. Stopping script before SAM phase.")
+        return
+    
+  
+    # =====================================================================
+    # MASTER LOOP 2: SAM INFERENCE (ALL PLOTS)
+    # =====================================================================
+    print("\n" + "="*45)
+    print(" PHASE 2: LOADING SAM AND PROCESSING ALL PLOTS")
+    print("="*45)
 
+    # Load SAM Model ONCE
+    print("Loading SAM (this takes a few seconds)...")
+    sam = sam_model_registry["vit_h"](checkpoint=SAM_CHECKPOINT).to(device=DEVICE)
+    predictor = SamPredictor(sam)
 
-
-        # --- SAM INFERENCE ---
-        print(f"\n--- Running SAM on {len(image_files)} images ---")
-        start_sam_plot = time.time()
+    for folder in image_folders:
+        plot_name = folder.split(os.sep)[-2] # Get parent folder name (e.g. plot_461)
+        print(f"\n[SAM Phase] Processing Plot: {plot_name}")
         
-        sam = sam_model_registry["vit_h"](checkpoint=SAM_CHECKPOINT).to(device=DEVICE)
-        predictor = SamPredictor(sam)
+        base_plot_path = os.path.dirname(folder)
+        bbox_folder = os.path.join(base_plot_path, "bboxes")
+        sam_vis_folder = os.path.join(base_plot_path, "sam_vis")
+        mask_folder = os.path.join(base_plot_path, "masks")
+        
+        reset_folder(sam_vis_folder)
+        reset_folder(mask_folder)
+        
+        # for d in [sam_vis_folder, mask_folder]:
+        #     os.makedirs(d, exist_ok=True)
+
+        image_files = glob.glob(os.path.join(folder, '*.png')) + glob.glob(os.path.join(folder, '*.jpg'))
+        if LIMIT_IMAGES > 0:
+            image_files = image_files[:LIMIT_IMAGES]
+
+        start_sam_plot = time.time()
 
         for i, image_file in enumerate(image_files):
             image_name = os.path.basename(image_file)
@@ -296,24 +330,23 @@ def run_segmentation():
             image = cv2.imread(image_file)
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             bbox_path = os.path.join(bbox_folder, save_name + ".pt")
+            
             if not os.path.exists(bbox_path):
                 print(f"    Warning: No boxes found for {image_name}, skipping SAM.")
                 continue
                 
-            bbox = torch.load(bbox_path).to(DEVICE) # loads the boxes from yolo
-            
+            bbox = torch.load(bbox_path).to(DEVICE) 
             if len(bbox) == 0:
                 print(f"    No wheat heads detected in {image_name}")
                 continue
               
-            # Start individual image timer 
             t_start_img = time.time()
 
-            # 2. Image Embedding (Heavy Part)
+            # 2. Image Embedding (heavy part)
             predictor.set_image(image)
             t_embed = time.time() - t_start_img
             
-            # 3. Predict Masks (Batch)
+            # 3. Predict Masks
             t_start_pred = time.time()
             # Transform boxes for SAM
             transformed_boxes = predictor.transform.apply_boxes_torch(bbox, image.shape[:2])
@@ -327,55 +360,63 @@ def run_segmentation():
             )
             t_pred = time.time() - t_start_pred
 
-            # 4. Saving & Visualization
+            # 4. Saving & Visualization (Parallel CPU Saving)
             t_start_save = time.time()
             
-            # Save individual masks for 3DGS
+            # Move masks to CPU and convert to uint8 once, Save binary mask for 3DGS (binary=black white mask)
+            masks_np = (masks.squeeze().cpu().numpy() * 255).astype(np.uint8)
             objects = np.zeros((masks.size(2), masks.size(3)))
-            for idx, mask in enumerate(masks.cpu().numpy()):
-                # Create a composite object map (each wheat head gets an ID)
-                m_sq = mask.squeeze()
-                objects[m_sq] = idx + 1
+            save_tasks = []
+            
+            # Prepare the save tasks
+            for idx, mask_np in enumerate(masks_np):
+                objects[mask_np > 0] = idx + 1
+                out_path = os.path.join(mask_folder, f"{save_name}_{idx:03}.png")
+                save_tasks.append((out_path, mask_np))
                 
-                # Save binary mask for 3DGS (binary=black white mask)
-                mask_uint8 = (mask.squeeze() * 255).astype(np.uint8)
-                mask_filename = f"{save_name}_{idx:03}.png"
-                Image.fromarray(mask_uint8).save(os.path.join(mask_folder, mask_filename))
+            # Execute disk writes in parallel
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                executor.map(lambda arg: cv2.imwrite(arg[0], arg[1]), save_tasks)
 
-            # Save Visualization Overlay
+            # Visualization Overlay (Keep if you want to verify results)
             color_mask = visualize_obj(objects.astype(np.uint8)) / 255.0
             color_img = image / 255.0
             non_black_pixels = np.any(color_mask > 0, axis=-1)
             
             overlayed_img = color_img.copy()
-            alpha = 0.6
+            alpha = 0.5 # Opacity
             overlayed_img[non_black_pixels, :] = (alpha * color_mask[non_black_pixels, :] + 
                                                 (1 - alpha) * color_img[non_black_pixels, :])
             
-            Image.fromarray((overlayed_img * 255).astype(np.uint8)).save(
-                os.path.join(sam_vis_folder, image_name.replace(".png", ".jpg"))
+            cv2.imwrite( #cv2 should be faster than PIL Image.save
+                os.path.join(sam_vis_folder, image_name.replace(".png", ".jpg")), 
+                (overlayed_img * 255).astype(np.uint8)[:, :, ::-1] # cv2 needs BGR
             )
             
             t_save = time.time() - t_start_save
             print_sam_step_report(i, len(image_files), image_name, len(bbox), t_embed, t_pred, t_save)
-
+            
             # Cleanup loop to prevent VRAM overflow
             predictor.reset_image()
             torch.cuda.empty_cache()
         
-        # Final Summary
+        # Plot Final Summary
         sam_total_plot = time.time() - start_sam_plot
         print_sam_plot_summary(len(image_files), sam_total_plot)
-
-        # Free SAM memory
-        del sam
-        del predictor
-        torch.cuda.empty_cache()
-        gc.collect()
         print(f"  Finished Plot: {plot_name}")
+
+    # --- END OF SAM MASTER LOOP ---
+    # Free SAM memory
+    del sam, predictor
+    torch.cuda.empty_cache()
+    gc.collect()
+    
+    global_total_time = time.time() - global_start_time
+    minutes, seconds = divmod(global_total_time, 60)
+    print("\n" + "="*45)
+    print(f" ENTIRE SEGMENTATION PROCESS COMPLETED")
+    print(f" Total Script Runtime: {int(minutes)}m {seconds:.2f}s")
+    print("="*45 + "\n")
 
 if __name__ == "__main__":
     run_segmentation()
-    
-    
-    
