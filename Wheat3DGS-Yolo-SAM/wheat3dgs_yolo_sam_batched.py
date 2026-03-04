@@ -32,6 +32,9 @@ CONF_THRESHOLD = 0.25    # Minimum confidence to show a box, google colab had 0.
 IOU_THRESHOLD = 0.45     # Maximum allowed overlap between boxes, default 0.45
 CLASSES_TO_DETECT = [0]  # Only show class 0 (usually 'wheat')
 
+TARGET_IMAGE_SIZE = 1280 # rescaling size for the yolo model. default=640, must be a number x32 like 1280
+
+
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # Print hardware/device status
@@ -44,8 +47,8 @@ else:
 print("-----------------------\n")
 
 # --- TEST CONTROLS ---
-ONLY_YOLO = False      # Set to False if you want to run SAM too
-SKIP_YOLO = True      # Set to True to skip YOLO and use existing .pt files
+ONLY_YOLO = True      # Set to False if you want to run SAM too
+SKIP_YOLO = False      # Set to True to skip YOLO and use existing .pt files
 LIMIT_PLOTS = 1       # How many plots to process (0 for all)
 LIMIT_IMAGES = 1      # How many images per plot (0 for all)
 
@@ -151,7 +154,7 @@ def run_segmentation():
         start_gpu = time.time()
         
         # 1. Run inference on ALL images at once (Batching) for speed.
-        results = model(image_files) # resizing is happening here, we do it as a matrix
+        results = model(image_files, TARGET_IMAGE_SIZE) # resizing is happening here, we do it as a matrix
         torch.cuda.synchronize()
         gpu_time = time.time() - start_gpu
         

@@ -43,7 +43,7 @@ CLASSES_TO_DETECT = [0]  # Only show class 0 (usually 'wheat')
 
 # Image Resizing Algorithm (Options: Image.LANCZOS, Image.BICUBIC, Image.BILINEAR, Image.NEAREST)
 RESIZE_METHOD = Image.LANCZOS
-TARGET_IMAGE_SIZE = 640 # rescaling size for the yolo model. default=640, must be a number x32 like 1280
+TARGET_IMAGE_SIZE = 1280 # rescaling size for the yolo model. default=640, must be a number x32
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -86,38 +86,64 @@ def visualize_obj(objects):
         rgb_mask[objects == id] = colored_mask
     return rgb_mask
 
-# For Parallelized CPU Image Resizing
-def resize_single_image(img_path, size):
+
+# For Parallelized CPU Image Resizing, we scale the longer side down to 640px and padd the shorter one
+# Loads, letterboxes (pads with gray), and caches one image.
+def resize_single_image(img_path, target_size):
     img_orig = Image.open(img_path).convert('RGB')
-    # Use LANCZOS (high quality) or BILINEAR (faster)
-    img_resized = img_orig.resize((size, size), resample=RESIZE_METHOD) 
-    return np.array(img_resized), np.array(img_orig)
+    orig_w, orig_h = img_orig.size
+    
+    # Calculate scaling factor to keep aspect ratio
+    scale = min(target_size / orig_w, target_size / orig_h)
+    new_w = int(orig_w * scale)
+    new_h = int(orig_h * scale)
+    
+    # Resize the image keeping aspect ratio and create grey 640x640
+    img_resized = img_orig.resize((new_w, new_h), resample=RESIZE_METHOD)
+    canvas = Image.new('RGB', (target_size, target_size), (114, 114, 114))
+    
+    # Paste the resized image into the center of the grey 640x640
+    pad_w = (target_size - new_w) // 2
+    pad_h = (target_size - new_h) // 2
+    canvas.paste(img_resized, (pad_w, pad_h))
+    
+    # Return the canvas, the original image, AND the math used to pad/create it
+    # we need that for undo the padding after the boxes are found, 
+    # since we want to rescale it back to original for SAM and our yolo_vis outputs.
+    pad_info = (scale, pad_w, pad_h)
+    return np.array(canvas), np.array(img_orig), pad_info
   
 # Reverses the letterbox math, saves .pt, and saves the high-res JPG.
-def save_single_result(i, result, original_img, original_path, bbox_folder, yolo_vis_folder):
+def save_single_result(i, result, original_img, pad_info, original_path, bbox_folder, yolo_vis_folder):
     save_name = os.path.splitext(os.path.basename(original_path))[0]
-    orig_h, orig_w = original_img.shape[:2]
+    scale, pad_w, pad_h = pad_info
+    preds = result.xyxy[0].cpu().clone() # Get YOLO predictions
     
-    # 1. Scale Boxes from TARGET_IMAGE_SIZE to Original
-    x_scale, y_scale = orig_w / TARGET_IMAGE_SIZE, orig_h / TARGET_IMAGE_SIZE
-    preds = result.xyxy[0].cpu()
-    scaled_boxes = preds.clone()
-    # every box has 4 coordinates (the corners), which need to be scaled back
-    scaled_boxes[:, [0, 2]] *= x_scale
-    scaled_boxes[:, [1, 3]] *= y_scale
+    if len(preds) > 0:
+        # 1. Subtract the gray padding from the box coordinates
+        preds[:, [0, 2]] -= pad_w  # x_min, x_max
+        preds[:, [1, 3]] -= pad_h  # y_min, y_max
+        
+        # 2. Divide by the scale to stretch back to original high-res pixels
+        preds[:, :4] /= scale
+        
+        # 3. Clip boxes to ensure they don't accidentally go outside the image boundary
+        orig_h, orig_w = original_img.shape[:2]
+        preds[:, [0, 2]] = preds[:, [0, 2]].clamp(0, orig_w)
+        preds[:, [1, 3]] = preds[:, [1, 3]].clamp(0, orig_h)
+
+    # Save Scaled Tensor for SAM
+    torch.save(preds[:, :4], os.path.join(bbox_folder, f"{save_name}.pt"))
     
-    # 2. Save Scaled Tensor for SAM
-    torch.save(scaled_boxes[:, :4], os.path.join(bbox_folder, f"{save_name}.pt"))
-    
-    # 3. Render boxes on high-res and save as PNG or JPG
+    # Render boxes on high-res and save as JPG
     result.ims = [original_img]
-    result.xyxy[0] = scaled_boxes.to(result.xyxy[0].device)
+    result.xyxy[0] = preds.to(result.xyxy[0].device)
     annotated_img = result.render(labels=False)[0]
     
     # out_path = os.path.join(yolo_vis_folder, f"{save_name}.png")
     # Image.fromarray(annotated_img).save(out_path)
     out_path = os.path.join(yolo_vis_folder, f"{save_name}.jpg")
-    Image.fromarray(annotated_img).save(out_path, quality=90) # Quality 90 is very high
+    Image.fromarray(annotated_img).save(out_path, quality=90)
 
 
 def print_performance_report_yolo(num_images, prep_t, gpu_t, disk_t):
@@ -201,7 +227,7 @@ def run_segmentation():
     # MASTER LOOP 1: YOLO INFERENCE (ALL PLOTS)
     # =====================================================================
     print("\n" + "="*45)
-    print(" PHASE 1: LOADING YOLO AND PROCESSING ALL DATA")
+    print(" PHASE 1: LOADING YOLO AND PROCESSING ALL PLOTS")
     print("="*45)
     
     if not os.path.exists(WHEAT_YOLO_MODEL):
@@ -237,16 +263,16 @@ def run_segmentation():
         with concurrent.futures.ThreadPoolExecutor() as executor:
             # results_data contains tuples of (resized_np, original_np)
             results_data = list(executor.map(lambda p: resize_single_image(p, TARGET_IMAGE_SIZE), image_files))
-
+        
         resized_images = [x[0] for x in results_data]
         original_images = [x[1] for x in results_data]
+        pad_infos = [x[2] for x in results_data] # Extract the padding math
         prep_time = time.time() - start_prep
 
         # 2. GPU Inference
         torch.cuda.synchronize()
         start_gpu = time.time()
-        results = model(resized_images, size=TARGET_IMAGE_SIZE)
-        # results = model(resized_images)  
+        results = model(resized_images)
         det_list = results.tolist()
         torch.cuda.synchronize()
         gpu_time = time.time() - start_gpu
@@ -257,7 +283,7 @@ def run_segmentation():
         with concurrent.futures.ThreadPoolExecutor() as executor:
             # Use all CPU cores to scale back and save images at once
             list(executor.map(lambda i: save_single_result(
-                i, det_list[i], original_images[i], image_files[i], bbox_folder, yolo_vis_folder
+                i, det_list[i], original_images[i], pad_infos[i], image_files[i], bbox_folder, yolo_vis_folder
             ), range(len(det_list))))
         disk_time = time.time() - start_disk
 
@@ -286,7 +312,7 @@ def run_segmentation():
     # MASTER LOOP 2: SAM INFERENCE (ALL PLOTS)
     # =====================================================================
     print("\n" + "="*45)
-    print(" PHASE 2: LOADING SAM AND PROCESSING ALL DATA")
+    print(" PHASE 2: LOADING SAM AND PROCESSING ALL PLOTS")
     print("="*45)
 
     # Load SAM Model ONCE

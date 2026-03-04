@@ -84,7 +84,7 @@ def visualize_obj(objects):
     return rgb_mask
 
 
-# For Parallelized CPU Image Resizing
+# For Parallelized CPU Image Resizing this helper function is needed.
 def resize_single_image(img_path, size=640):
     """Loads and resizes one image on one CPU thread."""
     img_orig = Image.open(img_path).convert('RGB')
