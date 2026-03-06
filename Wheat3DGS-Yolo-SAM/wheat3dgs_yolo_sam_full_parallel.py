@@ -43,7 +43,7 @@ CLASSES_TO_DETECT = [0]  # Only show class 0 (usually 'wheat')
 
 # Image Resizing Algorithm (Options: Image.LANCZOS, Image.BICUBIC, Image.BILINEAR, Image.NEAREST)
 RESIZE_METHOD = Image.LANCZOS
-TARGET_IMAGE_SIZE = 640 # rescaling size for the yolo model. default=640, must be a number x32 like 1280
+TARGET_IMAGE_SIZE = 1280 # rescaling size for the yolo model. default=640, must be a number x32 like 1280
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 

@@ -49,8 +49,8 @@ SHOW_TIME_YOLO = True
 SHOW_DEBUG_YOLO_RESIZE = False
 
 ONLY_YOLO = False      # Set to False if you want to run SAM too
-LIMIT_PLOTS = 0       # How many plots to process for YOLO and SAM (0 for all)
-LIMIT_IMAGES = 0      # How many images per plot or YOLO and SAM (0 for all)
+LIMIT_PLOTS = 1       # How many plots to process for YOLO and SAM (0 for all)
+LIMIT_IMAGES = 1      # How many images per plot or YOLO and SAM (0 for all)
 
 
 

@@ -864,7 +864,7 @@ class AutoShape(nn.Module):
 
         dt = (Profile(), Profile(), Profile())
         with dt[0]:
-            if isinstance(size, int):  # expand
+            if isinstance(size, int):  # expand, HERE I MY TARGET_IMAGE_SIZE IS USED!!
                 size = (size, size)
             p = next(self.model.parameters()) if self.pt else torch.empty(1, device=self.model.device)  # param
             autocast = self.amp and (p.device.type != "cpu")  # Automatic Mixed Precision (AMP) inference
