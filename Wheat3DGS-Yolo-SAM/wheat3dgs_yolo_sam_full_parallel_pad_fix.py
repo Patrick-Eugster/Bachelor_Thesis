@@ -48,16 +48,18 @@ CLASSES_TO_DETECT = [0]  # Only show class 0 (usually 'wheat')
 # Image Resizing Algorithm (Options: Image.LANCZOS, Image.BICUBIC, Image.BILINEAR, Image.NEAREST)
 RESIZE_METHOD = Image.LANCZOS
 TARGET_IMAGE_SIZE = 1280 # rescaling size for the yolo model. default=640, must be a number x32
-BATCH_SIZE_YOLO = 16 # protect GPU VRAM
-BATCH_SIZE_SAM_BOX = 16 # fix number of boxes to process at once (otherwise RAM/VRAM wont be enough)
+BATCH_SIZE_YOLO = 25 # protect GPU VRAM
 BATCH_SIZE_RAM_FILES_YOLO = 100  # Protects System RAM: How many images to load at once
+BATCH_SIZE_SAM_BOX = 30 # fix number of boxes to process at once (otherwise RAM/VRAM wont be enough)
 
 # --- TEST CONTROLS ---
-SHOW_DEBUG_YOLO_RESIZE = True
+SHOW_DEBUG_YOLO_RESIZE = False
 SHOW_TIME_YOLO = True
 SHOW_TIME_SAM = True   
+SHOW_TIME_TOTAL = True
+
 ONLY_YOLO = False      # Set to False if you want to run SAM too
-LIMIT_PLOTS = 1       # How many plots to process for YOLO and SAM (0 for all)
+LIMIT_PLOTS = 0       # How many plots to process for YOLO and SAM (0 for all)
 LIMIT_IMAGES = 0      # How many images per plot or YOLO and SAM (0 for all)
 
 
@@ -162,8 +164,6 @@ def save_single_result(i, result, original_img, pad_info, original_path, bbox_fo
     
     out_path = os.path.join(yolo_vis_folder, f"{save_name}.jpg")
     Image.fromarray(annotated_img).save(out_path, quality=90)
-    # out_path = os.path.join(yolo_vis_folder, f"{save_name}.png")
-    # Image.fromarray(annotated_img).save(out_path)
 
 
 def print_performance_report_yolo(num_images, prep_t, gpu_t, disk_t):
@@ -218,6 +218,35 @@ def print_hardware_status():
     else:
         print("Warning: GPU not found. Running on CPU (this will be very slow!)")
     print("-----------------------\n")
+
+def print_final_configuration_report(total_seconds, sam_seconds, total_images, total_heads):
+    minutes, seconds = divmod(total_seconds, 60)
+    print("\n" + "="*50)
+    print("      FINAL SEGMENTATION SUMMARY REPORT")
+    print("="*50)
+    # 1. Hardware & Core Settings
+    print(f"{'Device:':<25} {DEVICE}")
+    print(f"{'Confidence Threshold:':<25} {CONF_THRESHOLD}")
+    print(f"{'IoU Threshold:':<25} {IOU_THRESHOLD}")
+    print(f"{'Target Resize Size:':<25} {TARGET_IMAGE_SIZE}px")
+    # 2. Batching Strategy (The Memory Guards)
+    print("-" * 50)
+    print(f"{'BATCH_SIZE_YOLO:':<25} {BATCH_SIZE_YOLO}")
+    print(f"{'BATCH_SIZE_SAM_BOX:':<25} {BATCH_SIZE_SAM_BOX}")
+    print(f"{'BATCH_SIZE_RAM_FILES:':<25} {BATCH_SIZE_RAM_FILES_YOLO}")
+    # 3. Dataset & Results
+    print("-" * 50)
+    print(f"{'Total Images Processed:':<25} {total_images}")
+    print(f"{'Total Wheat Heads Found:':<25} {total_heads}")
+    if total_images > 0:
+        print(f"{'Average Heads Per Image:':<25} {total_heads / total_images:.1f}")
+    # 4. Final Timing
+    print("-" * 50)
+    print(f"{'TOTAL SCRIPT RUNTIME:':<25} {int(minutes)}m {seconds:.2f}s")
+    if total_images > 0:
+        print(f"{'Average Time Per Image (Whole Script):':<25} {total_seconds / total_images:.2f}s")
+        print(f"{'Avg Time (SAM Only):':<25} {sam_seconds / total_images:.2f}s")
+    print("="*50 + "\n")
 
 
 
@@ -373,6 +402,9 @@ def run_segmentation():
     torch.cuda.synchronize() 
     sam_load_time = time.time() - start_sam_load
     print(f"-> SAM Model loaded on {DEVICE} in {sam_load_time:.2f}s")
+    
+    total_sam_pure_time = 0.0
+    total_sam_images = 0
 
     for folder in image_folders:
         plot_name = folder.split(os.sep)[-2] # Get parent folder name (e.g. plot_461)
@@ -479,6 +511,8 @@ def run_segmentation():
             
             t_save = time.time() - t_start_save
             SHOW_TIME_SAM and print_sam_step_report(i, len(image_files), image_name, len(bbox), t_embed, t_pred, t_save)
+            total_sam_pure_time += (t_embed + t_pred + t_save)
+            total_sam_images += 1
             
             # Cleanup loop to prevent VRAM overflow
             predictor.reset_image()
@@ -497,11 +531,7 @@ def run_segmentation():
     gc.collect()
     
     global_total_time = time.time() - global_start_time
-    minutes, seconds = divmod(global_total_time, 60)
-    print("\n" + "="*45)
-    print(f" ENTIRE SEGMENTATION PROCESS COMPLETED")
-    print(f" Total Script Runtime: {int(minutes)}m {seconds:.2f}s")
-    print("="*45 + "\n")
+    SHOW_TIME_TOTAL and print_final_configuration_report(global_total_time, total_sam_pure_time, total_sam_images, total_plot_boxes)
 
 if __name__ == "__main__":
     run_segmentation()

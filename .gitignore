@@ -20,7 +20,10 @@
 **/._*
 
 # --- Phase 2 & 3: Wheat-3DGS Specific ---
+**/data_phone/
+data_phone/
 Wheat-3DGS/**/data/
+Wheat-3DGS/**/data_phone/
 Wheat-3DGS/**/dataset/
 Wheat-3DGS/**/output/
 Wheat-3DGS/**/outputs/
