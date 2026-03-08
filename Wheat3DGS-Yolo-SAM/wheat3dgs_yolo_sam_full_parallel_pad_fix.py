@@ -25,15 +25,6 @@ BASE_DIR = os.getcwd()
 WEIGHTS_DIR = os.path.join(BASE_DIR, "weights")
 YOLO_DIR = os.path.join(BASE_DIR, "yolov5")
 
-# --- DATASET TOGGLE ---
-USE_PHONE_DATA = False  
-if USE_PHONE_DATA:
-    DATA_DIR = os.path.join(BASE_DIR, "data_phone")
-    print("-> Target Dataset: PHONE DATA")
-else:
-    DATA_DIR = os.path.join(BASE_DIR, "data")
-    print("-> Target Dataset: FIP PLOT DATA")
-
 # Model Paths
 WHEAT_YOLO_MODEL = os.path.join(WEIGHTS_DIR, "wheat_head_detection_model.pt")
 SAM_CHECKPOINT = os.path.join(WEIGHTS_DIR, "sam_vit_h_4b8939.pth")
@@ -41,16 +32,25 @@ SAM_CHECKPOINT = os.path.join(WEIGHTS_DIR, "sam_vit_h_4b8939.pth")
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # --- SETTINGS / CONSTANTS ---
-CONF_THRESHOLD = 0.25    # Minimum confidence to show a box, google colab had 0.05, the original probably 0.25
+CONF_THRESHOLD_GOOD_AND_BAD_BOX = 0.05 # So that we can even see what wheat heads didnt get chosen by a small margin
+CONF_THRESHOLD_GOOD_BOX = 0.25 # Minimum confidence to show a box, google colab had 0.05
 IOU_THRESHOLD = 0.45     # Maximum allowed overlap between boxes, default 0.45
 CLASSES_TO_DETECT = [0]  # Only show class 0 (usually 'wheat')
+
 
 # Image Resizing Algorithm (Options: Image.LANCZOS, Image.BICUBIC, Image.BILINEAR, Image.NEAREST)
 RESIZE_METHOD = Image.LANCZOS
 TARGET_IMAGE_SIZE = 1280 # rescaling size for the yolo model. default=640, must be a number x32
 BATCH_SIZE_YOLO = 25 # protect GPU VRAM
 BATCH_SIZE_RAM_FILES_YOLO = 100  # Protects System RAM: How many images to load at once
-BATCH_SIZE_SAM_BOX = 30 # fix number of boxes to process at once (otherwise RAM/VRAM wont be enough)
+BATCH_SIZE_SAM_BOX = 75 # fix number of boxes to process at once (otherwise RAM/VRAM wont be enough)
+MAX_THREADS = 6
+
+SHOW_LABELS = False 
+SHOW_GOOD_BOXES = True 
+SHOW_REJECTED_RED_BOXES = False
+BOX_THICKNESS = 2
+LABEL_FONT_SCALE = 1
 
 # --- TEST CONTROLS ---
 SHOW_DEBUG_YOLO_RESIZE = False
@@ -59,8 +59,18 @@ SHOW_TIME_SAM = True
 SHOW_TIME_TOTAL = True
 
 ONLY_YOLO = False      # Set to False if you want to run SAM too
-LIMIT_PLOTS = 0       # How many plots to process for YOLO and SAM (0 for all)
-LIMIT_IMAGES = 0      # How many images per plot or YOLO and SAM (0 for all)
+LIMIT_PLOTS = 1       # How many plots to process for YOLO and SAM (0 for all)
+LIMIT_IMAGES = 0     # How many images per plot or YOLO and SAM (0 for all)
+
+# --- DATASET TOGGLE ---
+USE_PHONE_DATA = True  
+
+if USE_PHONE_DATA:
+    DATA_DIR = os.path.join(BASE_DIR, "data_phone")
+    print("-> Target Dataset: PHONE DATA")
+else:
+    DATA_DIR = os.path.join(BASE_DIR, "data")
+    print("-> Target Dataset: FIP PLOT DATA")
 
 
 
@@ -133,37 +143,107 @@ def resize_single_image(img_path, target_size):
     pad_info = (r, left, top)
     return np.array(canvas), np.array(img_orig), pad_info
 
-  
+
 # Reverses the letterbox math, saves .pt, and saves the high-res JPG.
 def save_single_result(i, result, original_img, pad_info, original_path, bbox_folder, yolo_vis_folder):
     save_name = os.path.splitext(os.path.basename(original_path))[0]
     r, pad_left, pad_top = pad_info # Extract math from the resize step
     
-    preds = result.xyxy[0].cpu().clone() # Get YOLO predictions
+    # 1. move to NumPy to escape PyTorch overhead
+    preds = result.xyxy[0].cpu().numpy()  # Get YOLO predictions
     
+    good_count = 0
+    bad_count = 0
+    good_boxes_for_sam = []
+
+    # Make a single clean copy of the original image
+    annotated_img = np.array(original_img).copy()
+
     if len(preds) > 0:
-        # 1. Subtract the gray padding from the box coordinates
+        # 2. VECTORIZED MATH (Faster)
+        # We do the math on all 600 boxes simultaneously without a single Python for-loop
         preds[:, [0, 2]] -= pad_left  # x_min, x_max
         preds[:, [1, 3]] -= pad_top   # y_min, y_max
+        preds[:, :4] /= r # Divide by the scale to stretch back to original high-res pixels
         
-        # 2. Divide by the scale to stretch back to original high-res pixels
-        preds[:, :4] /= r
-        
-        # 3. Clip boxes to ensure they don't accidentally go outside the image boundary
+        # Clip boxes to ensure they don't accidentally go outside the image boundary
         orig_h, orig_w = original_img.shape[:2]
-        preds[:, [0, 2]] = preds[:, [0, 2]].clamp(0, orig_w)
-        preds[:, [1, 3]] = preds[:, [1, 3]].clamp(0, orig_h)
+        preds[:, [0, 2]] = np.clip(preds[:, [0, 2]], 0, orig_w)
+        preds[:, [1, 3]] = np.clip(preds[:, [1, 3]], 0, orig_h)
+        
+        # 3. VECTORIZED FILTERING (No list comprehensions!)
+        # This mask instantly separates good and bad boxes in C++
+        mask = preds[:, 4] >= CONF_THRESHOLD_GOOD_BOX
+        good_preds = preds[mask]
+        bad_preds = preds[~mask]
+        
+        good_count = len(good_preds)
+        bad_count = len(bad_preds)
+        
+        # Pre-cast coordinates to integers instantly for OpenCV
+        if good_count > 0:
+            good_coords = good_preds[:, :4].astype(int)
+            good_confs = good_preds[:, 4]
+            # Save raw coordinates for SAM
+            good_boxes_for_sam = good_preds[:, :4].copy()
 
-    # Save Scaled Tensor for SAM
-    torch.save(preds[:, :4], os.path.join(bbox_folder, f"{save_name}.pt"))
+        if bad_count > 0:
+            bad_coords = bad_preds[:, :4].astype(int)
+            bad_confs = bad_preds[:, 4]
+
+        # 4. DRAW GOOD BOXES (SOLID RED)
+        if SHOW_GOOD_BOXES and good_count > 0:
+            for j in range(good_count):
+                x1, y1, x2, y2 = good_coords[j]
+                conf = good_confs[j]
+                
+                cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (0, 0, 255), thickness=BOX_THICKNESS)
+                
+                if SHOW_LABELS:
+                    conf_text = f"{conf:.2f}"
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    font_scale = LABEL_FONT_SCALE * 0.7
+                    pos = (x1, y1 - 8)
+                    cv2.putText(annotated_img, conf_text, pos, font, font_scale, 
+                                (255, 255, 255), thickness=BOX_THICKNESS+1, lineType=cv2.LINE_AA)
+                    cv2.putText(annotated_img, conf_text, pos, font, font_scale, 
+                                (0, 0, 255), thickness=BOX_THICKNESS-1, lineType=cv2.LINE_AA)
+        
+        # 5. DRAW BAD BOXES (SOLID BLUE - DIRECTLY ON IMAGE)
+        if SHOW_REJECTED_RED_BOXES and bad_count > 0:
+            for j in range(bad_count):
+                x1, y1, x2, y2 = bad_coords[j]
+                conf = bad_confs[j]
+                
+                # Draw directly on the main image. No glass layer, no alpha blend!
+                cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (255, 30, 30), thickness=BOX_THICKNESS)
+                
+                if SHOW_LABELS:
+                    conf_text = f"{conf:.2f}"
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    font_scale = LABEL_FONT_SCALE * 0.7
+                    pos = (x1, y1 + 25)
+
+                    cv2.putText(annotated_img, conf_text, pos, font, font_scale, 
+                                (255, 255, 255), thickness=BOX_THICKNESS + 1, lineType=cv2.LINE_AA)
+                    cv2.putText(annotated_img, conf_text, pos, font, font_scale, 
+                                (255, 30, 30), thickness=max(1, BOX_THICKNESS - 1), lineType=cv2.LINE_AA)
     
-    # Render boxes on high-res and save as JPG
-    result.ims = [original_img]
-    result.xyxy[0] = preds.to(result.xyxy[0].device)
-    annotated_img = result.render(labels=False)[0]
-    
+    # 6. SAVE TENSORS FOR SAM
+    if len(good_boxes_for_sam) > 0:
+        valid_tensor = torch.tensor(good_boxes_for_sam)
+        torch.save(valid_tensor, os.path.join(bbox_folder, f"{save_name}.pt"))
+    else:
+        torch.save(torch.tensor([]), os.path.join(bbox_folder, f"{save_name}.pt"))
+        
+    # 7. SAVE JPG
     out_path = os.path.join(yolo_vis_folder, f"{save_name}.jpg")
     Image.fromarray(annotated_img).save(out_path, quality=90)
+    
+    return good_count, bad_count
+
+
+
 
 
 def print_performance_report_yolo(num_images, prep_t, gpu_t, disk_t):
@@ -176,7 +256,7 @@ def print_performance_report_yolo(num_images, prep_t, gpu_t, disk_t):
     print(f"{'CPU Parallel Resize Time:':<26} {prep_t:>8.2f}s")
     print(f"{'Pure GPU YOLO Math Time:':<26} {gpu_t:>8.2f}s")
     print(f"{'Total GPU Inference Time:':<26} {comb_inf:>8.2f}s")
-    print(f"{'Disk Write Time:':<26} {disk_t:>8.2f}s")
+    print(f"{'Post-Process & Disk Write Time:':<26} {disk_t:>8.2f}s")
     print("-" * 45)
     print(f"{'TOTAL PLOT TIME:':<26} {total_t:>8.2f}s")
     print("="*45 + "\n")
@@ -226,7 +306,7 @@ def print_final_configuration_report(total_seconds, sam_seconds, total_images, t
     print("="*50)
     # 1. Hardware & Core Settings
     print(f"{'Device:':<25} {DEVICE}")
-    print(f"{'Confidence Threshold:':<25} {CONF_THRESHOLD}")
+    print(f"{'Confidence Threshold:':<25} {CONF_THRESHOLD_GOOD_BOX}")
     print(f"{'IoU Threshold:':<25} {IOU_THRESHOLD}")
     print(f"{'Target Resize Size:':<25} {TARGET_IMAGE_SIZE}px")
     # 2. Batching Strategy (The Memory Guards)
@@ -286,11 +366,11 @@ def run_segmentation():
     # Load YOLO Model ONCE & Load custom model using local repo
     model = torch.hub.load(YOLO_DIR, 'custom', path=WHEAT_YOLO_MODEL, source='local')
     # to fix the "aggressive" boxes or adjust as seen fit
-    model.conf = CONF_THRESHOLD  
+    model.conf = CONF_THRESHOLD_GOOD_AND_BAD_BOX
     model.iou = IOU_THRESHOLD    
     model.classes = CLASSES_TO_DETECT  
     # box line thickness, 2 is thin
-    model.line_thickness = 2
+    model.line_thickness = 1
 
     for folder in image_folders:
         plot_name = folder.split(os.sep)[-2] # Get parent folder name (e.g. plot_461)
@@ -312,6 +392,7 @@ def run_segmentation():
         total_gpu_time = 0.0
         total_disk_time = 0.0
         total_plot_boxes = 0
+        total_plot_bad_boxes = 0
 
         # --- Chunking loop to protect RAM ---
         for chunk_start in range(0, len(image_files), BATCH_SIZE_RAM_FILES_YOLO):
@@ -320,7 +401,7 @@ def run_segmentation():
 
             # 1. Parallel Pre-Processing (Resizing & Caching)
             start_prep = time.time()
-            with concurrent.futures.ThreadPoolExecutor() as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
                 results_data = list(executor.map(lambda p: resize_single_image(p, TARGET_IMAGE_SIZE), chunk_files))
             
             resized_images = [x[0] for x in results_data]
@@ -343,21 +424,23 @@ def run_segmentation():
             
             gpu_time = time.time() - start_gpu
             total_gpu_time += gpu_time
-            
-            chunk_boxes = sum(len(det.xyxy[0]) for det in det_list)
-            total_plot_boxes += chunk_boxes
 
             # 3. Parallel Post-Processing & Disk Save
             start_disk = time.time()
-            with concurrent.futures.ThreadPoolExecutor() as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
                 # Use all CPU cores to scale back and save images at once
-                # IMPORTANT: Use chunk_files[i] here!
-                list(executor.map(lambda i: save_single_result(
+                # Capture the returned (good_count, bad_count) tuples in a list
+                box_counts = list(executor.map(lambda i: save_single_result(
                     i, det_list[i], original_images[i], pad_infos[i], chunk_files[i], bbox_folder, yolo_vis_folder
                 ), range(len(det_list))))
                 
             disk_time = time.time() - start_disk
-            total_disk_time += disk_time  # Add to total
+            total_disk_time += disk_time
+            
+            # Unpack the list of tuples and add them to our total trackers
+            for good_c, bad_c in box_counts:
+                total_plot_boxes += good_c       # This is your existing variable for GOOD boxes
+                total_plot_bad_boxes += bad_c    # THIS IS THE NEW VARIABLE
 
             # Memory Clean-Up for THIS CHUNK
             if chunk_start == 0 and SHOW_DEBUG_YOLO_RESIZE:
@@ -366,9 +449,9 @@ def run_segmentation():
             del results_data, resized_images, original_images, det_list
             gc.collect()
 
-
         # 4. Final Performance Report for the entire plot
-        print(f"-> YOLO detected a total of {total_plot_boxes} wheat heads across {len(image_files)} images.")
+        print(f"-> YOLO detected a total of {total_plot_boxes} good wheat heads across {len(image_files)} images.")
+        print(f"-> YOLO detected a total of {total_plot_bad_boxes} wheat heads below threshold as bad boxes across {len(image_files)} images.")
         SHOW_TIME_YOLO and print_performance_report_yolo(len(image_files), total_prep_time, total_gpu_time, total_disk_time)
         
         torch.cuda.empty_cache()
@@ -479,34 +562,37 @@ def run_segmentation():
 
             # 4. Saving & Visualization (Parallel CPU Saving)
             t_start_save = time.time()
-            # FIXED: Used uint16 to allow for more than 255 wheat heads
+            
+            # Step A: Build the objects map and save tasks
             objects = np.zeros((masks_np.shape[1], masks_np.shape[2]), dtype=np.uint16)
             save_tasks = []
             
-            # Prepare the save tasks
             for idx, mask_np in enumerate(masks_np):
                 objects[mask_np > 0] = idx + 1
                 out_path = os.path.join(mask_folder, f"{save_name}_{idx:03}.png")
                 save_tasks.append((out_path, mask_np))
                 
-            # FIXED: Added list() to force the threads to actually execute and block
-            with concurrent.futures.ThreadPoolExecutor() as executor:
+            # FIXED: Using the correct MAX_SAVE_THREADS variable defined at the top
+            with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
                 list(executor.map(lambda arg: cv2.imwrite(arg[0], arg[1]), save_tasks))
 
-            # Visualization Overlay
-            # visualize_obj can handle the uint16 array and return the color mask safely
-            color_mask = visualize_obj(objects) / 255.0
-            color_img = image / 255.0
-            non_black_pixels = np.any(color_mask > 0, axis=-1)
+            # Step B: Fast Visualization Overlay (No floating point division)
+            color_mask_255 = visualize_obj(objects)
             
-            overlayed_img = color_img.copy()
-            alpha = 0.5 # Opacity
-            overlayed_img[non_black_pixels, :] = (alpha * color_mask[non_black_pixels, :] + 
-                                                (1 - alpha) * color_img[non_black_pixels, :])
+            # Create a true/false mask of where the colored wheat heads actually are
+            non_black_mask = np.any(color_mask_255 > 0, axis=-1).astype(np.uint8) * 255
             
+            # Use OpenCV's ultra-fast C++ blending instead of Python math
+            blended = cv2.addWeighted(color_mask_255, 0.5, image, 0.5, 0)
+            
+            # Paste the blended pixels directly back onto a copy of the original image
+            final_vis = image.copy()
+            np.copyto(final_vis, blended, where=non_black_mask[:, :, None].astype(bool))
+            
+            # Save it (OpenCV expects BGR, so we flip the RGB channels)
             cv2.imwrite( 
                 os.path.join(sam_vis_folder, image_name.replace(".png", ".jpg")), 
-                (overlayed_img * 255).astype(np.uint8)[:, :, ::-1] 
+                final_vis[:, :, ::-1] 
             )
             
             t_save = time.time() - t_start_save
