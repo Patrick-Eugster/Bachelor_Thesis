@@ -43,7 +43,7 @@ RESIZE_METHOD = Image.LANCZOS
 TARGET_IMAGE_SIZE = 1280 # rescaling size for the yolo model. default=640, must be a number x32
 BATCH_SIZE_YOLO = 25 # protect GPU VRAM
 BATCH_SIZE_RAM_FILES_YOLO = 100  # Protects System RAM: How many images to load at once
-BATCH_SIZE_SAM_BOX = 75 # fix number of boxes to process at once (otherwise RAM/VRAM wont be enough)
+BATCH_SIZE_SAM_BOX = 1 # fix number of boxes to process at once (otherwise RAM/VRAM wont be enough)
 MAX_THREADS = 6
 
 SHOW_LABELS = False 
@@ -60,7 +60,7 @@ SHOW_TIME_TOTAL = True
 
 ONLY_YOLO = False      # Set to False if you want to run SAM too
 LIMIT_PLOTS = 1       # How many plots to process for YOLO and SAM (0 for all)
-LIMIT_IMAGES = 0     # How many images per plot or YOLO and SAM (0 for all)
+LIMIT_IMAGES = 0    # How many images per plot or YOLO and SAM (0 for all)
 
 # --- DATASET TOGGLE ---
 USE_PHONE_DATA = True  
@@ -481,6 +481,7 @@ def run_segmentation():
     print("Loading SAM (this takes a few seconds)...")
     start_sam_load = time.time()
     sam = sam_model_registry["vit_h"](checkpoint=SAM_CHECKPOINT).to(device=DEVICE)
+    sam = torch.compile(sam)
     predictor = SamPredictor(sam)
     torch.cuda.synchronize() 
     sam_load_time = time.time() - start_sam_load
@@ -539,31 +540,33 @@ def run_segmentation():
             
             all_masks_np = []
             
+            all_masks_np = []
+            
             # Process boxes in chunks to save memory
-            for b_idx in range(0, len(transformed_boxes), BATCH_SIZE_SAM_BOX):
-                batch_boxes = transformed_boxes[b_idx : b_idx + BATCH_SIZE_SAM_BOX]
-                
-                masks, _, _ = predictor.predict_torch(
-                    point_coords=None,      
-                    point_labels=None,      
-                    boxes=batch_boxes,
-                    multimask_output=False
-                )
-                
-                # squeeze(1) removes the empty dimension, leaving [Batch, H, W]
-                # immediately move to CPU and convert to uint8 to free up VRAM
-                masks_batch_np = (masks.squeeze(1).cpu().numpy() * 255).astype(np.uint8)
-                all_masks_np.append(masks_batch_np)
-
+            with torch.no_grad(): # CRITICAL for Batch Size 1
+                for b_idx in range(0, len(transformed_boxes), BATCH_SIZE_SAM_BOX):
+                    batch_boxes = transformed_boxes[b_idx : b_idx + BATCH_SIZE_SAM_BOX]
+                    
+                    masks, _, _ = predictor.predict_torch(
+                        point_coords=None,      
+                        point_labels=None,      
+                        boxes=batch_boxes,
+                        multimask_output=False
+                    )
+                    
+                    # squeeze(1) removes the empty dimension, leaving [Batch, H, W]
+                    # immediately move to CPU and convert to uint8 to free up VRAM
+                    masks_batch_np = (masks.squeeze(1).cpu().numpy() * 255).astype(np.uint8)
+                    all_masks_np.append(masks_batch_np)
+            
             # Combine all chunks back into one numpy array
             masks_np = np.concatenate(all_masks_np, axis=0)
             torch.cuda.synchronize()
             t_pred = time.time() - t_start_pred
-
+            
             # 4. Saving & Visualization (Parallel CPU Saving)
             t_start_save = time.time()
             
-            # Step A: Build the objects map and save tasks
             objects = np.zeros((masks_np.shape[1], masks_np.shape[2]), dtype=np.uint16)
             save_tasks = []
             
@@ -572,27 +575,22 @@ def run_segmentation():
                 out_path = os.path.join(mask_folder, f"{save_name}_{idx:03}.png")
                 save_tasks.append((out_path, mask_np))
                 
-            # FIXED: Using the correct MAX_SAVE_THREADS variable defined at the top
             with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
                 list(executor.map(lambda arg: cv2.imwrite(arg[0], arg[1]), save_tasks))
 
-            # Step B: Fast Visualization Overlay (No floating point division)
-            color_mask_255 = visualize_obj(objects)
+            # Reverted to your highly efficient sparse NumPy math
+            color_mask = visualize_obj(objects) / 255.0
+            color_img = image / 255.0
+            non_black_pixels = np.any(color_mask > 0, axis=-1)
             
-            # Create a true/false mask of where the colored wheat heads actually are
-            non_black_mask = np.any(color_mask_255 > 0, axis=-1).astype(np.uint8) * 255
+            overlayed_img = color_img.copy()
+            alpha = 0.5 
+            overlayed_img[non_black_pixels, :] = (alpha * color_mask[non_black_pixels, :] + 
+                                                (1 - alpha) * color_img[non_black_pixels, :])
             
-            # Use OpenCV's ultra-fast C++ blending instead of Python math
-            blended = cv2.addWeighted(color_mask_255, 0.5, image, 0.5, 0)
-            
-            # Paste the blended pixels directly back onto a copy of the original image
-            final_vis = image.copy()
-            np.copyto(final_vis, blended, where=non_black_mask[:, :, None].astype(bool))
-            
-            # Save it (OpenCV expects BGR, so we flip the RGB channels)
             cv2.imwrite( 
                 os.path.join(sam_vis_folder, image_name.replace(".png", ".jpg")), 
-                final_vis[:, :, ::-1] 
+                (overlayed_img * 255).astype(np.uint8)[:, :, ::-1] 
             )
             
             t_save = time.time() - t_start_save
