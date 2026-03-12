@@ -191,7 +191,7 @@ def save_single_result(i, result, original_img, pad_info, original_path, bbox_fo
             bad_coords = bad_preds[:, :4].astype(int)
             bad_confs = bad_preds[:, 4]
 
-        # 4. DRAW GOOD BOXES (SOLID RED)
+        # 4. DRAW GOOD BOXES 
         if SHOW_GOOD_BOXES and good_count > 0:
             for j in range(good_count):
                 x1, y1, x2, y2 = good_coords[j]
@@ -209,7 +209,7 @@ def save_single_result(i, result, original_img, pad_info, original_path, bbox_fo
                     cv2.putText(annotated_img, conf_text, pos, font, font_scale, 
                                 (0, 0, 255), thickness=BOX_THICKNESS-1, lineType=cv2.LINE_AA)
         
-        # 5. DRAW BAD BOXES (SOLID BLUE - DIRECTLY ON IMAGE)
+        # 5. DRAW BAD BOXES 
         if SHOW_REJECTED_RED_BOXES and bad_count > 0:
             for j in range(bad_count):
                 x1, y1, x2, y2 = bad_coords[j]
@@ -241,8 +241,6 @@ def save_single_result(i, result, original_img, pad_info, original_path, bbox_fo
     Image.fromarray(annotated_img).save(out_path, quality=90)
     
     return good_count, bad_count
-
-
 
 
 
