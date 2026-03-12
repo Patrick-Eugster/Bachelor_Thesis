@@ -35,7 +35,7 @@ def print_final_configuration_report(total_seconds, sam_seconds, total_images, t
     print(f"{'Device:':<25} {DEVICE}")
     print(f"{'Confidence Threshold:':<25} {CONF_THRESHOLD_GOOD_BOX}")
     print(f"{'IoU Threshold:':<25} {IOU_THRESHOLD}")
-    print(f"{'Target Resize Size:':<25} {TARGET_IMAGE_SIZE}px")
+    print(f"{'YOLO Resize Size:':<25} {TARGET_IMAGE_SIZE}px")
     print("-" * 50)
     # 2. Batching Strategies
     print(f"{'BATCH_SIZE_YOLO:':<25} {BATCH_SIZE_YOLO}")

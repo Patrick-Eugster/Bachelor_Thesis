@@ -31,7 +31,7 @@ BATCH_SIZE_YOLO = 25 # protect GPU VRAM
 BATCH_SIZE_RAM_FILES_YOLO = 100 # Protects System RAM: How many images to load at once
 BATCH_SIZE_SAM_BOX = 1 # fix number of boxes to process at once (otherwise RAM/VRAM wont be enough)
 # weirdly size 1 was best or it barely made a difference in time for me?
-MAX_THREADS = 6
+MAX_THREADS = 10
 
 SHOW_LABELS = False 
 SHOW_GOOD_BOXES = True 
