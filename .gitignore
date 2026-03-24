@@ -64,6 +64,7 @@ Wheat3DGS-Yolo-SAM/**/*.cfg
 Wheat3DGS-Yolo-SAM/**/results*.csv
 !Wheat3DGS-Yolo-SAM/**/setup.cfg
 !Wheat3DGS-Yolo-SAM/**/cfg/yolov3*.cfg
+Wheat3DGS-Yolo-SAM/metrics/results
 
 # 2. YOLOv5 Folders & Large Datasets
 Wheat3DGS-Yolo-SAM/**/runs/*
@@ -163,7 +164,7 @@ ENV*/
 /site
 .mypy_cache/
 
-# --- IDE Specific (JetBrains, etc.) ---
+# --- IDE Specific ---
 .idea/*
 .idea/**/workspace.xml
 .idea/**/tasks.xml
@@ -172,4 +173,8 @@ ENV*/
 cmake-build-debug/
 cmake-build-release/
 out/
+
+CLAUDE.md
+phase1_packages.txt
+phase2_3_packages.txt
 

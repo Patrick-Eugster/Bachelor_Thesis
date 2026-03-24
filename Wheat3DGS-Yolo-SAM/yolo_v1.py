@@ -183,7 +183,16 @@ def run_yolo_phase(image_folders):
         
         # Get Images
         image_files = glob.glob(os.path.join(folder, '*.png')) + glob.glob(os.path.join(folder, '*.jpg'))
-        if LIMIT_IMAGES > 0: # Limit Images per plot if wanted
+        if ONLY_LABELED_IMAGES:
+            # only keep images that have a manual label for metrics testing and ignores LIMIT_IMAGES
+            label_dir = os.path.join(base_plot_path, 'manual_label')
+            # only take name from the text file
+            labeled_stems = {os.path.splitext(f)[0] for f in os.listdir(label_dir) if f.endswith('.txt')} if os.path.isdir(label_dir) else set()
+            if LIMIT_IMAGES > 0:
+                print(f"---ONLY_LABELED_IMAGES=True: ignoring LIMIT_IMAGES={LIMIT_IMAGES}")
+            image_files = [f for f in image_files if os.path.splitext(os.path.basename(f))[0] in labeled_stems]
+            print(f"---ONLY_LABELED_IMAGES: filtered to {len(image_files)} labeled images")
+        elif LIMIT_IMAGES > 0:
             image_files = image_files[:LIMIT_IMAGES]
 
         total_prep_time, total_gpu_time, total_disk_time = 0.0, 0.0, 0.0

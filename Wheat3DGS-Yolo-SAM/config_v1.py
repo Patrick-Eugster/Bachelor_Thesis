@@ -21,7 +21,7 @@ DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 CONF_THRESHOLD_GOOD_AND_BAD_BOX = 0.05 # So that we can even see which wheat heads didnt get chosen by a small margin
 CONF_THRESHOLD_GOOD_BOX = 0.25 # Minimum confidence to show a box, google colab had 0.05
 IOU_THRESHOLD = 0.45 # Maximum allowed overlap between boxes, default 0.45
-CLASSES_TO_DETECT = [0] # Only show class 0 (usually 'wheat')
+CLASSES_TO_DETECT = [0] # Only show class 0 (usually 'wheat'), technically here exists only wheat
 
 
 # Image Resizing Algorithm (Options: Image.LANCZOS, Image.BICUBIC, Image.BILINEAR, Image.NEAREST)
@@ -34,7 +34,7 @@ BATCH_SIZE_SAM_BOX = 1 # fix number of boxes to process at once (otherwise RAM/V
 MAX_THREADS = 10
 
 SHOW_LABELS = False 
-SHOW_GOOD_BOXES = True 
+SHOW_GOOD_BOXES = True # default, only this needed
 SHOW_REJECTED_RED_BOXES = False
 BOX_THICKNESS = 2
 LABEL_FONT_SCALE = 1
@@ -45,9 +45,10 @@ SHOW_TIME_YOLO = True
 SHOW_TIME_SAM = True   
 SHOW_TIME_TOTAL = True
 
-ONLY_YOLO = False      
-LIMIT_PLOTS = 1   # How many plots to process for YOLO and SAM (0 for all)      
-LIMIT_IMAGES = 0  # How many images per plot or YOLO and SAM (0 for all)
+ONLY_YOLO = True
+LIMIT_PLOTS = 1   # How many plots to process for YOLO and SAM (0 = all)
+LIMIT_IMAGES = 0  # How many images per plot for YOLO and SAM (0 = all)
+ONLY_LABELED_IMAGES = True  # For Metrics, only process images that have a manual label (ignores LIMIT_IMAGES)
 
 # --- DATASET TOGGLE ---
 USE_PHONE_DATA = False  
