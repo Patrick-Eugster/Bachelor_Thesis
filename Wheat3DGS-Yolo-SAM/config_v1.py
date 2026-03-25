@@ -45,10 +45,10 @@ SHOW_TIME_YOLO = True
 SHOW_TIME_SAM = True   
 SHOW_TIME_TOTAL = True
 
-ONLY_YOLO = True
+ONLY_YOLO = False
 LIMIT_PLOTS = 1   # How many plots to process for YOLO and SAM (0 = all)
 LIMIT_IMAGES = 0  # How many images per plot for YOLO and SAM (0 = all)
-ONLY_LABELED_IMAGES = True  # For Metrics, only process images that have a manual label (ignores LIMIT_IMAGES)
+ONLY_LABELED_IMAGES = False  # For Metrics, only process images that have a manual label (ignores LIMIT_IMAGES)
 
 # --- DATASET TOGGLE ---
 USE_PHONE_DATA = False  
