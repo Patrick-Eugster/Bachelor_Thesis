@@ -1,4 +1,6 @@
 """
+Before running, make sure that ONLY_LABELED_IMAGES = True was set to true!
+
 Run inside Wheat3DGS-Yolo-SAM/ directory with: python metrics/metrics_yolo_v1.py
     
 First it computes some metrics for each manual labeled image individually (except AP).
@@ -12,9 +14,10 @@ JSON saved to metrics/results/metrics_yolo_v1.json
 import os
 import sys
 import json
+import shutil
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 # Add parent directory so that config_v1 can be import
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -26,10 +29,13 @@ from config_v1 import DATA_DIR, CONF_THRESHOLD_GOOD_BOX, IOU_THRESHOLD
 # =====================================================================
 
 # IoU threshold for matching predicted to the GT boxes. This is SEPARATE from IOU_THRESHOLD in config_v1.py
-MATCHING_IOU_THRESHOLD = 0.5
+MATCHING_IOU_THRESHOLD = 0.35 # was 0.5 default
 
 # Where to save JSON results
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
+
+# Subfolder for match visualization images — cleared on every run
+VIZ_DIR = os.path.join(RESULTS_DIR, "match_viz")
 
 
 
@@ -248,12 +254,55 @@ def compute_fp_fn_heatmap(pred_boxes, gt_boxes, fp_idxs, fn_idxs, img_w, img_h):
     pass
 
 
+def save_match_visualization(image_path, pred_boxes, gt_boxes, tp_matches, fp_idxs, fn_idxs, out_path, iou_matrix):
+    """Draw matching results on the image and save it.
+    Blue = matched pred boxes (TP), Yellow-orange = unmatched pred boxes (FP), Red = unmatched GT boxes (FN).
+    Each box is labeled with its IoU value (TP: matched IoU, FP: best IoU it achieved, FN: best IoU any pred had).
+    """
+    img = Image.open(image_path).convert("RGB")
+    draw = ImageDraw.Draw(img)
+    line_width = 4
+    font_size = 28
+
+    # try to load a real TTF font for readable text; fall back to PIL default if not found
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+    except OSError:
+        font = ImageFont.load_default()
+
+    def draw_box_with_label(box, color, label):
+        """Draw a rectangle and a label above it with white text and colored stroke outline."""
+        x1, y1, x2, y2 = box
+        draw.rectangle([x1, y1, x2, y2], outline=color, width=line_width)
+        text_x, text_y = x1, max(0, y1 - font_size - 2)
+        # white text with colored stroke — same two-pass trick as yolo_v1.py
+        draw.text((text_x, text_y), label, fill=(255, 255, 255), font=font,
+                  stroke_width=2, stroke_fill=color)
+
+    # 1. blue: matched pred boxes (TP) — show matched IoU
+    for pred_idx, gt_idx, iou_val in tp_matches:
+        draw_box_with_label(pred_boxes[pred_idx], (30, 120, 255), f"TP {iou_val:.2f}")
+
+    # 2. yellow-orange: unmatched pred boxes (FP) — show best IoU it achieved against any GT
+    for pred_idx in fp_idxs:
+        best_iou = float(np.max(iou_matrix[pred_idx])) if iou_matrix.shape[1] > 0 else 0.0
+        draw_box_with_label(pred_boxes[pred_idx], (255, 160, 0), f"FP {best_iou:.2f}")
+
+    # 3. red: unmatched GT boxes (FN) — show best IoU any pred had against this GT
+    for gt_idx in fn_idxs:
+        best_iou = float(np.max(iou_matrix[:, gt_idx])) if iou_matrix.shape[0] > 0 else 0.0
+        draw_box_with_label(gt_boxes[gt_idx], (220, 30, 30), f"FN {best_iou:.2f}")
+
+    img.save(out_path, quality=92) # bit higher quality than 90
+    print(f"  Viz saved: {out_path}")
+
+
 
 # =====================================================================
 # Single-Image Eval
 # =====================================================================
 
-def evaluate_single_image(pred_pt_path, gt_label_path, image_path, iou_threshold):
+def evaluate_single_image(pred_pt_path, gt_label_path, image_path, iou_threshold, viz_out_path=None):
     """Run all metrics for one (predicted, GT) image pair and return dict if not empty (otherwise None)."""
     if not os.path.exists(pred_pt_path):
         print(f"[SKIP] No bbox file found: {pred_pt_path}")
@@ -273,6 +322,9 @@ def evaluate_single_image(pred_pt_path, gt_label_path, image_path, iou_threshold
 
     tp, fp, fn = len(tp_matches), len(fp_idxs), len(fn_idxs)
     precision, recall, f1 = compute_precision_recall_f1(tp, fp, fn)
+
+    if viz_out_path is not None:
+        save_match_visualization(image_path, pred_boxes, gt_boxes, tp_matches, fp_idxs, fn_idxs, viz_out_path, iou_mat)
 
     return {
         'pred_count': len(pred_boxes),
@@ -323,6 +375,11 @@ def evaluate_all_plots(data_dir=None, iou_threshold=None):
     print(f"{'='*58}\n")
 
 
+    # wipe and recreate the viz folder so it only contains images from this run
+    if os.path.exists(VIZ_DIR):
+        shutil.rmtree(VIZ_DIR)
+    os.makedirs(VIZ_DIR)
+
     labeled_plots = find_labeled_plots(data_dir)
     if not labeled_plots:
         print("No labeled plots found. Expected: data/<plot>/manual_label/<name>.txt")
@@ -338,8 +395,9 @@ def evaluate_all_plots(data_dir=None, iou_threshold=None):
 
         image_path = os.path.join(plot_dir, 'images', stem + '.png')
         pred_pt_path = os.path.join(plot_dir, 'bboxes', stem + '.pt')
+        viz_out_path = os.path.join(VIZ_DIR, f"{plot_name}_{stem}_matches.jpg")
 
-        result = evaluate_single_image(pred_pt_path, gt_label_path, image_path, iou_threshold)
+        result = evaluate_single_image(pred_pt_path, gt_label_path, image_path, iou_threshold, viz_out_path)
         if result is None:
             continue
 

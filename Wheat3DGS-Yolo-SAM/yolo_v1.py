@@ -192,6 +192,8 @@ def run_yolo_phase(image_folders):
                 print(f"---ONLY_LABELED_IMAGES=True: ignoring LIMIT_IMAGES={LIMIT_IMAGES}")
             image_files = [f for f in image_files if os.path.splitext(os.path.basename(f))[0] in labeled_stems]
             print(f"---ONLY_LABELED_IMAGES: filtered to {len(image_files)} labeled images")
+            for f in image_files:
+                print(f"---ONLY_LABELED_IMAGES: using image: {os.path.basename(f)}")
         elif LIMIT_IMAGES > 0:
             image_files = image_files[:LIMIT_IMAGES]
 

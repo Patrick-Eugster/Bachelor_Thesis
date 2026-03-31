@@ -88,7 +88,7 @@ class Camera(nn.Module):
         rect_world = {}
         rectangle = []
         for key, (x, y, z) in self.rect_camera.items():
-            corner_cam = torch.tensor([x, y, z, 1.0], dtype=torch.float32, device=self.data_device)
+            corner_cam = torch.tensor([x, y, z, 1.0], dtype=torch.float32, device="cuda") #was device=self.data_device before
             corner_world = view_to_world @ corner_cam
             # Normalize by w just in case (should be 1.0 if it's a proper rigid transform)
             corner_world = corner_world / corner_world[3]
