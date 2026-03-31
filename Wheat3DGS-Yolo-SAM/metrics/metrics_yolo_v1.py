@@ -17,6 +17,8 @@ import json
 import shutil
 import numpy as np
 import torch
+import matplotlib
+matplotlib.use('Agg')  # headless backend — prevents Qt/display warnings in WSL
 import matplotlib.pyplot as plt
 from PIL import Image, ImageDraw, ImageFont
 
@@ -40,6 +42,10 @@ VIZ_DIR = os.path.join(RESULTS_DIR, "match_viz")
 
 # Subfolder for TP IoU histograms — cleared on every run
 HIST_DIR = os.path.join(RESULTS_DIR, "TP_IoU_histograms")
+
+# Subfolders for FP and FN spatial heatmaps — cleared on every run
+HEATMAP_FP_DIR = os.path.join(RESULTS_DIR, "heatmaps_FP")
+HEATMAP_FN_DIR = os.path.join(RESULTS_DIR, "heatmaps_FN")
 
 
 
@@ -302,9 +308,115 @@ def compute_ap(pred_boxes, pred_confs, gt_boxes, iou_threshold):
     pass
 
 
-# TODO: spatial heatmap of FP/FN locations
-def compute_fp_fn_heatmap(pred_boxes, gt_boxes, fp_idxs, fn_idxs, img_w, img_h):
-    pass
+def _build_density_grid(boxes, img_w, img_h, grid_size):
+    """Count box centers into a grid and apply Gaussian blur."""
+    from scipy.ndimage import gaussian_filter
+    grid = np.zeros((grid_size, grid_size), dtype=np.float32)
+    for x1, y1, x2, y2 in boxes:
+        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+        col = int(cx / img_w * grid_size)
+        row = int(cy / img_h * grid_size)
+        grid[min(row, grid_size - 1), min(col, grid_size - 1)] += 1
+    return gaussian_filter(grid, sigma=1.5)
+
+
+def _save_single_heatmap(image_path, grid, img_w, img_h, cmap, label, title, out_path, vmax=None):
+    """Overlay one density grid on the original image and save.
+    vmax: shared scale across plots so colors are comparable — if None, uses this grid's own max.
+    """
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
+    import matplotlib.colors as mcolors
+
+    # YlOrRd: position 0.0=pale yellow, 0.15=saturated yellow, 0.4=orange, 0.7=red, 1.0=dark red
+    # start at 0.15 to get a punchy saturated yellow, not the washed-out pale one
+    cmap_trunc = mcolors.LinearSegmentedColormap.from_list(
+        'trunc', matplotlib.colormaps[cmap](np.linspace(0.15, 1.0, 256)))
+
+    scale_max = vmax if vmax is not None else (grid.max() or 1)
+
+    fig, ax = plt.subplots(figsize=(13, 8))
+    img = Image.open(image_path).convert("RGB")
+    ax.imshow(img)
+
+    # mask below 10% of the global max to cut Gaussian blur halo
+    threshold = scale_max * 0.1
+    masked = np.ma.masked_where(grid < threshold, grid)
+    ax.imshow(masked, cmap=cmap_trunc, alpha=0.80, extent=[0, img_w, img_h, 0],
+              vmin=0, vmax=scale_max, aspect='auto')
+
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size="3%", pad=0.1)
+    sm = plt.cm.ScalarMappable(cmap=cmap_trunc, norm=plt.Normalize(0, scale_max))
+    fig.colorbar(sm, cax=cax, label=label)
+
+    ax.set_title(title)
+    ax.axis('off')
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+    print(f"  Heatmap saved: {out_path}")
+
+
+def save_fp_fn_heatmap(image_path, fp_boxes, fn_boxes, img_w, img_h, out_path_fp, out_path_fn, grid_size=50):
+    """Save two separate heatmap images: one for FP and one for FN, each overlaid on the original.
+    Each image is normalized independently to its own max so its full color range is used.
+    """
+    fp_grid = _build_density_grid(fp_boxes, img_w, img_h, grid_size)
+    fn_grid = _build_density_grid(fn_boxes, img_w, img_h, grid_size)
+
+    _save_single_heatmap(image_path, fp_grid, img_w, img_h,
+                         cmap='YlOrRd',
+                         label=f'FP density ({len(fp_boxes)} total)',
+                         title=f'FP spatial heatmap — {len(fp_boxes)} false positives',
+                         out_path=out_path_fp, vmax=None)
+
+    _save_single_heatmap(image_path, fn_grid, img_w, img_h,
+                         cmap='YlOrRd',
+                         label=f'FN density ({len(fn_boxes)} total)',
+                         title=f'FN spatial heatmap — {len(fn_boxes)} false negatives',
+                         out_path=out_path_fn, vmax=None)
+
+
+def save_aggregated_heatmap(all_boxes_list, all_img_ws, all_img_hs, label, title, out_path, grid_size=50):
+    """Aggregate box centers from all plots into one normalized heatmap (no background image).
+    Positions are normalized to [0, 1] before binning so different image sizes are comparable.
+    """
+    from scipy.ndimage import gaussian_filter
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
+    import matplotlib.colors as mcolors
+
+    cmap_trunc = mcolors.LinearSegmentedColormap.from_list(
+        'trunc', matplotlib.colormaps['YlOrRd'](np.linspace(0.15, 1.0, 256)))
+
+    # build grid in normalized [0,1] space so all plots contribute equally regardless of resolution
+    grid = np.zeros((grid_size, grid_size), dtype=np.float32)
+    for boxes, img_w, img_h in zip(all_boxes_list, all_img_ws, all_img_hs):
+        for x1, y1, x2, y2 in boxes:
+            cx_norm = ((x1 + x2) / 2) / img_w
+            cy_norm = ((y1 + y2) / 2) / img_h
+            col = int(cx_norm * grid_size)
+            row = int(cy_norm * grid_size)
+            grid[min(row, grid_size - 1), min(col, grid_size - 1)] += 1
+
+    grid = gaussian_filter(grid, sigma=1.5)
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+    threshold = grid.max() * 0.1
+    masked = np.ma.masked_where(grid < threshold, grid)
+    im = ax.imshow(masked, cmap=cmap_trunc, origin='upper', vmin=0, aspect='auto',
+                   extent=[0, 1, 1, 0])
+
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size="3%", pad=0.1)
+    fig.colorbar(im, cax=cax, label=label)
+
+    ax.set_xlabel('x (normalized)')
+    ax.set_ylabel('y (normalized)')
+    ax.set_title(title)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+    print(f"  Aggregated heatmap saved: {out_path}")
 
 
 def save_match_visualization(image_path, pred_boxes, gt_boxes, tp_matches, fp_idxs, fn_idxs, out_path, iou_matrix):
@@ -393,6 +505,11 @@ def evaluate_single_image(pred_pt_path, gt_label_path, image_path, iou_threshold
         'fp_best_ious': [float(np.max(iou_mat[i])) if iou_mat.shape[1] > 0 else 0.0 for i in fp_idxs],
         # best IoU any pred had vs each FN GT box (all below threshold)
         'fn_best_ious': [float(np.max(iou_mat[:, j])) if iou_mat.shape[0] > 0 else 0.0 for j in fn_idxs],
+        # raw boxes for spatial heatmap
+        'fp_boxes': pred_boxes[fp_idxs].tolist() if len(fp_idxs) > 0 else [],
+        'fn_boxes': gt_boxes[fn_idxs].tolist() if len(fn_idxs) > 0 else [],
+        'img_w': img_w,
+        'img_h': img_h,
     }
 
 
@@ -434,7 +551,7 @@ def evaluate_all_plots(data_dir=None, iou_threshold=None):
 
 
     # wipe and recreate output folders so they only contain images from this run
-    for folder in [VIZ_DIR, HIST_DIR]:
+    for folder in [VIZ_DIR, HIST_DIR, HEATMAP_FP_DIR, HEATMAP_FN_DIR]:
         if os.path.exists(folder):
             shutil.rmtree(folder)
         os.makedirs(folder)
@@ -465,14 +582,45 @@ def evaluate_all_plots(data_dir=None, iou_threshold=None):
         per_plot_results.append(result)
         print_single_result(result, iou_threshold)
 
+        # store image path for heatmap rendering after global max is known
+        result['_image_path'] = image_path
+
         # per-image TP IoU histogram
         hist_path = os.path.join(HIST_DIR, f"{plot_name}_{stem}_iou_hist.png")
         save_iou_histogram(result['tp_ious'], f"TP IoU — {plot_name} / {stem}", hist_path, iou_threshold,
                            show_total=True, fp_best_ious=result['fp_best_ious'], fn_best_ious=result['fn_best_ious'])
+        print()
 
     if not per_plot_results:
         print("No results computed. Make sure YOLO has been run (bboxes/ folder must exist).")
         return
+
+    # per-image heatmaps (each normalized independently)
+    print("Saving heatmaps...")
+    for r in per_plot_results:
+        plot_name, stem = r['plot_name'], r['image_stem']
+        heatmap_fp_path = os.path.join(HEATMAP_FP_DIR, f"{plot_name}_{stem}_heatmap_FP.jpg")
+        heatmap_fn_path = os.path.join(HEATMAP_FN_DIR, f"{plot_name}_{stem}_heatmap_FN.jpg")
+        save_fp_fn_heatmap(r['_image_path'], r['fp_boxes'], r['fn_boxes'],
+                           r['img_w'], r['img_h'], heatmap_fp_path, heatmap_fn_path)
+
+    # aggregated heatmaps across all plots (normalized position, no background)
+    save_aggregated_heatmap(
+        [r['fp_boxes'] for r in per_plot_results],
+        [r['img_w'] for r in per_plot_results],
+        [r['img_h'] for r in per_plot_results],
+        label='FP density (all plots)',
+        title=f'FP aggregated heatmap — {sum(r["fp"] for r in per_plot_results)} total false positives',
+        out_path=os.path.join(HEATMAP_FP_DIR, 'aggregated_FP_heatmap.jpg'))
+
+    save_aggregated_heatmap(
+        [r['fn_boxes'] for r in per_plot_results],
+        [r['img_w'] for r in per_plot_results],
+        [r['img_h'] for r in per_plot_results],
+        label='FN density (all plots)',
+        title=f'FN aggregated heatmap — {sum(r["fn"] for r in per_plot_results)} total false negatives',
+        out_path=os.path.join(HEATMAP_FN_DIR, 'aggregated_FN_heatmap.jpg'))
+    print()
 
     print(f"\n{'='*58}")
     print(f"AGGREGATED RESULTS (mean ± std across {len(per_plot_results)} plot(s))")
