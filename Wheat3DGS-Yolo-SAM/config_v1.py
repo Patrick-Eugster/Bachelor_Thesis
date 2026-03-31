@@ -34,8 +34,8 @@ BATCH_SIZE_SAM_BOX = 1 # fix number of boxes to process at once (otherwise RAM/V
 MAX_THREADS = 10
 
 SHOW_LABELS = False 
-SHOW_GOOD_BOXES = True # default true (blue boxes)
 SHOW_REJECTED_RED_BOXES = False
+SHOW_GOOD_BOXES = True # default true (blue boxes)
 BOX_THICKNESS = 2
 LABEL_FONT_SCALE = 1
 

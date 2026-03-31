@@ -17,6 +17,7 @@ import json
 import shutil
 import numpy as np
 import torch
+import matplotlib.pyplot as plt
 from PIL import Image, ImageDraw, ImageFont
 
 # Add parent directory so that config_v1 can be import
@@ -36,6 +37,9 @@ RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results"
 
 # Subfolder for match visualization images — cleared on every run
 VIZ_DIR = os.path.join(RESULTS_DIR, "match_viz")
+
+# Subfolder for TP IoU histograms — cleared on every run
+HIST_DIR = os.path.join(RESULTS_DIR, "TP_IoU_histograms")
 
 
 
@@ -145,6 +149,55 @@ def save_results_json(per_plot_results, iou_threshold, conf_threshold):
     with open(out_path, 'w') as f:
         json.dump(output, f, indent=2)
     print(f"Results saved to: {out_path}\n")
+
+
+def save_iou_histogram(tp_ious, title, out_path, iou_threshold, show_total=False,
+                       fp_best_ious=None, fn_best_ious=None):
+    """Save a histogram of TP/FP/FN IoU values to a PNG file.
+    TP=blue, FP=orange, FN=red. Smaller groups are plotted on top so nothing is fully hidden.
+    """
+    fig, ax = plt.subplots(figsize=(10, 6))
+    hist_kwargs = dict(bins=20, range=(0.0, 1.0), edgecolor='white', alpha=0.75)
+
+    # collect all three groups with their display properties
+    groups = [
+        (tp_ious,                    'steelblue', f'TP ({len(tp_ious)})'),
+        (fp_best_ious or [],         '#FF9500',   f'FP ({len(fp_best_ious or [])})'),
+        (fn_best_ious or [],         '#DC1E1E',   f'FN ({len(fn_best_ious or [])})'),
+    ]
+
+    # plot largest group first so smaller ones appear on top and aren't hidden
+    for values, color, label in sorted(groups, key=lambda g: len(g[0]), reverse=True):
+        if values:
+            counts, _, patches = ax.hist(values, color=color, label=label, **hist_kwargs)
+            # write count above each bar
+            for count, patch in zip(counts, patches):
+                if count > 0:
+                    ax.text(patch.get_x() + patch.get_width() / 2, count + 0.1, str(int(count)),
+                            ha='center', va='bottom', fontsize=7)
+
+    # vertical line at the matching threshold
+    ax.axvline(iou_threshold, color='black', linestyle='--', linewidth=1.5, label=f'threshold {iou_threshold}')
+
+    # x-axis: tick every 0.05, label every 0.1
+    tick_positions = [round(v * 0.05, 2) for v in range(21)]
+    tick_labels = [f'{pos:.1f}' if v % 2 == 0 else '' for v, pos in enumerate(tick_positions)]
+    ax.set_xticks(tick_positions)
+    ax.set_xticklabels(tick_labels)
+
+    ax.set_xlabel('IoU')
+    ax.set_ylabel('Count')
+
+    # add total TP count to title for individual images
+    full_title = f"{title}  (TP: {len(tp_ious)})" if show_total else title
+    ax.set_title(full_title)
+
+    ax.set_xlim(0.0, 1.0)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+    print(f"  Histogram saved: {out_path}")
 
 
 
@@ -335,6 +388,11 @@ def evaluate_single_image(pred_pt_path, gt_label_path, image_path, iou_threshold
         'f1': f1,
         'iou_stats': compute_iou_stats(tp_matches),
         'size_ratio': compute_box_size_ratio(pred_boxes, gt_boxes, tp_matches),
+        'tp_ious': [iou for _, _, iou in tp_matches],  # raw values for histogram
+        # best IoU each FP pred achieved vs any GT (all below threshold)
+        'fp_best_ious': [float(np.max(iou_mat[i])) if iou_mat.shape[1] > 0 else 0.0 for i in fp_idxs],
+        # best IoU any pred had vs each FN GT box (all below threshold)
+        'fn_best_ious': [float(np.max(iou_mat[:, j])) if iou_mat.shape[0] > 0 else 0.0 for j in fn_idxs],
     }
 
 
@@ -375,10 +433,11 @@ def evaluate_all_plots(data_dir=None, iou_threshold=None):
     print(f"{'='*58}\n")
 
 
-    # wipe and recreate the viz folder so it only contains images from this run
-    if os.path.exists(VIZ_DIR):
-        shutil.rmtree(VIZ_DIR)
-    os.makedirs(VIZ_DIR)
+    # wipe and recreate output folders so they only contain images from this run
+    for folder in [VIZ_DIR, HIST_DIR]:
+        if os.path.exists(folder):
+            shutil.rmtree(folder)
+        os.makedirs(folder)
 
     labeled_plots = find_labeled_plots(data_dir)
     if not labeled_plots:
@@ -406,6 +465,11 @@ def evaluate_all_plots(data_dir=None, iou_threshold=None):
         per_plot_results.append(result)
         print_single_result(result, iou_threshold)
 
+        # per-image TP IoU histogram
+        hist_path = os.path.join(HIST_DIR, f"{plot_name}_{stem}_iou_hist.png")
+        save_iou_histogram(result['tp_ious'], f"TP IoU — {plot_name} / {stem}", hist_path, iou_threshold,
+                           show_total=True, fp_best_ious=result['fp_best_ious'], fn_best_ious=result['fn_best_ious'])
+
     if not per_plot_results:
         print("No results computed. Make sure YOLO has been run (bboxes/ folder must exist).")
         return
@@ -416,6 +480,15 @@ def evaluate_all_plots(data_dir=None, iou_threshold=None):
     print_aggregated_results(per_plot_results)
 
     save_results_json(per_plot_results, iou_threshold, CONF_THRESHOLD_GOOD_BOX)
+
+    # aggregated TP IoU histogram across all plots
+    all_tp_ious = [iou for r in per_plot_results for iou in r['tp_ious']]
+    all_fp_ious = [iou for r in per_plot_results for iou in r['fp_best_ious']]
+    all_fn_ious = [iou for r in per_plot_results for iou in r['fn_best_ious']]
+    save_iou_histogram(all_tp_ious, f"IoU distribution — all plots aggregated",
+                       os.path.join(HIST_DIR, "aggregated_iou_hist.png"), iou_threshold,
+                       fp_best_ious=all_fp_ious, fn_best_ious=all_fn_ious)
+
     return per_plot_results
 
 
