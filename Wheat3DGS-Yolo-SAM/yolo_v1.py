@@ -57,7 +57,7 @@ def resize_single_image(img_path, target_size):
 
 
 # Reverses the letterbox math, saves .pt, and saves the high-res JPG.
-def save_single_result(i, result, original_img, pad_info, original_path, bbox_folder, yolo_vis_folder):
+def save_single_result(i, result, original_img, pad_info, original_path, bbox_folder, bboxes_with_conf_folder, yolo_vis_folder):
     save_name = os.path.splitext(os.path.basename(original_path))[0]
     r, pad_left, pad_top = pad_info # Extract math from the resize step
     # 1. Move to NumPy to escape PyTorch overhead, so its way faster now
@@ -115,13 +115,21 @@ def save_single_result(i, result, original_img, pad_info, original_path, bbox_fo
                     pos = (x1, y1 + 25)
                     cv2.putText(annotated_img, conf_text, pos, font, font_scale, (255, 255, 255), thickness=BOX_THICKNESS + 1, lineType=cv2.LINE_AA)
                     cv2.putText(annotated_img, conf_text, pos, font, font_scale, (255, 30, 30), thickness=max(1, BOX_THICKNESS - 1), lineType=cv2.LINE_AA)
-    # 6. Save Tensors for SAM
+    # 6. Save Tensors for SAM (4 cols: x1,y1,x2,y2 — good boxes only)
     if len(good_boxes_for_sam) > 0:
         valid_tensor = torch.tensor(good_boxes_for_sam)
         torch.save(valid_tensor, os.path.join(bbox_folder, f"{save_name}.pt"))
     else:
         torch.save(torch.tensor([]), os.path.join(bbox_folder, f"{save_name}.pt"))
-    # 7. Save JPG   
+    # 6b. Save ALL preds with confidence (5 cols: x1,y1,x2,y2,conf) for AP evaluation — only in metrics mode
+    if bboxes_with_conf_folder is not None:
+        if len(preds) > 0:
+            torch.save(torch.tensor(preds[:, :5].copy(), dtype=torch.float32),
+                       os.path.join(bboxes_with_conf_folder, f"{save_name}.pt"))
+        else:
+            torch.save(torch.zeros((0, 5), dtype=torch.float32),
+                       os.path.join(bboxes_with_conf_folder, f"{save_name}.pt"))
+    # 7. Save JPG
     out_path = os.path.join(yolo_vis_folder, f"{save_name}.jpg")
     Image.fromarray(annotated_img).save(out_path, quality=90)
     
@@ -178,6 +186,12 @@ def run_yolo_phase(image_folders):
         base_plot_path = os.path.dirname(folder)
         yolo_vis_folder = os.path.join(base_plot_path, "yolo_vis")
         bbox_folder = os.path.join(base_plot_path, "bboxes")
+        # only create bboxes_with_conf when running in metrics mode — no point saving it for full runs
+        if ONLY_LABELED_IMAGES:
+            bboxes_with_conf_folder = os.path.join(base_plot_path, "bboxes_with_conf")
+            reset_folder(bboxes_with_conf_folder)
+        else:
+            bboxes_with_conf_folder = None
         reset_folder(yolo_vis_folder)
         reset_folder(bbox_folder)
         
@@ -236,7 +250,7 @@ def run_yolo_phase(image_folders):
                 # Use all MAX_THREADS CPU cores to scale back and save images at once
                 # Capture the returned (good_count, bad_count) tuples in a list
                 box_counts = list(executor.map(lambda i: save_single_result(
-                    i, det_list[i], original_images[i], pad_infos[i], chunk_files[i], bbox_folder, yolo_vis_folder
+                    i, det_list[i], original_images[i], pad_infos[i], chunk_files[i], bbox_folder, bboxes_with_conf_folder, yolo_vis_folder
                 ), range(len(det_list))))
                 
             disk_time = time.time() - start_disk

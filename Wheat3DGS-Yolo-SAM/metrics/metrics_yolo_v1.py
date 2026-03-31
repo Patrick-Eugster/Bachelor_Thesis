@@ -1,5 +1,6 @@
 """
-Before running, make sure that ONLY_LABELED_IMAGES = True was set to true!
+Before running, make sure that ONLY_LABELED_IMAGES = True was set to true! 
+AND CONF_THRESHOLD_GOOD_AND_BAD_BOX = 0.01
 
 Run inside Wheat3DGS-Yolo-SAM/ directory with: python metrics/metrics_yolo_v1.py
     
@@ -24,7 +25,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 # Add parent directory so that config_v1 can be import
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config_v1 import DATA_DIR, CONF_THRESHOLD_GOOD_BOX, IOU_THRESHOLD
+from config_v1 import DATA_DIR, CONF_THRESHOLD_GOOD_BOX, CONF_THRESHOLD_GOOD_AND_BAD_BOX, IOU_THRESHOLD
 
 
 # =====================================================================
@@ -46,6 +47,9 @@ HIST_DIR = os.path.join(RESULTS_DIR, "TP_IoU_histograms")
 # Subfolders for FP and FN spatial heatmaps — cleared on every run
 HEATMAP_FP_DIR = os.path.join(RESULTS_DIR, "heatmaps_FP")
 HEATMAP_FN_DIR = os.path.join(RESULTS_DIR, "heatmaps_FN")
+
+# Subfolder for PR curves — cleared on every run
+PR_CURVE_DIR = os.path.join(RESULTS_DIR, "pr_curves")
 
 
 
@@ -77,6 +81,18 @@ def load_pred_boxes(bbox_path):
     if tensor.numel() == 0:
         return np.zeros((0, 4), dtype=np.float32)
     return tensor[:, :4].numpy().astype(np.float32)
+
+
+def load_pred_boxes_with_conf(bboxes_with_conf_path):
+    """Load 5-col [x1,y1,x2,y2,conf] tensor saved by yolo_v1.py for AP evaluation.
+    Returns None if the file doesn't exist (re-run YOLO to generate it).
+    """
+    if not os.path.exists(bboxes_with_conf_path):
+        return None
+    tensor = torch.load(bboxes_with_conf_path, weights_only=True)
+    if tensor.numel() == 0:
+        return np.zeros((0, 5), dtype=np.float32)
+    return tensor.numpy().astype(np.float32)
 
 
 
@@ -125,7 +141,7 @@ def print_aggregated_results(per_plot_results):
 
 
 # Saving (JSON) Hepler Functions
-def save_results_json(per_plot_results, iou_threshold, conf_threshold):
+def save_results_json(per_plot_results, iou_threshold, conf_threshold, ap=None):
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
     aggregated = {}
@@ -141,11 +157,15 @@ def save_results_json(per_plot_results, iou_threshold, conf_threshold):
     if ratio_means:
         aggregated['size_ratio_mean'] = {'mean': float(np.mean(ratio_means)), 'std': float(np.std(ratio_means))}
 
+    if ap is not None:
+        aggregated['ap'] = float(ap)
+
     output = {
         'config': {
-            'matching_iou_threshold': iou_threshold,
-            'conf_threshold':         conf_threshold,
-            'yolo_nms_iou_threshold': IOU_THRESHOLD,
+            'matching_iou_threshold':       iou_threshold,
+            'conf_threshold_good_box':      conf_threshold,
+            'conf_threshold_nms_floor':     CONF_THRESHOLD_GOOD_AND_BAD_BOX,
+            'yolo_nms_iou_threshold':       IOU_THRESHOLD,
         },
         'per_plot':   per_plot_results,
         'aggregated': aggregated,
@@ -301,11 +321,78 @@ def compute_box_size_ratio(pred_boxes, gt_boxes, tp_matches):
     return compute_stats(ratios)
 
 
-# TODO: Compute AP (Average Precision) by sweeping confidence threshold.
-# Requires per-box confidence scores saved to a separate bboxes_eval/*.pt file
-# (5 columns: x1, y1, x2, y2, conf). Currently yolo_v1.py only saves 4 columns.
-def compute_ap(pred_boxes, pred_confs, gt_boxes, iou_threshold):
-    pass
+def compute_ap(all_pred_entries, all_gt_boxes_list, iou_threshold):
+    """Compute AP by globally pooling all predictions across all images, sorted by confidence.
+    all_pred_entries: list of (conf, x1, y1, x2, y2, img_idx)
+    all_gt_boxes_list: list of np.ndarray [N_gt, 4] for each image (same order as img_idx)
+    Returns: ap (float), precisions list, recalls list (sorted by confidence desc)
+    """
+    n_gt_total = sum(len(gt) for gt in all_gt_boxes_list)
+    if n_gt_total == 0 or len(all_pred_entries) == 0:
+        return 0.0, [], []
+
+    # sort all predictions globally by confidence descending
+    sorted_preds = sorted(all_pred_entries, key=lambda x: -x[0])
+
+    # track which GT boxes have been matched per image
+    matched_gt = [set() for _ in all_gt_boxes_list]
+    tp_list, fp_list = [], []
+
+    for conf, x1, y1, x2, y2, img_idx in sorted_preds:
+        gt_boxes = all_gt_boxes_list[img_idx]
+        if len(gt_boxes) == 0:
+            tp_list.append(0)
+            fp_list.append(1)
+            continue
+
+        pred_box = np.array([[x1, y1, x2, y2]], dtype=np.float32)
+        iou_row = compute_iou_matrix(pred_box, gt_boxes)[0]  # shape (N_gt,)
+
+        # find best unmatched GT box
+        best_gt_idx, best_iou = -1, -1.0
+        for gt_idx in range(len(gt_boxes)):
+            if gt_idx not in matched_gt[img_idx] and iou_row[gt_idx] > best_iou:
+                best_iou = iou_row[gt_idx]
+                best_gt_idx = gt_idx
+
+        if best_gt_idx >= 0 and best_iou >= iou_threshold:
+            tp_list.append(1)
+            fp_list.append(0)
+            matched_gt[img_idx].add(best_gt_idx)
+        else:
+            tp_list.append(0)
+            fp_list.append(1)
+
+    tp_cum = np.cumsum(tp_list)
+    fp_cum = np.cumsum(fp_list)
+    recalls    = tp_cum / n_gt_total
+    precisions = tp_cum / (tp_cum + fp_cum)
+
+    # COCO-style 101-point interpolated AP
+    ap = 0.0
+    for r_thr in np.linspace(0, 1, 101):
+        prec_at_r = precisions[recalls >= r_thr]
+        ap += float(np.max(prec_at_r)) if len(prec_at_r) > 0 else 0.0
+    ap /= 101
+
+    return float(ap), precisions.tolist(), recalls.tolist()
+
+
+def save_pr_curve(precisions, recalls, ap, iou_threshold, title, out_path):
+    """Save a Precision-Recall curve image."""
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.plot(recalls, precisions, color='steelblue', linewidth=2)
+    ax.fill_between(recalls, precisions, alpha=0.15, color='steelblue')
+    ax.set_xlabel('Recall')
+    ax.set_ylabel('Precision')
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, 1.05)
+    ax.set_title(f"{title}\nAP@IoU{iou_threshold:.2f} = {ap:.4f}")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+    print(f"  PR curve saved: {out_path}")
 
 
 def _build_density_grid(boxes, img_w, img_h, grid_size):
@@ -544,14 +631,15 @@ def evaluate_all_plots(data_dir=None, iou_threshold=None):
     print(f" YOLO EVALUATION vs MANUAL LABELS")
     print(f"{'='*58}")
     print(f" Data dir:              {data_dir}")
-    print(f" Conf threshold:        {CONF_THRESHOLD_GOOD_BOX}  (CONF_THRESHOLD_GOOD_BOX from config_v1.py)")
+    print(f" Conf threshold (good): {CONF_THRESHOLD_GOOD_BOX}  (CONF_THRESHOLD_GOOD_BOX — used for precision/recall/F1)")
+    print(f" Conf threshold (NMS floor): {CONF_THRESHOLD_GOOD_AND_BAD_BOX}  (CONF_THRESHOLD_GOOD_AND_BAD_BOX — floor for AP curve)")
     print(f" Matching IoU thr:      {iou_threshold}  (MATCHING_IOU_THRESHOLD)")
     print(f" YOLO NMS IoU thr:      {IOU_THRESHOLD}  (IOU_THRESHOLD — used during YOLO inference, not here)")
     print(f"{'='*58}\n")
 
 
     # wipe and recreate output folders so they only contain images from this run
-    for folder in [VIZ_DIR, HIST_DIR, HEATMAP_FP_DIR, HEATMAP_FN_DIR]:
+    for folder in [VIZ_DIR, HIST_DIR, HEATMAP_FP_DIR, HEATMAP_FN_DIR, PR_CURVE_DIR]:
         if os.path.exists(folder):
             shutil.rmtree(folder)
         os.makedirs(folder)
@@ -564,6 +652,10 @@ def evaluate_all_plots(data_dir=None, iou_threshold=None):
     print(f"Found {len(labeled_plots)} labeled image(s).\n")
 
     per_plot_results = []
+    # for AP: collect all pred entries globally and GT boxes per image
+    all_pred_entries = []   # list of (conf, x1, y1, x2, y2, img_idx)
+    all_gt_boxes_for_ap = []  # np.ndarray per image, same order as img_idx
+    ap_data_available = True
 
     for plot_dir, gt_label_path, stem in labeled_plots:
         plot_name = os.path.basename(plot_dir)
@@ -579,6 +671,7 @@ def evaluate_all_plots(data_dir=None, iou_threshold=None):
 
         result['plot_name'] = plot_name
         result['image_stem'] = stem
+        result['_plot_dir'] = plot_dir   # needed for AP data collection
         per_plot_results.append(result)
         print_single_result(result, iou_threshold)
 
@@ -627,8 +720,6 @@ def evaluate_all_plots(data_dir=None, iou_threshold=None):
     print(f"{'='*58}")
     print_aggregated_results(per_plot_results)
 
-    save_results_json(per_plot_results, iou_threshold, CONF_THRESHOLD_GOOD_BOX)
-
     # aggregated TP IoU histogram across all plots
     all_tp_ious = [iou for r in per_plot_results for iou in r['tp_ious']]
     all_fp_ious = [iou for r in per_plot_results for iou in r['fp_best_ious']]
@@ -636,6 +727,39 @@ def evaluate_all_plots(data_dir=None, iou_threshold=None):
     save_iou_histogram(all_tp_ious, f"IoU distribution — all plots aggregated",
                        os.path.join(HIST_DIR, "aggregated_iou_hist.png"), iou_threshold,
                        fp_best_ious=all_fp_ious, fn_best_ious=all_fn_ious)
+
+    # AP computation — requires bboxes_with_conf/ folder from yolo_v1.py
+    print(f"\n{'='*58}")
+    print(f"AVERAGE PRECISION (AP)")
+    print(f"{'='*58}")
+    for idx, r in enumerate(per_plot_results):
+        bboxes_with_conf_path = os.path.join(r['_plot_dir'], 'bboxes_with_conf', r['image_stem'] + '.pt')
+        with_conf = load_pred_boxes_with_conf(bboxes_with_conf_path)
+        if with_conf is None:
+            ap_data_available = False
+            print(f"[AP] bboxes_with_conf not found for {r['plot_name']}/{r['image_stem']}")
+            print(f"     → Re-run YOLO (main_v1.py) to generate bboxes_with_conf/ folder.")
+            break
+        for row in with_conf:
+            x1, y1, x2, y2, conf = row
+            all_pred_entries.append((float(conf), float(x1), float(y1), float(x2), float(y2), idx))
+        # reload GT boxes (small overhead — needed here separately from evaluate_single_image)
+        all_gt_boxes_for_ap.append(load_gt_boxes(
+            os.path.join(r['_plot_dir'], 'manual_label', r['image_stem'] + '.txt'),
+            r['img_w'], r['img_h']))
+
+    ap = None
+    if ap_data_available and len(all_gt_boxes_for_ap) > 0:
+        ap, precisions, recalls = compute_ap(all_pred_entries, all_gt_boxes_for_ap, iou_threshold)
+        print(f"  AP@IoU{iou_threshold:.2f} = {ap:.4f}  "
+              f"(NMS floor: {CONF_THRESHOLD_GOOD_AND_BAD_BOX}, {len(all_pred_entries)} total preds, "
+              f"{sum(len(g) for g in all_gt_boxes_for_ap)} GT boxes)")
+        pr_out = os.path.join(PR_CURVE_DIR, 'pr_curve_aggregated.png')
+        save_pr_curve(precisions, recalls, ap, iou_threshold,
+                      f'PR Curve — all plots aggregated ({len(per_plot_results)} image(s))', pr_out)
+    print()
+
+    save_results_json(per_plot_results, iou_threshold, CONF_THRESHOLD_GOOD_BOX, ap=ap)
 
     return per_plot_results
 

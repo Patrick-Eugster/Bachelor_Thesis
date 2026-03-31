@@ -18,7 +18,7 @@ SAM_CHECKPOINT = os.path.join(WEIGHTS_DIR, "sam_vit_h_4b8939.pth")
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # --- SETTINGS / CONSTANTS ---
-CONF_THRESHOLD_GOOD_AND_BAD_BOX = 0.05 # So that we can even see which wheat heads didnt get chosen by a small margin
+CONF_THRESHOLD_GOOD_AND_BAD_BOX = 0.01 # Low floor for NMS — keep as many detections as possible for the AP curve
 CONF_THRESHOLD_GOOD_BOX = 0.35 # Minimum confidence to show a box, google colab had 0.05
 IOU_THRESHOLD = 0.45 # Maximum allowed overlap between boxes, default 0.45
 CLASSES_TO_DETECT = [0] # Only show class 0 (usually 'wheat'), technically here exists only wheat
@@ -33,8 +33,8 @@ BATCH_SIZE_SAM_BOX = 1 # fix number of boxes to process at once (otherwise RAM/V
 # weirdly size 1 was best or it barely made a difference in time for me?
 MAX_THREADS = 10
 
-SHOW_LABELS = False 
-SHOW_REJECTED_RED_BOXES = False
+SHOW_LABELS = True 
+SHOW_REJECTED_RED_BOXES = True
 SHOW_GOOD_BOXES = True # default true (blue boxes)
 BOX_THICKNESS = 2
 LABEL_FONT_SCALE = 1
