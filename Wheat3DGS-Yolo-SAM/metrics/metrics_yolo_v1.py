@@ -375,20 +375,95 @@ def compute_ap(all_pred_entries, all_gt_boxes_list, iou_threshold):
         ap += float(np.max(prec_at_r)) if len(prec_at_r) > 0 else 0.0
     ap /= 101
 
-    return float(ap), precisions.tolist(), recalls.tolist()
+    # confidence for each point on the curve (sorted descending, one per pred)
+    sorted_confs = [float(e[0]) for e in sorted_preds]
+
+    return float(ap), precisions.tolist(), recalls.tolist(), sorted_confs
 
 
-def save_pr_curve(precisions, recalls, ap, iou_threshold, title, out_path):
-    """Save a Precision-Recall curve image."""
-    fig, ax = plt.subplots(figsize=(8, 6))
+def save_pr_curve(precisions, recalls, confs, ap, iou_threshold, title, out_path,
+                  total_preds=None, tp=None, fp=None, fn=None, mark_every=50):
+    """Save a Precision-Recall curve image.
+    mark_every: label every k-th prediction point on the curve with its confidence value.
+    total_preds/tp/fp/fn: counts at the fixed CONF_THRESHOLD_GOOD_BOX for the stats box.
+    """
+    fig, ax = plt.subplots(figsize=(10, 7))
+    ax_top = None
     ax.plot(recalls, precisions, color='steelblue', linewidth=2)
     ax.fill_between(recalls, precisions, alpha=0.15, color='steelblue')
+
+    # major ticks every 0.1 with label, minor ticks every 0.01 without label
+    major_ticks = np.linspace(0.0, 1.0, 11)
+    minor_ticks = np.linspace(0.0, 1.0, 101)
+    ax.set_xticks(major_ticks)
+    ax.set_xticklabels([f'{v:.1f}' for v in major_ticks])
+    ax.set_xticks(minor_ticks, minor=True)
+    ax.set_yticks(major_ticks)
+    ax.set_yticklabels([f'{v:.1f}' for v in major_ticks])
+    ax.set_yticks(minor_ticks, minor=True)
+    ax.grid(True, which='major', alpha=0.4)
+    ax.grid(True, which='minor', alpha=0.2)
+
+    recalls_arr    = np.array(recalls)
+    precisions_arr = np.array(precisions)
+
+    # mark the exact max recall the curve reaches
+    if recalls:
+        max_recall = max(recalls)
+        ax.axvline(max_recall, color='tomato', linestyle='--', linewidth=1.2)
+        ax.text(max_recall + 0.005, 0.02, f'max recall\n{max_recall:.4f}',
+                color='tomato', fontsize=8, va='bottom')
+
+    # min precision horizontal line
+    if len(precisions_arr) > 0:
+        min_prec = float(precisions_arr.min())
+        ax.axhline(min_prec, color='darkorange', linestyle=':', linewidth=1.2)
+        ax.text(0.005, min_prec + 0.005, f'min prec {min_prec:.4f}',
+                color='darkorange', fontsize=8, va='bottom')
+
+    # vertical lines every 0.05 recall, precision values shown on a top x-axis
+    r_marks = np.arange(0.05, 1.0, 0.05)
+    prec_at_marks = []
+    for r_mark in r_marks:
+        idx = int(np.argmin(np.abs(recalls_arr - r_mark)))
+        prec_at_marks.append(float(precisions_arr[idx]))
+        ax.axvline(r_mark, color='gray', linestyle=':', linewidth=0.7, alpha=0.5)
+
+    # top x-axis: same range, ticks at r_marks, labeled with precision values
+    ax_top = ax.twiny()
+    ax_top.set_xlim(ax.get_xlim())
+    ax_top.set_xticks(r_marks)
+    ax_top.set_xticklabels([f'{p:.2f}' for p in prec_at_marks], fontsize=6.5, rotation=45, ha='left')
+    ax_top.set_xlabel('Precision at recall', fontsize=8)
+
+    # mark every k-th prediction on the curve with its confidence value
+    if confs and mark_every > 0:
+        indices = list(range(mark_every - 1, len(recalls), mark_every))
+        for i in indices:
+            ax.plot(recalls[i], precisions[i], 'o', color='steelblue', markersize=4)
+            ax.annotate(f'{confs[i]:.2f}', xy=(recalls[i], precisions[i]),
+                        xytext=(4, 4), textcoords='offset points',
+                        fontsize=7, color='#333333')
+
+    # stats box: total preds + TP/FP/FN at the fixed good-box threshold
+    if total_preds is not None:
+        stats_lines = [
+            f'Total preds (all conf): {total_preds}',
+            f'at CONF_THRESHOLD_GOOD_BOX:',
+            f'  TP: {tp}   FP: {fp}   (TP+FP = {tp+fp} preds)',
+            f'  FN: {fn}   (missed GT boxes, not preds)',
+        ]
+        ax.text(0.01, 0.01, '\n'.join(stats_lines), transform=ax.transAxes,
+                fontsize=8, verticalalignment='bottom',
+                bbox=dict(boxstyle='round,pad=0.4', facecolor='white', alpha=0.8, edgecolor='#cccccc'))
+
     ax.set_xlabel('Recall')
     ax.set_ylabel('Precision')
     ax.set_xlim(0.0, 1.0)
     ax.set_ylim(0.0, 1.05)
+    if ax_top is not None:
+        ax_top.set_xlim(0.0, 1.0)  # must match after ax xlim is fixed
     ax.set_title(f"{title}\nAP@IoU{iou_threshold:.2f} = {ap:.4f}")
-    ax.grid(True, alpha=0.3)
     fig.tight_layout()
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
@@ -750,13 +825,17 @@ def evaluate_all_plots(data_dir=None, iou_threshold=None):
 
     ap = None
     if ap_data_available and len(all_gt_boxes_for_ap) > 0:
-        ap, precisions, recalls = compute_ap(all_pred_entries, all_gt_boxes_for_ap, iou_threshold)
+        ap, precisions, recalls, confs = compute_ap(all_pred_entries, all_gt_boxes_for_ap, iou_threshold)
+        total_tp = sum(r['tp'] for r in per_plot_results)
+        total_fp = sum(r['fp'] for r in per_plot_results)
+        total_fn = sum(r['fn'] for r in per_plot_results)
         print(f"  AP@IoU{iou_threshold:.2f} = {ap:.4f}  "
               f"(NMS floor: {CONF_THRESHOLD_GOOD_AND_BAD_BOX}, {len(all_pred_entries)} total preds, "
               f"{sum(len(g) for g in all_gt_boxes_for_ap)} GT boxes)")
         pr_out = os.path.join(PR_CURVE_DIR, 'pr_curve_aggregated.png')
-        save_pr_curve(precisions, recalls, ap, iou_threshold,
-                      f'PR Curve — all plots aggregated ({len(per_plot_results)} image(s))', pr_out)
+        save_pr_curve(precisions, recalls, confs, ap, iou_threshold,
+                      f'PR Curve — all plots aggregated ({len(per_plot_results)} image(s))', pr_out,
+                      total_preds=len(all_pred_entries), tp=total_tp, fp=total_fp, fn=total_fn)
     print()
 
     save_results_json(per_plot_results, iou_threshold, CONF_THRESHOLD_GOOD_BOX, ap=ap)
