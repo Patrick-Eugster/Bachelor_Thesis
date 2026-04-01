@@ -1,14 +1,43 @@
 """
-Before running, make sure that ONLY_LABELED_IMAGES = True was set to true! 
-AND CONF_THRESHOLD_GOOD_AND_BAD_BOX = 0.01
+Before running, make sure that:
+  - ONLY_LABELED_IMAGES = True  in config_v1.py
+  - CONF_THRESHOLD_GOOD_AND_BAD_BOX = 0.01  in config_v1.py
 
 Run inside Wheat3DGS-Yolo-SAM/ directory with: python metrics/metrics_yolo_v1.py
-    
-First it computes some metrics for each manual labeled image individually (except AP).
 
-Then two aggregating approaches, one with mean + std and the other one for AP should be pooled.
+Per-image metrics are computed first (except AP which is pooled globally).
+Aggregated mean ± std is printed at the end. JSON saved to metrics/results/metrics_yolo_v1.json
 
-JSON saved to metrics/results/metrics_yolo_v1.json
+------------------------------------------------------------------------
+TABLE OF CONTENTS  (in file order)
+------------------------------------------------------------------------
+  CONFIG ..................... output dirs, MATCHING_IOU_THRESHOLD
+  FILE LOADING ............... load_gt_boxes, load_pred_boxes, load_pred_boxes_with_conf
+  PRINT & JSON OUTPUT ........ print_single_result, print_aggregated_results, save_results_json
+
+  [Part 1] GT MATCHING + PRECISION / RECALL / F1
+           → compute_iou_matrix, match_boxes, compute_precision_recall_f1,
+             compute_stats, compute_iou_stats
+
+  [Part 2] MATCH VISUALIZATION      save_match_visualization
+           → colored boxes image: blue=TP, orange=FP, red=FN
+
+  [Part 3] TP IoU HISTOGRAMS        save_iou_histogram
+           → histogram of TP/FP/FN IoU distributions
+
+  [Part 4] BOX SIZE RATIO           compute_box_size_ratio
+           → pred area / GT area for each TP match
+
+  [Part 5] FP/FN SPATIAL HEATMAPS   _build_density_grid, _save_single_heatmap,
+                                     save_fp_fn_heatmap, save_aggregated_heatmap
+           → where in the image FP and FN errors cluster
+
+  [Part 6] AP & PR CURVE            compute_ap, save_pr_curve
+           → precision-recall curve + average precision (COCO 101-point)
+
+  SINGLE-IMAGE EVAL .......... evaluate_single_image  (runs parts 1-4 for one image)
+  AGGREGATED EVAL ............ evaluate_all_plots      (entry point, runs parts 5-6 too)
+------------------------------------------------------------------------
 """
 
 
@@ -29,7 +58,7 @@ from config_v1 import DATA_DIR, CONF_THRESHOLD_GOOD_BOX, CONF_THRESHOLD_GOOD_AND
 
 
 # =====================================================================
-# Metrics Config
+# Config
 # =====================================================================
 
 # IoU threshold for matching predicted to the GT boxes. This is SEPARATE from IOU_THRESHOLD in config_v1.py
@@ -54,10 +83,9 @@ PR_CURVE_DIR = os.path.join(RESULTS_DIR, "pr_curves")
 
 
 # =====================================================================
-# Helper Functions
+# File Loading
 # =====================================================================
 
-# Loading Helper Functions
 def load_gt_boxes(label_path, img_w, img_h):
     """Load GT boxes from manual label txt file, then convert to absolute pixel positions."""
     boxes = []
@@ -96,7 +124,10 @@ def load_pred_boxes_with_conf(bboxes_with_conf_path):
 
 
 
-# Printing Helper Functions
+# =====================================================================
+# Print & JSON Output
+# =====================================================================
+
 def print_single_result(result, iou_threshold):
     diff = result['pred_count'] - result['gt_count']
     print(f"  GT count:        {result['gt_count']}")
@@ -138,9 +169,6 @@ def print_aggregated_results(per_plot_results):
     print()
 
 
-
-
-# Saving (JSON) Hepler Functions
 def save_results_json(per_plot_results, iou_threshold, conf_threshold, ap=None):
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
@@ -176,6 +204,143 @@ def save_results_json(per_plot_results, iou_threshold, conf_threshold, ap=None):
         json.dump(output, f, indent=2)
     print(f"Results saved to: {out_path}\n")
 
+
+
+
+# =====================================================================
+# [Part 1] GT Matching + Precision / Recall / F1
+# =====================================================================
+
+def compute_iou_matrix(pred_boxes, gt_boxes):
+    """Vectorized pairwise IoU between all predicted and GT boxes and returns as np.ndarray shape (N_pred, N_gt)."""
+    if len(pred_boxes) == 0 or len(gt_boxes) == 0:
+        return np.zeros((len(pred_boxes), len(gt_boxes)), dtype=np.float32)
+
+    p = pred_boxes[:, np.newaxis, :]  # (N, 1, 4)
+    g = gt_boxes[np.newaxis, :, :]    # (1, M, 4)
+
+    inter_x1 = np.maximum(p[:, :, 0], g[:, :, 0])
+    inter_y1 = np.maximum(p[:, :, 1], g[:, :, 1])
+    inter_x2 = np.minimum(p[:, :, 2], g[:, :, 2])
+    inter_y2 = np.minimum(p[:, :, 3], g[:, :, 3])
+    inter_area = np.maximum(0, inter_x2 - inter_x1) * np.maximum(0, inter_y2 - inter_y1)
+
+    pred_area = (pred_boxes[:, 2] - pred_boxes[:, 0]) * (pred_boxes[:, 3] - pred_boxes[:, 1])
+    gt_area   = (gt_boxes[:, 2]  - gt_boxes[:, 0])  * (gt_boxes[:, 3]  - gt_boxes[:, 1])
+    union_area = pred_area[:, np.newaxis] + gt_area[np.newaxis, :] - inter_area
+
+    return np.where(union_area > 0, inter_area / union_area, 0.0).astype(np.float32)
+
+
+def match_boxes(iou_matrix, iou_threshold):
+    """ Greedy matching: for each predicted box match it  with the best unmatched GT box with IoU >= iou_threshold,
+    while each GT box matched max once. Then returns:
+    tp_matches: list of (pred_idx, gt_idx, iou_value)
+    fp_idxs: pred indices with no GT match (False Positives)
+    fn_idxs: GT indices never matched (False Negatives)"""
+    n_pred, n_gt = iou_matrix.shape
+    if n_pred == 0:
+        return [], [], list(range(n_gt))
+    if n_gt == 0:
+        return [], list(range(n_pred)), []
+
+    matched_gt = set()
+    tp_matches, fp_idxs = [], []
+
+    for pred_idx in range(n_pred):
+        row = iou_matrix[pred_idx].copy()
+        if matched_gt:
+            row[list(matched_gt)] = -1  # exclude already matched GTs
+        best_gt_idx = int(np.argmax(row))
+        if row[best_gt_idx] >= iou_threshold:
+            tp_matches.append((pred_idx, best_gt_idx, float(row[best_gt_idx])))
+            matched_gt.add(best_gt_idx)
+        else:
+            fp_idxs.append(pred_idx)
+
+    fn_idxs = [i for i in range(n_gt) if i not in matched_gt]
+    return tp_matches, fp_idxs, fn_idxs
+
+
+def compute_precision_recall_f1(tp, fp, fn):
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+    return precision, recall, f1
+
+
+def compute_stats(values):
+    """If not empty, then compute descriptive stats and return dict (floats)"""
+    if not values:
+        return None
+    arr = np.array(values, dtype=np.float32)
+    return {
+        'mean': float(np.mean(arr)),
+        'median': float(np.median(arr)),
+        'std': float(np.std(arr)),
+        'min': float(np.min(arr)),
+        'max': float(np.max(arr)),
+    }
+
+
+def compute_iou_stats(tp_matches):
+    """IoU values of all TP matches."""
+    return compute_stats([iou for _, _, iou in tp_matches])
+
+
+
+# =====================================================================
+# [Part 2] Match Visualization
+# =====================================================================
+
+def save_match_visualization(image_path, pred_boxes, gt_boxes, tp_matches, fp_idxs, fn_idxs, out_path, iou_matrix):
+    """Draw matching results on the image and save it.
+    Blue = matched pred boxes (TP), Yellow-orange = unmatched pred boxes (FP), Red = unmatched GT boxes (FN).
+    Each box is labeled with its IoU value (TP: matched IoU, FP: best IoU it achieved, FN: best IoU any pred had).
+    """
+    img = Image.open(image_path).convert("RGB")
+    draw = ImageDraw.Draw(img)
+    line_width = 4
+    font_size = 28
+
+    # try to load a real TTF font for readable text; fall back to PIL default if not found
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+    except OSError:
+        font = ImageFont.load_default()
+
+    def draw_box_with_label(box, color, label):
+        """Draw a rectangle and a label above it with white text and colored stroke outline."""
+        x1, y1, x2, y2 = box
+        draw.rectangle([x1, y1, x2, y2], outline=color, width=line_width)
+        text_x, text_y = x1, max(0, y1 - font_size - 2)
+        # white text with colored stroke — same two-pass trick as yolo_v1.py
+        draw.text((text_x, text_y), label, fill=(255, 255, 255), font=font,
+                  stroke_width=2, stroke_fill=color)
+
+    # 1. blue: matched pred boxes (TP) — show matched IoU
+    for pred_idx, gt_idx, iou_val in tp_matches:
+        draw_box_with_label(pred_boxes[pred_idx], (30, 120, 255), f"TP {iou_val:.2f}")
+
+    # 2. yellow-orange: unmatched pred boxes (FP) — show best IoU it achieved against any GT
+    for pred_idx in fp_idxs:
+        best_iou = float(np.max(iou_matrix[pred_idx])) if iou_matrix.shape[1] > 0 else 0.0
+        draw_box_with_label(pred_boxes[pred_idx], (255, 160, 0), f"FP {best_iou:.2f}")
+
+    # 3. red: unmatched GT boxes (FN) — show best IoU any pred had against this GT
+    for gt_idx in fn_idxs:
+        best_iou = float(np.max(iou_matrix[:, gt_idx])) if iou_matrix.shape[0] > 0 else 0.0
+        draw_box_with_label(gt_boxes[gt_idx], (220, 30, 30), f"FN {best_iou:.2f}")
+
+    img.save(out_path, quality=92) # bit higher quality than 90
+    print(f"  Viz saved: {out_path}")
+
+
+
+
+# =====================================================================
+# [Part 3] TP IoU Histograms
+# =====================================================================
 
 def save_iou_histogram(tp_ious, title, out_path, iou_threshold, show_total=False,
                        fp_best_ious=None, fn_best_ious=None):
@@ -229,85 +394,8 @@ def save_iou_histogram(tp_ious, title, out_path, iou_threshold, show_total=False
 
 
 # =====================================================================
-# Main Computation Functions
+# [Part 4] Box Size Ratio
 # =====================================================================
-
-def compute_iou_matrix(pred_boxes, gt_boxes):
-    """Vectorized pairwise IoU between all predicted and GT boxes and returns as np.ndarray shape (N_pred, N_gt)."""
-    if len(pred_boxes) == 0 or len(gt_boxes) == 0:
-        return np.zeros((len(pred_boxes), len(gt_boxes)), dtype=np.float32)
-
-    p = pred_boxes[:, np.newaxis, :]  # (N, 1, 4)
-    g = gt_boxes[np.newaxis, :, :]    # (1, M, 4)
-
-    inter_x1 = np.maximum(p[:, :, 0], g[:, :, 0])
-    inter_y1 = np.maximum(p[:, :, 1], g[:, :, 1])
-    inter_x2 = np.minimum(p[:, :, 2], g[:, :, 2])
-    inter_y2 = np.minimum(p[:, :, 3], g[:, :, 3])
-    inter_area = np.maximum(0, inter_x2 - inter_x1) * np.maximum(0, inter_y2 - inter_y1)
-
-    pred_area = (pred_boxes[:, 2] - pred_boxes[:, 0]) * (pred_boxes[:, 3] - pred_boxes[:, 1])
-    gt_area   = (gt_boxes[:, 2]  - gt_boxes[:, 0])  * (gt_boxes[:, 3]  - gt_boxes[:, 1])
-    union_area = pred_area[:, np.newaxis] + gt_area[np.newaxis, :] - inter_area
-
-    return np.where(union_area > 0, inter_area / union_area, 0.0).astype(np.float32)
-
-
-def match_boxes(iou_matrix, iou_threshold):
-    """ Greedy matching: for each predicted box match it  with the best unmatched GT box with IoU >= iou_threshold, 
-    while each GT box matched max once. Then returns: 
-    tp_matches: list of (pred_idx, gt_idx, iou_value)
-    fp_idxs: pred indices with no GT match (False Positives)
-    fn_idxs: GT indices never matched (False Negatives)"""
-    n_pred, n_gt = iou_matrix.shape
-    if n_pred == 0:
-        return [], [], list(range(n_gt))
-    if n_gt == 0:
-        return [], list(range(n_pred)), []
-
-    matched_gt = set()
-    tp_matches, fp_idxs = [], []
-
-    for pred_idx in range(n_pred):
-        row = iou_matrix[pred_idx].copy()
-        if matched_gt:
-            row[list(matched_gt)] = -1  # exclude already matched GTs
-        best_gt_idx = int(np.argmax(row))
-        if row[best_gt_idx] >= iou_threshold:
-            tp_matches.append((pred_idx, best_gt_idx, float(row[best_gt_idx])))
-            matched_gt.add(best_gt_idx)
-        else:
-            fp_idxs.append(pred_idx)
-
-    fn_idxs = [i for i in range(n_gt) if i not in matched_gt]
-    return tp_matches, fp_idxs, fn_idxs
-
-
-def compute_precision_recall_f1(tp, fp, fn):
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-    recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-    return precision, recall, f1
-
-
-def compute_stats(values):
-    """If not empty, then compute descriptive stats and return dict (floats)"""
-    if not values:
-        return None
-    arr = np.array(values, dtype=np.float32) 
-    return {
-        'mean': float(np.mean(arr)),
-        'median': float(np.median(arr)),
-        'std': float(np.std(arr)),
-        'min': float(np.min(arr)),
-        'max': float(np.max(arr)),
-    }
-
-
-def compute_iou_stats(tp_matches):
-    """IoU values of all TP matches."""
-    return compute_stats([iou for _, _, iou in tp_matches])
-
 
 def compute_box_size_ratio(pred_boxes, gt_boxes, tp_matches):
     """For each TP match: (predicted area) / (GT area) = ratio."""
@@ -321,154 +409,11 @@ def compute_box_size_ratio(pred_boxes, gt_boxes, tp_matches):
     return compute_stats(ratios)
 
 
-def compute_ap(all_pred_entries, all_gt_boxes_list, iou_threshold):
-    """Compute AP by globally pooling all predictions across all images, sorted by confidence.
-    all_pred_entries: list of (conf, x1, y1, x2, y2, img_idx)
-    all_gt_boxes_list: list of np.ndarray [N_gt, 4] for each image (same order as img_idx)
-    Returns: ap (float), precisions list, recalls list (sorted by confidence desc)
-    """
-    n_gt_total = sum(len(gt) for gt in all_gt_boxes_list)
-    if n_gt_total == 0 or len(all_pred_entries) == 0:
-        return 0.0, [], []
-
-    # sort all predictions globally by confidence descending
-    sorted_preds = sorted(all_pred_entries, key=lambda x: -x[0])
-
-    # track which GT boxes have been matched per image
-    matched_gt = [set() for _ in all_gt_boxes_list]
-    tp_list, fp_list = [], []
-
-    for conf, x1, y1, x2, y2, img_idx in sorted_preds:
-        gt_boxes = all_gt_boxes_list[img_idx]
-        if len(gt_boxes) == 0:
-            tp_list.append(0)
-            fp_list.append(1)
-            continue
-
-        pred_box = np.array([[x1, y1, x2, y2]], dtype=np.float32)
-        iou_row = compute_iou_matrix(pred_box, gt_boxes)[0]  # shape (N_gt,)
-
-        # find best unmatched GT box
-        best_gt_idx, best_iou = -1, -1.0
-        for gt_idx in range(len(gt_boxes)):
-            if gt_idx not in matched_gt[img_idx] and iou_row[gt_idx] > best_iou:
-                best_iou = iou_row[gt_idx]
-                best_gt_idx = gt_idx
-
-        if best_gt_idx >= 0 and best_iou >= iou_threshold:
-            tp_list.append(1)
-            fp_list.append(0)
-            matched_gt[img_idx].add(best_gt_idx)
-        else:
-            tp_list.append(0)
-            fp_list.append(1)
-
-    tp_cum = np.cumsum(tp_list)
-    fp_cum = np.cumsum(fp_list)
-    recalls    = tp_cum / n_gt_total
-    precisions = tp_cum / (tp_cum + fp_cum)
-
-    # COCO-style 101-point interpolated AP
-    ap = 0.0
-    for r_thr in np.linspace(0, 1, 101):
-        prec_at_r = precisions[recalls >= r_thr]
-        ap += float(np.max(prec_at_r)) if len(prec_at_r) > 0 else 0.0
-    ap /= 101
-
-    # confidence for each point on the curve (sorted descending, one per pred)
-    sorted_confs = [float(e[0]) for e in sorted_preds]
-
-    return float(ap), precisions.tolist(), recalls.tolist(), sorted_confs
 
 
-def save_pr_curve(precisions, recalls, confs, ap, iou_threshold, title, out_path,
-                  total_preds=None, tp=None, fp=None, fn=None, mark_every=50):
-    """Save a Precision-Recall curve image.
-    mark_every: label every k-th prediction point on the curve with its confidence value.
-    total_preds/tp/fp/fn: counts at the fixed CONF_THRESHOLD_GOOD_BOX for the stats box.
-    """
-    fig, ax = plt.subplots(figsize=(10, 7))
-    ax_top = None
-    ax.plot(recalls, precisions, color='steelblue', linewidth=2)
-    ax.fill_between(recalls, precisions, alpha=0.15, color='steelblue')
-
-    # major ticks every 0.1 with label, minor ticks every 0.01 without label
-    major_ticks = np.linspace(0.0, 1.0, 11)
-    minor_ticks = np.linspace(0.0, 1.0, 101)
-    ax.set_xticks(major_ticks)
-    ax.set_xticklabels([f'{v:.1f}' for v in major_ticks])
-    ax.set_xticks(minor_ticks, minor=True)
-    ax.set_yticks(major_ticks)
-    ax.set_yticklabels([f'{v:.1f}' for v in major_ticks])
-    ax.set_yticks(minor_ticks, minor=True)
-    ax.grid(True, which='major', alpha=0.4)
-    ax.grid(True, which='minor', alpha=0.2)
-
-    recalls_arr    = np.array(recalls)
-    precisions_arr = np.array(precisions)
-
-    # mark the exact max recall the curve reaches
-    if recalls:
-        max_recall = max(recalls)
-        ax.axvline(max_recall, color='tomato', linestyle='--', linewidth=1.2)
-        ax.text(max_recall + 0.005, 0.02, f'max recall\n{max_recall:.4f}',
-                color='tomato', fontsize=8, va='bottom')
-
-    # min precision horizontal line
-    if len(precisions_arr) > 0:
-        min_prec = float(precisions_arr.min())
-        ax.axhline(min_prec, color='darkorange', linestyle=':', linewidth=1.2)
-        ax.text(0.005, min_prec + 0.005, f'min prec {min_prec:.4f}',
-                color='darkorange', fontsize=8, va='bottom')
-
-    # vertical lines every 0.05 recall, precision values shown on a top x-axis
-    r_marks = np.arange(0.05, 1.0, 0.05)
-    prec_at_marks = []
-    for r_mark in r_marks:
-        idx = int(np.argmin(np.abs(recalls_arr - r_mark)))
-        prec_at_marks.append(float(precisions_arr[idx]))
-        ax.axvline(r_mark, color='gray', linestyle=':', linewidth=0.7, alpha=0.5)
-
-    # top x-axis: same range, ticks at r_marks, labeled with precision values
-    ax_top = ax.twiny()
-    ax_top.set_xlim(ax.get_xlim())
-    ax_top.set_xticks(r_marks)
-    ax_top.set_xticklabels([f'{p:.2f}' for p in prec_at_marks], fontsize=6.5, rotation=45, ha='left')
-    ax_top.set_xlabel('Precision at recall', fontsize=8)
-
-    # mark every k-th prediction on the curve with its confidence value
-    if confs and mark_every > 0:
-        indices = list(range(mark_every - 1, len(recalls), mark_every))
-        for i in indices:
-            ax.plot(recalls[i], precisions[i], 'o', color='steelblue', markersize=4)
-            ax.annotate(f'{confs[i]:.2f}', xy=(recalls[i], precisions[i]),
-                        xytext=(4, 4), textcoords='offset points',
-                        fontsize=7, color='#333333')
-
-    # stats box: total preds + TP/FP/FN at the fixed good-box threshold
-    if total_preds is not None:
-        stats_lines = [
-            f'Total preds (all conf): {total_preds}',
-            f'at CONF_THRESHOLD_GOOD_BOX:',
-            f'  TP: {tp}   FP: {fp}   (TP+FP = {tp+fp} preds)',
-            f'  FN: {fn}   (missed GT boxes, not preds)',
-        ]
-        ax.text(0.01, 0.01, '\n'.join(stats_lines), transform=ax.transAxes,
-                fontsize=8, verticalalignment='bottom',
-                bbox=dict(boxstyle='round,pad=0.4', facecolor='white', alpha=0.8, edgecolor='#cccccc'))
-
-    ax.set_xlabel('Recall')
-    ax.set_ylabel('Precision')
-    ax.set_xlim(0.0, 1.0)
-    ax.set_ylim(0.0, 1.05)
-    if ax_top is not None:
-        ax_top.set_xlim(0.0, 1.0)  # must match after ax xlim is fixed
-    ax.set_title(f"{title}\nAP@IoU{iou_threshold:.2f} = {ap:.4f}")
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=120)
-    plt.close(fig)
-    print(f"  PR curve saved: {out_path}")
-
+# =====================================================================
+# [Part 5] FP/FN Spatial Heatmaps
+# =====================================================================
 
 def _build_density_grid(boxes, img_w, img_h, grid_size):
     """Count box centers into a grid and apply Gaussian blur."""
@@ -581,47 +526,165 @@ def save_aggregated_heatmap(all_boxes_list, all_img_ws, all_img_hs, label, title
     print(f"  Aggregated heatmap saved: {out_path}")
 
 
-def save_match_visualization(image_path, pred_boxes, gt_boxes, tp_matches, fp_idxs, fn_idxs, out_path, iou_matrix):
-    """Draw matching results on the image and save it.
-    Blue = matched pred boxes (TP), Yellow-orange = unmatched pred boxes (FP), Red = unmatched GT boxes (FN).
-    Each box is labeled with its IoU value (TP: matched IoU, FP: best IoU it achieved, FN: best IoU any pred had).
+
+
+
+# =====================================================================
+# [Part 6] AP & PR Curve
+# =====================================================================
+
+def compute_ap(all_pred_entries, all_gt_boxes_list, iou_threshold):
+    """Compute AP by globally pooling all predictions across all images, sorted by confidence.
+    all_pred_entries: list of (conf, x1, y1, x2, y2, img_idx)
+    all_gt_boxes_list: list of np.ndarray [N_gt, 4] for each image (same order as img_idx)
+    Returns: ap (float), precisions list, recalls list (sorted by confidence desc)
     """
-    img = Image.open(image_path).convert("RGB")
-    draw = ImageDraw.Draw(img)
-    line_width = 4
-    font_size = 28
+    n_gt_total = sum(len(gt) for gt in all_gt_boxes_list)
+    if n_gt_total == 0 or len(all_pred_entries) == 0:
+        return 0.0, [], []
 
-    # try to load a real TTF font for readable text; fall back to PIL default if not found
-    try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
-    except OSError:
-        font = ImageFont.load_default()
+    # sort all predictions globally by confidence descending
+    sorted_preds = sorted(all_pred_entries, key=lambda x: -x[0])
 
-    def draw_box_with_label(box, color, label):
-        """Draw a rectangle and a label above it with white text and colored stroke outline."""
-        x1, y1, x2, y2 = box
-        draw.rectangle([x1, y1, x2, y2], outline=color, width=line_width)
-        text_x, text_y = x1, max(0, y1 - font_size - 2)
-        # white text with colored stroke — same two-pass trick as yolo_v1.py
-        draw.text((text_x, text_y), label, fill=(255, 255, 255), font=font,
-                  stroke_width=2, stroke_fill=color)
+    # track which GT boxes have been matched per image
+    matched_gt = [set() for _ in all_gt_boxes_list]
+    tp_list, fp_list = [], []
 
-    # 1. blue: matched pred boxes (TP) — show matched IoU
-    for pred_idx, gt_idx, iou_val in tp_matches:
-        draw_box_with_label(pred_boxes[pred_idx], (30, 120, 255), f"TP {iou_val:.2f}")
+    for _conf, x1, y1, x2, y2, img_idx in sorted_preds:
+        gt_boxes = all_gt_boxes_list[img_idx]
+        if len(gt_boxes) == 0:
+            tp_list.append(0)
+            fp_list.append(1)
+            continue
 
-    # 2. yellow-orange: unmatched pred boxes (FP) — show best IoU it achieved against any GT
-    for pred_idx in fp_idxs:
-        best_iou = float(np.max(iou_matrix[pred_idx])) if iou_matrix.shape[1] > 0 else 0.0
-        draw_box_with_label(pred_boxes[pred_idx], (255, 160, 0), f"FP {best_iou:.2f}")
+        pred_box = np.array([[x1, y1, x2, y2]], dtype=np.float32)
+        iou_row = compute_iou_matrix(pred_box, gt_boxes)[0]  # shape (N_gt,)
 
-    # 3. red: unmatched GT boxes (FN) — show best IoU any pred had against this GT
-    for gt_idx in fn_idxs:
-        best_iou = float(np.max(iou_matrix[:, gt_idx])) if iou_matrix.shape[0] > 0 else 0.0
-        draw_box_with_label(gt_boxes[gt_idx], (220, 30, 30), f"FN {best_iou:.2f}")
+        # find best unmatched GT box
+        best_gt_idx, best_iou = -1, -1.0
+        for gt_idx in range(len(gt_boxes)):
+            if gt_idx not in matched_gt[img_idx] and iou_row[gt_idx] > best_iou:
+                best_iou = iou_row[gt_idx]
+                best_gt_idx = gt_idx
 
-    img.save(out_path, quality=92) # bit higher quality than 90
-    print(f"  Viz saved: {out_path}")
+        if best_gt_idx >= 0 and best_iou >= iou_threshold:
+            tp_list.append(1)
+            fp_list.append(0)
+            matched_gt[img_idx].add(best_gt_idx)
+        else:
+            tp_list.append(0)
+            fp_list.append(1)
+
+    tp_cum = np.cumsum(tp_list)
+    fp_cum = np.cumsum(fp_list)
+    recalls    = tp_cum / n_gt_total
+    precisions = tp_cum / (tp_cum + fp_cum)
+
+    # COCO-style 101-point interpolated AP
+    ap = 0.0
+    for r_thr in np.linspace(0, 1, 101):
+        prec_at_r = precisions[recalls >= r_thr]
+        ap += float(np.max(prec_at_r)) if len(prec_at_r) > 0 else 0.0
+    ap /= 101
+
+    # confidence for each point on the curve (sorted descending, one per pred)
+    sorted_confs = [float(e[0]) for e in sorted_preds]
+
+    return float(ap), precisions.tolist(), recalls.tolist(), sorted_confs
+
+
+def save_pr_curve(precisions, recalls, confs, ap, iou_threshold, title, out_path,
+                  total_preds=None, tp=None, fp=None, fn=None, mark_every=50):
+    """Save a Precision-Recall curve image.
+    mark_every: label every k-th prediction point on the curve with its confidence value.
+    total_preds/tp/fp/fn: counts at the fixed CONF_THRESHOLD_GOOD_BOX for the stats box.
+    """
+    fig, ax = plt.subplots(figsize=(10, 7))
+    ax_top = None
+    ax.plot(recalls, precisions, color='steelblue', linewidth=2)
+    ax.fill_between(recalls, precisions, alpha=0.15, color='steelblue')
+
+    # major ticks every 0.1 with label, minor ticks every 0.01 without label
+    major_ticks = np.linspace(0.0, 1.0, 11)
+    minor_ticks = np.linspace(0.0, 1.0, 101)
+    ax.set_xticks(major_ticks)
+    ax.set_xticklabels([f'{v:.1f}' for v in major_ticks])
+    ax.set_xticks(minor_ticks, minor=True)
+    ax.set_yticks(major_ticks)
+    ax.set_yticklabels([f'{v:.1f}' for v in major_ticks])
+    ax.set_yticks(minor_ticks, minor=True)
+    ax.grid(True, which='major', alpha=0.4)
+    ax.grid(True, which='minor', alpha=0.2)
+
+    recalls_arr    = np.array(recalls)
+    precisions_arr = np.array(precisions)
+
+    # mark the exact max recall the curve reaches
+    if recalls:
+        max_recall = max(recalls)
+        ax.axvline(max_recall, color='tomato', linestyle='--', linewidth=1.2)
+        ax.text(max_recall + 0.005, 0.02, f'max recall\n{max_recall:.4f}',
+                color='tomato', fontsize=8, va='bottom')
+
+    # min precision horizontal line
+    if len(precisions_arr) > 0:
+        min_prec = float(precisions_arr.min())
+        ax.axhline(min_prec, color='darkorange', linestyle=':', linewidth=1.2)
+        ax.text(0.005, min_prec + 0.005, f'min prec {min_prec:.4f}',
+                color='darkorange', fontsize=8, va='bottom')
+
+    # vertical lines every 0.05 recall, precision values shown on a top x-axis
+    r_marks = np.arange(0.05, 1.0, 0.05)
+    prec_at_marks = []
+    for r_mark in r_marks:
+        idx = int(np.argmin(np.abs(recalls_arr - r_mark)))
+        prec_at_marks.append(float(precisions_arr[idx]))
+        ax.axvline(r_mark, color='gray', linestyle=':', linewidth=0.7, alpha=0.5)
+
+    # top x-axis: same range, ticks at r_marks, labeled with precision values
+    ax_top = ax.twiny()
+    ax_top.set_xlim(ax.get_xlim())
+    ax_top.set_xticks(r_marks)
+    ax_top.set_xticklabels([f'{p:.2f}' for p in prec_at_marks], fontsize=6.5, rotation=45, ha='left')
+    ax_top.set_xlabel('Precision at recall', fontsize=8)
+
+    # mark every k-th prediction on the curve with its confidence value (green markers)
+    conf_color = '#2ca02c'  # green — not used by any other element in the plot
+    if confs and mark_every > 0:
+        indices = list(range(mark_every - 1, len(recalls), mark_every))
+        for idx_num, i in enumerate(indices):
+            label = f'conf value (every {mark_every}th pred)' if idx_num == 0 else None
+            ax.plot(recalls[i], precisions[i], 'o', color=conf_color, markersize=3, label=label)
+            ax.annotate(f'{confs[i]:.2f}', xy=(recalls[i], precisions[i]),
+                        xytext=(4, 4), textcoords='offset points',
+                        fontsize=7, color=conf_color)
+        ax.legend()
+
+    # stats box: total preds + TP/FP/FN at the fixed good-box threshold
+    if total_preds is not None:
+        stats_lines = [
+            f'Total preds (all conf (>=0.01)): {total_preds}',
+            f'above CONF_THRESHOLD_GOOD_BOX (>= {CONF_THRESHOLD_GOOD_BOX}):',
+            f'  TP: {tp}   FP: {fp}   (TP+FP = {tp+fp} preds)',
+            f'  FN: {fn}   (missed GT boxes, not preds)',
+        ]
+        ax.text(0.01, 0.01, '\n'.join(stats_lines), transform=ax.transAxes,
+                fontsize=8, verticalalignment='bottom',
+                bbox=dict(boxstyle='round,pad=0.4', facecolor='white', alpha=0.8, edgecolor='#cccccc'))
+
+    ax.set_xlabel('Recall')
+    ax.set_ylabel('Precision')
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, 1.05)
+    if ax_top is not None:
+        ax_top.set_xlim(0.0, 1.0)  # must match after ax xlim is fixed
+    ax.set_title(f"{title}\nAP@IoU{iou_threshold:.2f} = {ap:.4f}")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+    print(f"  PR curve saved: {out_path}")
+
+
 
 
 
@@ -676,6 +739,8 @@ def evaluate_single_image(pred_pt_path, gt_label_path, image_path, iou_threshold
 
 
 
+
+
 # =====================================================================
 # Aggregated Eval
 # =====================================================================
@@ -711,7 +776,6 @@ def evaluate_all_plots(data_dir=None, iou_threshold=None):
     print(f" Matching IoU thr:      {iou_threshold}  (MATCHING_IOU_THRESHOLD)")
     print(f" YOLO NMS IoU thr:      {IOU_THRESHOLD}  (IOU_THRESHOLD — used during YOLO inference, not here)")
     print(f"{'='*58}\n")
-
 
     # wipe and recreate output folders so they only contain images from this run
     for folder in [VIZ_DIR, HIST_DIR, HEATMAP_FP_DIR, HEATMAP_FN_DIR, PR_CURVE_DIR]:
@@ -843,14 +907,10 @@ def evaluate_all_plots(data_dir=None, iou_threshold=None):
     return per_plot_results
 
 
-
 # =====================================================================
-# ENTRY POINT
+# Entry Point
 # =====================================================================
 
 if __name__ == "__main__":
     evaluate_all_plots()
-
-
-
 
