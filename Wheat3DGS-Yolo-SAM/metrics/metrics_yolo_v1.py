@@ -41,6 +41,9 @@ TABLE OF CONTENTS  (in file order)
 """
 
 
+from config_v1 import DATA_DIR, CONF_THRESHOLD_GOOD_BOX, CONF_THRESHOLD_GOOD_AND_BAD_BOX, IOU_THRESHOLD
+from PIL import Image, ImageDraw, ImageFont
+import matplotlib.pyplot as plt
 import os
 import sys
 import json
@@ -49,12 +52,9 @@ import numpy as np
 import torch
 import matplotlib
 matplotlib.use('Agg')  # headless backend — prevents Qt/display warnings in WSL
-import matplotlib.pyplot as plt
-from PIL import Image, ImageDraw, ImageFont
 
 # Add parent directory so that config_v1 can be import
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config_v1 import DATA_DIR, CONF_THRESHOLD_GOOD_BOX, CONF_THRESHOLD_GOOD_AND_BAD_BOX, IOU_THRESHOLD
 
 
 # =====================================================================
@@ -62,7 +62,7 @@ from config_v1 import DATA_DIR, CONF_THRESHOLD_GOOD_BOX, CONF_THRESHOLD_GOOD_AND
 # =====================================================================
 
 # IoU threshold for matching predicted to the GT boxes. This is SEPARATE from IOU_THRESHOLD in config_v1.py
-MATCHING_IOU_THRESHOLD = 0.35 # was 0.5 default
+MATCHING_IOU_THRESHOLD = 0.35  # was 0.5 default
 
 # Where to save JSON results
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
@@ -153,7 +153,7 @@ def print_aggregated_results(per_plot_results):
         ('gt_count', 'GT count'),
         ('precision', 'Precision'),
         ('recall', 'Recall'),
-        ('f1','F1 Score'),
+        ('f1', 'F1 Score'),
     ]
     for key, label in scalar_metrics:
         vals = [r[key] for r in per_plot_results]
@@ -190,12 +190,12 @@ def save_results_json(per_plot_results, iou_threshold, conf_threshold, ap=None):
 
     output = {
         'config': {
-            'matching_iou_threshold':       iou_threshold,
-            'conf_threshold_good_box':      conf_threshold,
-            'conf_threshold_nms_floor':     CONF_THRESHOLD_GOOD_AND_BAD_BOX,
-            'yolo_nms_iou_threshold':       IOU_THRESHOLD,
+            'matching_iou_threshold': iou_threshold,
+            'conf_threshold_good_box': conf_threshold,
+            'conf_threshold_nms_floor': CONF_THRESHOLD_GOOD_AND_BAD_BOX,
+            'yolo_nms_iou_threshold': IOU_THRESHOLD,
         },
-        'per_plot':   per_plot_results,
+        'per_plot': per_plot_results,
         'aggregated': aggregated,
     }
 
@@ -226,7 +226,7 @@ def compute_iou_matrix(pred_boxes, gt_boxes):
     inter_area = np.maximum(0, inter_x2 - inter_x1) * np.maximum(0, inter_y2 - inter_y1)
 
     pred_area = (pred_boxes[:, 2] - pred_boxes[:, 0]) * (pred_boxes[:, 3] - pred_boxes[:, 1])
-    gt_area   = (gt_boxes[:, 2]  - gt_boxes[:, 0])  * (gt_boxes[:, 3]  - gt_boxes[:, 1])
+    gt_area = (gt_boxes[:, 2] - gt_boxes[:, 0]) * (gt_boxes[:, 3] - gt_boxes[:, 1])
     union_area = pred_area[:, np.newaxis] + gt_area[np.newaxis, :] - inter_area
 
     return np.where(union_area > 0, inter_area / union_area, 0.0).astype(np.float32)
@@ -264,7 +264,7 @@ def match_boxes(iou_matrix, iou_threshold):
 
 def compute_precision_recall_f1(tp, fp, fn):
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-    recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
     return precision, recall, f1
 
@@ -332,7 +332,7 @@ def save_match_visualization(image_path, pred_boxes, gt_boxes, tp_matches, fp_id
         best_iou = float(np.max(iou_matrix[:, gt_idx])) if iou_matrix.shape[0] > 0 else 0.0
         draw_box_with_label(gt_boxes[gt_idx], (220, 30, 30), f"FN {best_iou:.2f}")
 
-    img.save(out_path, quality=92) # bit higher quality than 90
+    img.save(out_path, quality=92)  # bit higher quality than 90
     print(f"  Viz saved: {out_path}")
 
 
@@ -352,9 +352,9 @@ def save_iou_histogram(tp_ious, title, out_path, iou_threshold, show_total=False
 
     # collect all three groups with their display properties
     groups = [
-        (tp_ious,                    'steelblue', f'TP ({len(tp_ious)})'),
-        (fp_best_ious or [],         '#FF9500',   f'FP ({len(fp_best_ious or [])})'),
-        (fn_best_ious or [],         '#DC1E1E',   f'FN ({len(fn_best_ious or [])})'),
+        (tp_ious, 'steelblue', f'TP ({len(tp_ious)})'),
+        (fp_best_ious or [], '#FF9500', f'FP ({len(fp_best_ious or [])})'),
+        (fn_best_ious or [], '#DC1E1E', f'FN ({len(fn_best_ious or [])})'),
     ]
 
     # plot largest group first so smaller ones appear on top and aren't hidden
@@ -577,7 +577,7 @@ def compute_ap(all_pred_entries, all_gt_boxes_list, iou_threshold):
 
     tp_cum = np.cumsum(tp_list)
     fp_cum = np.cumsum(fp_list)
-    recalls    = tp_cum / n_gt_total
+    recalls = tp_cum / n_gt_total
     precisions = tp_cum / (tp_cum + fp_cum)
 
     # COCO-style 101-point interpolated AP
@@ -616,7 +616,7 @@ def save_pr_curve(precisions, recalls, confs, ap, iou_threshold, title, out_path
     ax.grid(True, which='major', alpha=0.4)
     ax.grid(True, which='minor', alpha=0.2)
 
-    recalls_arr    = np.array(recalls)
+    recalls_arr = np.array(recalls)
     precisions_arr = np.array(precisions)
 
     # mark the exact max recall the curve reaches
@@ -648,6 +648,7 @@ def save_pr_curve(precisions, recalls, confs, ap, iou_threshold, title, out_path
     ax_top.set_xticklabels([f'{p:.2f}' for p in prec_at_marks], fontsize=6.5, rotation=45, ha='left')
     ax_top.set_xlabel('Precision at recall', fontsize=8)
 
+
     # mark every k-th prediction on the curve with its confidence value (green markers)
     conf_color = '#2ca02c'  # green — not used by any other element in the plot
     if confs and mark_every > 0:
@@ -665,7 +666,7 @@ def save_pr_curve(precisions, recalls, confs, ap, iou_threshold, title, out_path
         stats_lines = [
             f'Total preds (all conf (>=0.01)): {total_preds}',
             f'above CONF_THRESHOLD_GOOD_BOX (>= {CONF_THRESHOLD_GOOD_BOX}):',
-            f'  TP: {tp}   FP: {fp}   (TP+FP = {tp+fp} preds)',
+            f'  TP: {tp}   FP: {fp}   (TP+FP = {tp + fp} preds)',
             f'  FN: {fn}   (missed GT boxes, not preds)',
         ]
         ax.text(0.01, 0.01, '\n'.join(stats_lines), transform=ax.transAxes,
@@ -703,7 +704,7 @@ def evaluate_single_image(pred_pt_path, gt_label_path, image_path, iou_threshold
         return None
 
     with Image.open(image_path) as img:
-        img_w, img_h = img.size #(width, height)
+        img_w, img_h = img.size  # (width, height)
     gt_boxes = load_gt_boxes(gt_label_path, img_w, img_h)
     pred_boxes = load_pred_boxes(pred_pt_path)
 
@@ -767,15 +768,15 @@ def evaluate_all_plots(data_dir=None, iou_threshold=None):
     if iou_threshold is None:
         iou_threshold = MATCHING_IOU_THRESHOLD
 
-    print(f"\n{'='*58}")
+    print(f"\n{'=' * 58}")
     print(f" YOLO EVALUATION vs MANUAL LABELS")
-    print(f"{'='*58}")
+    print(f"{'=' * 58}")
     print(f" Data dir:              {data_dir}")
     print(f" Conf threshold (good): {CONF_THRESHOLD_GOOD_BOX}  (CONF_THRESHOLD_GOOD_BOX — used for precision/recall/F1)")
     print(f" Conf threshold (NMS floor): {CONF_THRESHOLD_GOOD_AND_BAD_BOX}  (CONF_THRESHOLD_GOOD_AND_BAD_BOX — floor for AP curve)")
     print(f" Matching IoU thr:      {iou_threshold}  (MATCHING_IOU_THRESHOLD)")
     print(f" YOLO NMS IoU thr:      {IOU_THRESHOLD}  (IOU_THRESHOLD — used during YOLO inference, not here)")
-    print(f"{'='*58}\n")
+    print(f"{'=' * 58}\n")
 
     # wipe and recreate output folders so they only contain images from this run
     for folder in [VIZ_DIR, HIST_DIR, HEATMAP_FP_DIR, HEATMAP_FN_DIR, PR_CURVE_DIR]:
@@ -854,9 +855,9 @@ def evaluate_all_plots(data_dir=None, iou_threshold=None):
         out_path=os.path.join(HEATMAP_FN_DIR, 'aggregated_FN_heatmap.jpg'))
     print()
 
-    print(f"\n{'='*58}")
+    print(f"\n{'=' * 58}")
     print(f"AGGREGATED RESULTS (mean ± std across {len(per_plot_results)} plot(s))")
-    print(f"{'='*58}")
+    print(f"{'=' * 58}")
     print_aggregated_results(per_plot_results)
 
     # aggregated TP IoU histogram across all plots
@@ -868,9 +869,9 @@ def evaluate_all_plots(data_dir=None, iou_threshold=None):
                        fp_best_ious=all_fp_ious, fn_best_ious=all_fn_ious)
 
     # AP computation — requires bboxes_with_conf/ folder from yolo_v1.py
-    print(f"\n{'='*58}")
+    print(f"\n{'=' * 58}")
     print(f"AVERAGE PRECISION (AP)")
-    print(f"{'='*58}")
+    print(f"{'=' * 58}")
     for idx, r in enumerate(per_plot_results):
         bboxes_with_conf_path = os.path.join(r['_plot_dir'], 'bboxes_with_conf', r['image_stem'] + '.pt')
         with_conf = load_pred_boxes_with_conf(bboxes_with_conf_path)
@@ -913,4 +914,5 @@ def evaluate_all_plots(data_dir=None, iou_threshold=None):
 
 if __name__ == "__main__":
     evaluate_all_plots()
+
 

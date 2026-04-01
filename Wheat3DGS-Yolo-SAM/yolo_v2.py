@@ -49,7 +49,7 @@ def reset_folder(folder_path):
     """Delete and recreate a folder. Faster and safer than deleting every item inside."""
     if os.path.exists(folder_path):
         shutil.rmtree(folder_path)  # Deletes the folder and everything inside
-    os.makedirs(folder_path, exist_ok=True) # Recreates the empty folder
+    os.makedirs(folder_path, exist_ok=True)  # Recreates the empty folder
 
 
 def resize_single_image(img_path, target_size):
@@ -126,8 +126,10 @@ def save_single_result(_, result, original_img, pad_info, original_path, bbox_fo
                     font = cv2.FONT_HERSHEY_SIMPLEX
                     font_scale = LABEL_FONT_SCALE * 0.7
                     pos = (x1, y1 - 8)
-                    cv2.putText(annotated_img, conf_text, pos, font, font_scale, (255, 255, 255), thickness=BOX_THICKNESS + 1, lineType=cv2.LINE_AA)
-                    cv2.putText(annotated_img, conf_text, pos, font, font_scale, (0, 0, 255), thickness=BOX_THICKNESS - 1, lineType=cv2.LINE_AA)
+                    cv2.putText(annotated_img, conf_text, pos, font, font_scale, (255, 255, 255),
+                                thickness=BOX_THICKNESS + 1, lineType=cv2.LINE_AA)
+                    cv2.putText(annotated_img, conf_text, pos, font, font_scale, (0, 0, 255),
+                                thickness=BOX_THICKNESS - 1, lineType=cv2.LINE_AA)
         # 5. Draw Bad Boxes (Red) - directly on image
         if SHOW_REJECTED_RED_BOXES and bad_count > 0:
             for j in range(bad_count):
@@ -139,8 +141,10 @@ def save_single_result(_, result, original_img, pad_info, original_path, bbox_fo
                     font = cv2.FONT_HERSHEY_SIMPLEX
                     font_scale = LABEL_FONT_SCALE * 0.7
                     pos = (x1, y1 + 25)
-                    cv2.putText(annotated_img, conf_text, pos, font, font_scale, (255, 255, 255), thickness=BOX_THICKNESS + 1, lineType=cv2.LINE_AA)
-                    cv2.putText(annotated_img, conf_text, pos, font, font_scale, (255, 30, 30), thickness=max(1, BOX_THICKNESS - 1), lineType=cv2.LINE_AA)
+                    cv2.putText(annotated_img, conf_text, pos, font, font_scale, (255, 255, 255),
+                                thickness=BOX_THICKNESS + 1, lineType=cv2.LINE_AA)
+                    cv2.putText(annotated_img, conf_text, pos, font, font_scale, (255, 30, 30),
+                                thickness=max(1, BOX_THICKNESS - 1), lineType=cv2.LINE_AA)
     # 6. Save Tensors for SAM (4 cols: x1,y1,x2,y2 — good boxes only)
     if len(good_boxes_for_sam) > 0:
         valid_tensor = torch.tensor(good_boxes_for_sam)
@@ -202,9 +206,9 @@ def print_performance_report_yolo(num_images, wall_time):
     avg = wall_time / max(1, num_images)
     print(f"=" * 45)
     print(f"       PLOT PERFORMANCE REPORT ({num_images} images)")
-    print(f"{'Total Time (pipelined):':<28} {wall_time:>8.2f}s") # Total time = prep + gpu + disk
+    print(f"{'Total Time (pipelined):':<28} {wall_time:>8.2f}s")  # Total time = prep + gpu + disk
     print(f"{'Avg per image:':<28} {avg:>8.2f}s")
-    print("="*45 + "\n")
+    print("=" * 45 + "\n")
 
 
 
@@ -250,7 +254,8 @@ def run_yolo_phase(image_folders):
         if ONLY_LABELED_IMAGES:
             # only keep images that have a manual label for metrics testing and ignores LIMIT_IMAGES
             label_dir = os.path.join(base_plot_path, 'manual_label')
-            labeled_stems = {os.path.splitext(f)[0] for f in os.listdir(label_dir) if f.endswith('.txt')} if os.path.isdir(label_dir) else set()
+            labeled_stems = {os.path.splitext(f)[0] for f in os.listdir(
+                label_dir) if f.endswith('.txt')} if os.path.isdir(label_dir) else set()
             if LIMIT_IMAGES > 0:
                 print(f"---ONLY_LABELED_IMAGES=True: ignoring LIMIT_IMAGES={LIMIT_IMAGES}")
             image_files = [f for f in image_files if os.path.splitext(os.path.basename(f))[0] in labeled_stems]
@@ -265,11 +270,11 @@ def run_yolo_phase(image_folders):
 
         # Chunking loop to protect RAM
         for chunk_start in range(0, len(image_files), BATCH_SIZE_RAM_FILES_YOLO):
-            chunk_files = image_files[chunk_start : chunk_start + BATCH_SIZE_RAM_FILES_YOLO]
+            chunk_files = image_files[chunk_start: chunk_start + BATCH_SIZE_RAM_FILES_YOLO]
             print(f"  -> Processing chunk {chunk_start} to {chunk_start + len(chunk_files)} of {len(image_files)} images...")
 
             # Split chunk into GPU-sized sub-batches
-            sub_batches = [chunk_files[i : i + BATCH_SIZE_YOLO]
+            sub_batches = [chunk_files[i: i + BATCH_SIZE_YOLO]
                            for i in range(0, len(chunk_files), BATCH_SIZE_YOLO)]
             n_sub = len(sub_batches)
 
@@ -293,8 +298,8 @@ def run_yolo_phase(image_folders):
                     # since it ran during the previous GPU call.
                     sub_data = resize_future.result()
                     resized_imgs = [x[0] for x in sub_data]  # letterboxed images → go to GPU
-                    orig_imgs    = [x[1] for x in sub_data]  # originals → needed for box reversal later
-                    pad_infos    = [x[2] for x in sub_data]  # (scale, pad_left, pad_top) per image
+                    orig_imgs = [x[1] for x in sub_data]  # originals → needed for box reversal later
+                    pad_infos = [x[2] for x in sub_data]  # (scale, pad_left, pad_top) per image
 
                     if b == 0 and chunk_start == 0 and SHOW_DEBUG_YOLO_RESIZE:
                         save_debug_image_yolo(resized_imgs, yolo_vis_folder)
