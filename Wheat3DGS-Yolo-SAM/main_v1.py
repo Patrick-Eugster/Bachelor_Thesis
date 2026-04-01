@@ -9,7 +9,9 @@ import torch
 
 # Import globals and logic from our newly created modules
 from config_v1 import *
-from yolo_v1 import run_yolo_phase
+# from yolo_v1 import run_yolo_phase
+from yolo_v2 import run_yolo_phase
+
 from sam_v1 import run_sam_phase
 
 # =====================================================================

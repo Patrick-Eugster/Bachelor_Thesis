@@ -18,7 +18,7 @@ SAM_CHECKPOINT = os.path.join(WEIGHTS_DIR, "sam_vit_h_4b8939.pth")
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # --- SETTINGS / CONSTANTS ---
-CONF_THRESHOLD_GOOD_AND_BAD_BOX = 0.01 # Low floor for NMS — keep as many detections as possible for the AP curve
+CONF_THRESHOLD_GOOD_AND_BAD_BOX = 0.30 # Low floor for NMS — keep as many detections as possible for the AP curve
 CONF_THRESHOLD_GOOD_BOX = 0.35 # Minimum confidence to show a box, google colab had 0.05
 IOU_THRESHOLD = 0.45 # Maximum allowed overlap between boxes, default 0.45
 CLASSES_TO_DETECT = [0] # Only show class 0 (usually 'wheat'), technically here exists only wheat
@@ -33,8 +33,8 @@ BATCH_SIZE_SAM_BOX = 1 # fix number of boxes to process at once (otherwise RAM/V
 # weirdly size 1 was best or it barely made a difference in time for me?
 MAX_THREADS = 10
 
-SHOW_LABELS = True 
-SHOW_REJECTED_RED_BOXES = True
+SHOW_LABELS = False 
+SHOW_REJECTED_RED_BOXES = False
 SHOW_GOOD_BOXES = True # default true (blue boxes)
 BOX_THICKNESS = 2
 LABEL_FONT_SCALE = 1
@@ -48,7 +48,7 @@ SHOW_TIME_TOTAL = True
 ONLY_YOLO = True
 LIMIT_PLOTS = 0   # How many plots to process for YOLO and SAM (0 = all)
 LIMIT_IMAGES = 0  # How many images per plot for YOLO and SAM (0 = all)
-ONLY_LABELED_IMAGES = True  # For Metrics, only process images that have a manual label (ignores LIMIT_IMAGES)
+ONLY_LABELED_IMAGES = False  # For Metrics, only process images that have a manual label - ground truth (ignores LIMIT_IMAGES)
 
 # --- DATASET TOGGLE ---
 USE_PHONE_DATA = False  

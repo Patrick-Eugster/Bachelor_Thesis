@@ -220,40 +220,40 @@ def run_yolo_phase(image_folders):
             print(f"  -> Processing chunk {chunk_start} to {chunk_start + len(chunk_files)} of {len(image_files)} images...")
             
             # 1. Parallel Pre-Processing (Resizing & Caching)
-            start_prep = time.time()
+            start_prep = time.perf_counter()
             with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
                 results_data = list(executor.map(lambda p: resize_single_image(p, TARGET_IMAGE_SIZE), chunk_files))
-            
+
             resized_images = [x[0] for x in results_data]
             original_images = [x[1] for x in results_data]
             pad_infos = [x[2] for x in results_data] # Extract the padding math
-            
-            prep_time = time.time() - start_prep
+
+            prep_time = time.perf_counter() - start_prep
             total_prep_time += prep_time
-            
+
             # 2. GPU Inference
             torch.cuda.synchronize()
-            start_gpu = time.time()
+            start_gpu = time.perf_counter()
             det_list = []
             for b_idx in range(0, len(resized_images), BATCH_SIZE_YOLO):
                 batch_imgs = resized_images[b_idx : b_idx + BATCH_SIZE_YOLO]
                 batch_results = model(batch_imgs, size=TARGET_IMAGE_SIZE)
                 det_list.extend(batch_results.tolist())
             torch.cuda.synchronize()
-            
-            gpu_time = time.time() - start_gpu
+
+            gpu_time = time.perf_counter() - start_gpu
             total_gpu_time += gpu_time
-            
+
             # 3. Parallel Post-Processing & Disk Save
-            start_disk = time.time()
+            start_disk = time.perf_counter()
             with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
                 # Use all MAX_THREADS CPU cores to scale back and save images at once
                 # Capture the returned (good_count, bad_count) tuples in a list
                 box_counts = list(executor.map(lambda i: save_single_result(
                     i, det_list[i], original_images[i], pad_infos[i], chunk_files[i], bbox_folder, bboxes_with_conf_folder, yolo_vis_folder
                 ), range(len(det_list))))
-                
-            disk_time = time.time() - start_disk
+
+            disk_time = time.perf_counter() - start_disk
             total_disk_time += disk_time
             
             # Unpack the list of tuples and add them to our total trackers
