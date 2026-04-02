@@ -30,7 +30,8 @@ TARGET_IMAGE_SIZE = 1280 # rescaling size for the yolo model. default=640, must 
 BATCH_SIZE_YOLO = 25 # protect GPU VRAM
 BATCH_SIZE_RAM_FILES_YOLO = 100 # Protects System RAM: How many images to load at once
 BATCH_SIZE_SAM_BOX = 1 # fix number of boxes to process at once (otherwise RAM/VRAM wont be enough)
-# weirdly size 1 was best or it barely made a difference in time for me?
+# weirdly size 1 was best or it barely made a difference in time for me? 
+# --> in sam code, set_image() only processes exactly 1 image at a time. 
 MAX_THREADS = 10
 
 SHOW_LABELS = False 
@@ -42,13 +43,16 @@ LABEL_FONT_SCALE = 1
 # --- TEST CONTROLS ---
 SHOW_DEBUG_YOLO_RESIZE = False
 SHOW_TIME_YOLO = True
-SHOW_TIME_SAM = True   
+SHOW_TIME_SAM = True
 SHOW_TIME_TOTAL = True
 
-ONLY_YOLO = True
-LIMIT_PLOTS = 0   # How many plots to process for YOLO and SAM (0 = all)
+
+ONLY_YOLO = False
+LIMIT_PLOTS = 1   # How many plots to process for YOLO and SAM (0 = all)
 LIMIT_IMAGES = 0  # How many images per plot for YOLO and SAM (0 = all)
 ONLY_LABELED_IMAGES = False  # For Metrics, only process images that have a manual label - ground truth (ignores LIMIT_IMAGES)
+
+WANDB_ENABLED = True  # Log SAM progress + GPU/RAM stats to wandb dashboard (wandb.ai)
 
 # --- DATASET TOGGLE ---
 USE_PHONE_DATA = False  

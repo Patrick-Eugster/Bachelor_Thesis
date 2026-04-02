@@ -10,9 +10,10 @@ import torch
 # Import globals and logic from our newly created modules
 from config_v1 import *
 # from yolo_v1 import run_yolo_phase
-from yolo_v2 import run_yolo_phase
+from yolo_v1_pipelined import run_yolo_phase
 
-from sam_v1 import run_sam_phase
+# from sam_v1 import run_sam_phases 
+from sam_v1_pipelined import run_sam_phase
 
 # =====================================================================
 # --- HELPER FUNCTIONS FOR MAIN ---
@@ -42,7 +43,7 @@ def print_final_configuration_report(total_seconds, sam_seconds, total_images, t
     # 2. Batching Strategies
     print(f"{'BATCH_SIZE_YOLO:':<25} {BATCH_SIZE_YOLO}")
     print(f"{'BATCH_SIZE_SAM_BOX:':<25} {BATCH_SIZE_SAM_BOX}")
-    print(f"{'BATCH_SIZE_RAM_FILES:':<25} {BATCH_SIZE_RAM_FILES_YOLO}")
+    print(f"{'BATCH_SIZE_RAM_FILES_YOLO:':<25} {BATCH_SIZE_RAM_FILES_YOLO}")
     print("-" * 50)
     # 3. Dataset & Results
     print(f"{'Total Images Processed:':<25} {total_images}")
@@ -60,7 +61,7 @@ def print_final_configuration_report(total_seconds, sam_seconds, total_images, t
 
 
 def main():
-    global_start_time = time.time()
+    global_start_time = time.perf_counter()
     print_hardware_status()
     print(f"--- Starting Segmentation ---")
     
@@ -88,7 +89,7 @@ def main():
         total_sam_pure_time, total_sam_images = run_sam_phase(image_folders)
 
     # 4. Final Report
-    global_total_time = time.time() - global_start_time
+    global_total_time = time.perf_counter() - global_start_time
     if SHOW_TIME_TOTAL:
         print_final_configuration_report(global_total_time, total_sam_pure_time, total_sam_images, total_plot_boxes)
 

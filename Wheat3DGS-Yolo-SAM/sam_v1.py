@@ -9,6 +9,7 @@ import cv2
 import torch
 import colorsys
 import shutil
+import wandb
 from segment_anything import sam_model_registry, SamPredictor
 
 # Import from config
@@ -85,14 +86,20 @@ def run_sam_phase(image_folders):
     print(" PHASE 2: LOADING SAM AND PROCESSING ALL PLOTS")
     print("="*50)
     
+    if WANDB_ENABLED:
+        wandb.init(
+            project="wheat3dgs-sam-v1",
+            config={"batch_size_sam_box": BATCH_SIZE_SAM_BOX, "device": DEVICE},
+        )
+
     # Load SAM Model ONCE
     print("Loading SAM (this takes a few seconds)...")
-    start_sam_load = time.time()
+    start_sam_load = time.perf_counter()
     sam = sam_model_registry["vit_h"](checkpoint=SAM_CHECKPOINT).to(device=DEVICE)
     sam = torch.compile(sam)
     predictor = SamPredictor(sam)
-    torch.cuda.synchronize() 
-    sam_load_time = time.time() - start_sam_load
+    torch.cuda.synchronize()
+    sam_load_time = time.perf_counter() - start_sam_load
     print(f"-> SAM Model loaded on {DEVICE} in {sam_load_time:.2f}s")
     
     total_sam_pure_time = 0.0
@@ -113,7 +120,7 @@ def run_sam_phase(image_folders):
         if LIMIT_IMAGES > 0:
             image_files = image_files[:LIMIT_IMAGES]
 
-        start_sam_plot = time.time()
+        start_sam_plot = time.perf_counter()
 
         for i, image_file in enumerate(image_files):
             image_name = os.path.basename(image_file)
@@ -136,14 +143,15 @@ def run_sam_phase(image_folders):
                 print(f"    No wheat heads detected in {image_name}")
                 continue
               
-            t_start_img = time.time()
-            
+            t_start_img = time.perf_counter()
+
             # 2. Image Embedding (heavy part)
             predictor.set_image(image)
-            t_embed = time.time() - t_start_img
-            
+            torch.cuda.synchronize()
+            t_embed = time.perf_counter() - t_start_img
+
             # 3. Predict Masks (Batching to prevent RAM/VRAM overflow)
-            t_start_pred = time.time()
+            t_start_pred = time.perf_counter()
             transformed_boxes = predictor.transform.apply_boxes_torch(bbox, image.shape[:2])
             all_masks_np = []
             
@@ -165,10 +173,10 @@ def run_sam_phase(image_folders):
             # Combine all chunks back into one numpy array  
             masks_np = np.concatenate(all_masks_np, axis=0)
             torch.cuda.synchronize()
-            t_pred = time.time() - t_start_pred
-            
+            t_pred = time.perf_counter() - t_start_pred
+
             # 4. Saving & Visualization (Parallel CPU Saving)
-            t_start_save = time.time()
+            t_start_save = time.perf_counter()
             objects = np.zeros((masks_np.shape[1], masks_np.shape[2]), dtype=np.uint16)
             save_tasks = []
             
@@ -195,9 +203,18 @@ def run_sam_phase(image_folders):
                 (overlayed_img * 255).astype(np.uint8)[:, :, ::-1] 
             )
             
-            t_save = time.time() - t_start_save
+            t_save = time.perf_counter() - t_start_save
             if SHOW_TIME_SAM:
                 print_sam_step_report(i, len(image_files), image_name, len(bbox), t_embed, t_pred, t_save)
+            if WANDB_ENABLED:
+                wandb.log({
+                    "plot":      plot_name,
+                    "t_embed_s": t_embed,
+                    "t_pred_s":  t_pred,
+                    "t_save_s":  t_save,
+                    "t_total_s": t_embed + t_pred + t_save,
+                    "n_heads":   len(bbox),
+                })
             total_sam_pure_time += (t_embed + t_pred + t_save)
             total_sam_images += 1
             
@@ -207,7 +224,7 @@ def run_sam_phase(image_folders):
             gc.collect()
             
         # Plot Final Summary for SAM
-        sam_total_plot = time.time() - start_sam_plot
+        sam_total_plot = time.perf_counter() - start_sam_plot
         if SHOW_TIME_SAM:
             print_sam_plot_summary(len(image_files), sam_total_plot)
         print(f"  Finished Plot: {plot_name}")
@@ -216,6 +233,9 @@ def run_sam_phase(image_folders):
     del sam, predictor
     torch.cuda.empty_cache()
     gc.collect()
-    
+
+    if WANDB_ENABLED:
+        wandb.finish()
+
     return total_sam_pure_time, total_sam_images
   
