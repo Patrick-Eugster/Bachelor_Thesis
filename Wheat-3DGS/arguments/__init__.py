@@ -86,6 +86,7 @@ class OptimizationParams(ParamGroup):
         self.densify_from_iter = 500
         self.densify_until_iter = 11_000
         self.densify_grad_threshold = 0.0002
+        self.opacity_cull_threshold = 0.005  # Gaussians below this opacity get pruned; raise to 0.01 to save VRAM
         self.random_background = False
         super().__init__(parser, "Optimization Parameters")
 

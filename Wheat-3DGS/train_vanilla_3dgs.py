@@ -29,9 +29,14 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
+WANDB_ENABLED = True  # set False to skip all wandb logging
+
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
 
-    wandb.init(project="Wheat-GS", name=dataset.source_path.split("/")[-1], dir="/cluster/scratch/daizhang/wandb")
+    plot_name = os.path.basename(dataset.source_path)
+    if WANDB_ENABLED:
+        wandb.init(project="wheat3dgs-train", name=plot_name)
+
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
@@ -44,16 +49,26 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
-    iter_start = torch.cuda.Event(enable_timing = True)
-    iter_end = torch.cuda.Event(enable_timing = True)
+    # per-phase CUDA timing events
+    e_render_s  = torch.cuda.Event(enable_timing=True)
+    e_render_e  = torch.cuda.Event(enable_timing=True)
+    e_loss_s    = torch.cuda.Event(enable_timing=True)
+    e_loss_e    = torch.cuda.Event(enable_timing=True)
+    e_densify_s = torch.cuda.Event(enable_timing=True)
+    e_densify_e = torch.cuda.Event(enable_timing=True)
+    e_optim_s   = torch.cuda.Event(enable_timing=True)
+    e_optim_e   = torch.cuda.Event(enable_timing=True)
+
+    # accumulators for timing summary every 500 iters
+    acc_render = acc_loss = acc_densify = acc_optim = 0.0
+    acc_iters = 0
 
     viewpoint_stack = scene.getTrainCameras().copy()
     print("Length of viewpoint stack", len(viewpoint_stack))
     ema_loss_for_log = 0.0
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
-    for iteration in range(first_iter, opt.iterations + 1):        
-        iter_start.record()
+    for iteration in range(first_iter, opt.iterations + 1):
 
         gaussians.update_learning_rate(iteration)
 
@@ -70,16 +85,19 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         bg = torch.rand((3), device="cuda") if opt.random_background else background
 
+        e_render_s.record()
         render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+        e_render_e.record()
 
-        # Loss
+        # Loss + backward
+        e_loss_s.record()
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        ssim_loss = 1.0 - ssim(image, gt_image)
+        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * ssim_loss
         loss.backward()
-
-        iter_end.record()
+        e_loss_e.record()
 
         with torch.no_grad():
             # Progress bar
@@ -91,12 +109,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.close()
 
             # Log and save
-            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
+            training_report(tb_writer, iteration, Ll1, loss, l1_loss, e_render_s.elapsed_time(e_loss_e), testing_iterations, scene, render, (pipe, background))
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
 
             # Densification
+            e_densify_s.record()
             if iteration < opt.densify_until_iter:
                 # Keep track of max radii in image-space for pruning
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
@@ -104,21 +123,59 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
-                
+                    gaussians.densify_and_prune(opt.densify_grad_threshold, opt.opacity_cull_threshold, scene.cameras_extent, size_threshold)
+
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
+            e_densify_e.record()
 
             # Optimizer step
+            e_optim_s.record()
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
-                
-            wandb.log({'step': iteration, 'loss': loss.item(), 'num points': len(gaussians.get_xyz)})
-            
+            e_optim_e.record()
+
+            # sync once to read all timings
+            torch.cuda.synchronize()
+            t_render  = e_render_s.elapsed_time(e_render_e)
+            t_loss    = e_loss_s.elapsed_time(e_loss_e)
+            t_densify = e_densify_s.elapsed_time(e_densify_e)
+            t_optim   = e_optim_s.elapsed_time(e_optim_e)
+            t_total   = t_render + t_loss + t_densify + t_optim
+
+            acc_render  += t_render
+            acc_loss    += t_loss
+            acc_densify += t_densify
+            acc_optim   += t_optim
+            acc_iters   += 1
+
+            # print timing summary every 500 iters
+            if iteration % 500 == 0:
+                n = acc_iters
+                print(f"[ITER {iteration}] avg/iter — render: {acc_render/n:.1f}ms  loss+bwd: {acc_loss/n:.1f}ms  densify: {acc_densify/n:.1f}ms  optim: {acc_optim/n:.1f}ms  total: {(acc_render+acc_loss+acc_densify+acc_optim)/n:.1f}ms")
+                acc_render = acc_loss = acc_densify = acc_optim = acc_iters = 0.0
+
+            if WANDB_ENABLED:
+                wandb.log({
+                    "iter": iteration,
+                    "loss/total": loss.item(),
+                    "loss/l1": Ll1.item(),
+                    "loss/ssim": ssim_loss.item(),
+                    "num_gaussians": len(gaussians.get_xyz),
+                    "time/render_ms": t_render,
+                    "time/loss_bwd_ms": t_loss,
+                    "time/densify_ms": t_densify,
+                    "time/optim_ms": t_optim,
+                    "time/total_ms": t_total,
+                })
+
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+
+    if WANDB_ENABLED:
+        wandb.finish()
 
 def prepare_output_and_logger(args):    
     if not args.model_path:
@@ -173,6 +230,8 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 if tb_writer:
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
+                if WANDB_ENABLED:
+                    wandb.log({f"eval/{config['name']}_l1": l1_test.item(), f"eval/{config['name']}_psnr": psnr_test.item(), "iter": iteration})
 
         if tb_writer:
             tb_writer.add_histogram("scene/opacity_histogram", scene.gaussians.get_opacity, iteration)

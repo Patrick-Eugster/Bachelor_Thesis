@@ -6,15 +6,17 @@ import sys
 DATASET_PATH = "../Wheat3DGS-Yolo-SAM/data/plot_461"
 MODEL_PATH = "../Wheat3DGS-Yolo-SAM/data/plot_461/3dgs_output"
 EXP_NAME = "run_1"
-DATA_DEVICE_CPU = True  # Set True to keep images in RAM instead of VRAM (safer for 16GB GPU)
+DATA_DEVICE_CPU = True   # Set True to keep images in RAM instead of VRAM (safer for 16GB GPU)
+RESOLUTION = 2           # 1 = full resolution, 2 = half (saves ~4x rasterizer VRAM), 4 = quarter
+OPACITY_PRUNE_THRESHOLD = 0.005  # Gaussians below this opacity get pruned. Default 0.005. Raise to 0.01 to save VRAM
 
 # --- PIPELINE STEPS (toggle on/off) ---
 RUN_TRAIN = True         # Step 1: Train 3DGS model (the long one)
-RUN_RENDER = True        # Step 2: Render from original camera views
-RUN_METRICS = True       # Step 3: Compute PSNR/SSIM/LPIPS quality scores
-RUN_SEG = True           # Step 4: 3D wheat head segmentation
-RUN_RENDER_360 = True    # Step 5: Render 360 flyaround video
-RUN_EVAL = True          # Step 6: Evaluate segmentation quality (IoU)
+RUN_RENDER = False        # Step 2: Render from original camera views
+RUN_METRICS = False       # Step 3: Compute PSNR/SSIM/LPIPS quality scores
+RUN_SEG = False           # Step 4: 3D wheat head segmentation
+RUN_RENDER_360 = False    # Step 5: Render 360 flyaround video
+RUN_EVAL = False          # Step 6: Evaluate segmentation quality (IoU)
 
 
 def run_command(command_list):
@@ -27,6 +29,7 @@ def run_command(command_list):
 
 def main():
     data_device_flag = ["--data_device", "cpu"] if DATA_DEVICE_CPU else []
+    resolution_str = str(RESOLUTION)
 
     # Step 1: Vanilla 3DGS Training
     if RUN_TRAIN:
@@ -34,8 +37,9 @@ def main():
             "python", "train_vanilla_3dgs.py",
             "-s", DATASET_PATH,
             "-m", MODEL_PATH,
-            "--resolution", "1",
-            "--eval"
+            "--resolution", resolution_str,
+            "--eval",
+            "--opacity_cull_threshold", str(OPACITY_PRUNE_THRESHOLD),
         ] + data_device_flag)
 
     # Step 2: Render from original training/test camera views (for quality check)
@@ -44,6 +48,7 @@ def main():
             "python", "render.py",
             "-s", DATASET_PATH,
             "-m", MODEL_PATH,
+            "--resolution", resolution_str,
             "--iteration", "15000"
         ] + data_device_flag)
 
@@ -60,7 +65,7 @@ def main():
             "python", "run_3d_seg.py",
             "-s", DATASET_PATH,
             "-m", MODEL_PATH,
-            "--resolution", "1",
+            "--resolution", resolution_str,
             "--eval",
             "--iou_threshold", "0.6",
             "--exp_name", EXP_NAME
@@ -83,6 +88,7 @@ def main():
             "python", "eval_wheatgs.py",
             "-s", DATASET_PATH,
             "-m", MODEL_PATH,
+            "--resolution", resolution_str,
             "--exp_name", EXP_NAME,
             "--skip_train"
         ] + data_device_flag)
