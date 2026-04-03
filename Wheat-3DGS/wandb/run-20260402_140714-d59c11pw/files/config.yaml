@@ -1,0 +1,63 @@
+_wandb:
+    value:
+        cli_version: 0.25.1
+        e:
+            ykf5grb69j00380na7s0g0fbawi5d4b4:
+                args:
+                    - -s
+                    - ../Wheat3DGS-Yolo-SAM/data/plot_461
+                    - -m
+                    - ../Wheat3DGS-Yolo-SAM/data/plot_461/3dgs_output
+                    - --resolution
+                    - "2"
+                    - --eval
+                    - --opacity_cull_threshold
+                    - "0.005"
+                    - --data_device
+                    - cpu
+                codePath: Wheat-3DGS/train_vanilla_3dgs.py
+                codePathLocal: train_vanilla_3dgs.py
+                cpu_count: 6
+                cpu_count_logical: 12
+                cudaVersion: "13.1"
+                disk:
+                    /:
+                        total: "1081101176832"
+                        used: "57737211904"
+                email: pehd.eugster@gmail.com
+                executable: /usr/bin/python
+                git:
+                    commit: 20f35d065cdabbd205f3c5f39a3200d86a0f8ba6
+                    remote: https://github.com/Patrick-Eugster/Bachelor_Thesis.git
+                gpu: NVIDIA GeForce RTX 5070 Ti
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Blackwell
+                      memoryTotal: "17094934528"
+                      name: NVIDIA GeForce RTX 5070 Ti
+                      uuid: GPU-25ab4bed-771a-4889-fc94-ce73bd3ab302
+                host: 5f6be745636b
+                memory:
+                    total: "36776902656"
+                os: Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39
+                program: /workspace/Wheat-3DGS/train_vanilla_3dgs.py
+                python: CPython 3.12.3
+                root: /workspace/Wheat-3DGS
+                startedAt: "2026-04-02T14:07:14.241502Z"
+                writerId: ykf5grb69j00380na7s0g0fbawi5d4b4
+        m: []
+        python_version: 3.12.3
+        t:
+            "1":
+                - 1
+                - 41
+            "2":
+                - 1
+                - 41
+            "3":
+                - 2
+                - 13
+            "4": 3.12.3
+            "5": 0.25.1
+            "12": 0.25.1
+            "13": linux-x86_64
