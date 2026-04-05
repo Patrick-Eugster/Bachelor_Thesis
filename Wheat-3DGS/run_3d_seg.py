@@ -7,15 +7,16 @@ import random
 import shutil
 import string
 from argparse import ArgumentParser
-from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
-from rich.console import Console
 from tqdm import tqdm
+
+WANDB_ENABLED = True  # Log progress to wandb dashboard. Set False to skip. One-time setup: run 'wandb login'
 
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from gaussian_renderer import flashsplat_render
@@ -28,7 +29,6 @@ from utils.wheatgs_utils import (
     calculate_seg_iou,
     vis_image_w_overlay
 )
-CONSOLE = Console()
 
 def find_new_mask_dir(img_dir, num_wheat_head):
     """
@@ -63,7 +63,7 @@ def multi_instance_opt(all_contrib, gamma=0.):
     """
     all_contrib_sum = all_contrib.sum(dim=0)
     all_obj_labels = torch.zeros_like(all_contrib).bool()
-    for obj_idx, obj_contrib in tqdm(enumerate(all_contrib), desc="multi-view optimize"):
+    for obj_idx, obj_contrib in enumerate(all_contrib):  # tqdm removed: obj_num=1 always, bar showed exactly 1 step
         obj_contrib = torch.stack([all_contrib_sum - obj_contrib, obj_contrib], dim=0)
         obj_contrib = F.normalize(obj_contrib, dim=0)
         obj_contrib[0, :] += gamma
@@ -95,8 +95,9 @@ def opt_label_w_seg(gaussians : GaussianModel,
             if all_counts is None:
                 all_counts = torch.zeros_like(used_count)
             all_counts += used_count
-        gc.collect()
-        torch.cuda.empty_cache()
+    # moved outside loop: no need to flush after every single camera render
+    gc.collect()
+    torch.cuda.empty_cache()
 
     # Filter points that are below threshold
     if pts_filter is not None:
@@ -110,10 +111,10 @@ def counts_to_obj_labels(all_counts, slackness=0.0):
     Output: all_obj_labels
     """
     all_obj_labels = multi_instance_opt(all_counts, slackness)
-    print(f"{torch.sum(all_obj_labels, dim=1)[1]} Gaussians identified")
+    # print(f"{torch.sum(all_obj_labels, dim=1)[1]} Gaussians identified")  # too verbose: fires for every mask + every fine-tune iteration
     return all_obj_labels
 
-def find_match(target_viewpoint_stack, gs_params, obj_used_mask, iou_threshold, dir_name):
+def find_match(target_viewpoint_stack, gs_params, obj_used_mask, iou_threshold, dir_name, verbose=False):
     """
     Input: 
         target_viewpoint_stack: a list of viewpoints to iterate
@@ -166,9 +167,10 @@ def find_match(target_viewpoint_stack, gs_params, obj_used_mask, iou_threshold, 
             # print(f"find a mathch with IOU={max_iou} with seg {match_mask_name}") 
     
     assert len(new_viewpoint_stack) == len(match_mask_paths)
-    print(f"Total of {len(new_viewpoint_stack)} / {len(target_viewpoint_stack)} matches" +
-        (f" with mean IOU {sum_max_iou / len(new_viewpoint_stack)} > {iou_threshold} found for refine training." 
-        if len(new_viewpoint_stack) > 0 else ""))
+    if verbose:
+        print(f"  Matched {len(new_viewpoint_stack)} / {len(target_viewpoint_stack)} cameras" +
+            (f", mean IoU {sum_max_iou / len(new_viewpoint_stack):.3f} > {iou_threshold}"
+            if len(new_viewpoint_stack) > 0 else " (no matches)"))
     return new_viewpoint_stack, match_mask_paths
 
 def update_processed_masks(processed_masks, new_mask_paths):
@@ -179,7 +181,7 @@ def update_processed_masks(processed_masks, new_mask_paths):
 
 ########### End of Find & Match helper methods ###########
         
-def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold):
+def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_vis_overlay, vis_max_heads):
     # All 3DSeg results will be saved under 3dgs_model_path/wheat-head/(exp_name)
     out_dir = os.path.join(dataset.model_path, "wheat-head", exp_name)
     sub_dirs = ["ply", "img", "count"]
@@ -205,7 +207,7 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold):
     print(f"Loaded point cloud size: {len(gaussians.get_xyz)}")
 
     z_mean = torch.mean(gaussians.get_xyz.cpu()[:, 2])
-    print(f"All Gaussians z_min: {torch.min(gaussians.get_xyz.cpu()[:, 2])} zmax: {torch.max(gaussians.get_xyz.cpu()[:, 2])}")
+    # print(f"All Gaussians z_min: {torch.min(gaussians.get_xyz.cpu()[:, 2])} zmax: {torch.max(gaussians.get_xyz.cpu()[:, 2])}")  # debug detail
     pts_filter = (gaussians.get_xyz.cpu()[:, 2] < z_mean)
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
@@ -214,7 +216,8 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold):
     viewpoint_stack_eval = scene.getTestCameras().copy()
 
     print(f"Length of viewpoint stack: {len(viewpoint_stack)}")
-    
+    _overlay_executor = ThreadPoolExecutor(max_workers=4)  # async overlay JPG and 2DSeg saves
+
     twoD_seg_results = {} # 2D segmentation results update through the pipeline
     os.makedirs(f"{out_dir}/2DSeg", exist_ok=True)
     all_mask_paths = [] # a list of saved binary masks in png format
@@ -234,27 +237,44 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold):
     assert len(all_mask_paths) == num_bboxes
     print(f"Total of {len(all_mask_paths)} mask & bounding box pairs found")
 
+    if WANDB_ENABLED:
+        import wandb
+        wandb.init(
+            project="wheat3dgs-seg",
+            name=exp_name,
+            config={
+                "exp_name": exp_name,
+                "iou_threshold": iou_threshold,
+                "resolution": dataset.resolution,
+                "total_masks": len(all_mask_paths),
+                "num_train_cameras": len(viewpoint_stack),
+                "save_vis_overlay": save_vis_overlay,
+                "vis_max_heads": vis_max_heads,
+            }
+        )
+
     random.shuffle(all_mask_paths)
     processed_masks = set()
     buffered_masks = set()
     num_wheat_head = 0
+    ply_futures = []  # async PLY saves, waited on at end
     
     #### Iterate through all YOLO/SAM bbox/seg pairs
     for exp_id, this_mask_path in tqdm(enumerate(all_mask_paths), total=len(all_mask_paths), desc="Processing Masks"):
-        print("-" * 50)
+        # print("-" * 50)  # separator line fires 8500 times
         this_mask_name = os.path.splitext(os.path.basename(this_mask_path))[0]
-        
+
         if this_mask_name in processed_masks:
-            print(f"{this_mask_name} already processed and saved")
+            # print(f"{this_mask_name} already processed and saved")  # fires for majority of 8500 iterations
             continue
         elif this_mask_name in buffered_masks:
             buffered_masks.remove(this_mask_name)
             processed_masks.add(this_mask_name)
-            print(f"{this_mask_name} has been iterated once. will be moved to processed set.")
+            # print(f"{this_mask_name} has been iterated once. will be moved to processed set.")
 
         this_image_name = this_mask_name[:-4]
         mask_idx = int(this_mask_name[-3:])
-        CONSOLE.print(f"==== Train 3D segmentation against {this_mask_name} ====")
+        # print(f"==== Train 3D segmentation against {this_mask_name} ====")  # fires for every unprocessed mask
         
         this_viewpoint_cam = next(cam for cam in viewpoint_stack if cam.image_name == this_image_name)
         
@@ -263,7 +283,7 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold):
         all_counts = opt_label_w_seg(gaussians, [this_viewpoint_cam], [this_mask_path], pipe, background, pts_filter)
         all_obj_labels = counts_to_obj_labels(all_counts)
         if torch.sum(all_obj_labels, dim=1)[1] == 0:
-            print(f"Can't identify any Gaussians above average height for this mask: {this_mask_name}), PASS")
+            print(f"WARNING: Can't identify Gaussians for mask {this_mask_name}, skipping")
             continue
         obj_used_mask = (all_obj_labels[1]).bool()
 
@@ -277,12 +297,13 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold):
             gs_params = (gaussians, pipe, background),
             obj_used_mask = obj_used_mask,
             iou_threshold = iou_threshold,
-            dir_name = os.path.dirname(this_mask_path)
+            dir_name = os.path.dirname(this_mask_path),
+            verbose = True  # print match stats only on initial call, not in fine-tune loop
         )
         matched_viewpoint_stack += new_viewpoint_stack # as a whole
         matched_mask_paths += new_mask_paths
         processed_masks = update_processed_masks(processed_masks, new_mask_paths)
-        CONSOLE.print(f"==== Find {len(new_mask_paths)} newly matched masks. {len(matched_mask_paths)} matched in total ====")
+        # print(f"==== Find {len(new_mask_paths)} newly matched masks. {len(matched_mask_paths)} matched in total ====")  # covered by wheat head found message below
 
         #### Only do Refine training w.r.t newly found segmentation when a pairf of matches is found ####
         if len(new_viewpoint_stack) > 0:
@@ -291,11 +312,11 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold):
             this_mask_dir = f"{img_dir}/{num_wheat_head:04}"
             os.makedirs(this_mask_dir, exist_ok=True)
             processed_masks.add(this_mask_name)
-            
-            CONSOLE.print(f"==== Start refine training w.r.t the {num_wheat_head}th potential wheat head found ====")
-            
-            for i in range(1, 100): 
-                CONSOLE.print(f"-- fine-tuning iteration {i} --")
+
+            # print(f"==== Start refine training w.r.t the {num_wheat_head}th potential wheat head found ====")  # covered by wheat head found message below
+
+            for i in range(1, 100):
+                # print(f"-- fine-tuning iteration {i} --")  # up to 100x per head x 300 heads = 30000 lines
                 assert len(new_viewpoint_stack) == len(new_mask_paths)
                 # Update 3D Segmentation
                 update_counts = opt_label_w_seg(gaussians, new_viewpoint_stack, new_mask_paths, pipe, background)
@@ -314,82 +335,139 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold):
                     dir_name = os.path.dirname(this_mask_path)
                 )
                 if len(new_viewpoint_stack) == 0:
-                    CONSOLE.print(f"No new matched found from {len(viewpoint_stack) - len(matched_viewpoint_stack)} vpts")
+                    print(f"  Fine-tuning converged after {i} iteration(s)")
                     break
                 else:
                     matched_viewpoint_stack += new_viewpoint_stack # as a whole
                     matched_mask_paths += new_mask_paths
                     processed_masks = update_processed_masks(processed_masks, new_mask_paths)
-                    CONSOLE.print(f"-- Find {len(new_mask_paths)} newly matched masks. {len(matched_mask_paths)} matched in total --")
+                    # print(f"-- Find {len(new_mask_paths)} newly matched masks. {len(matched_mask_paths)} matched in total --")  # too verbose in fine-tune loop
 
             # Check if Gaussians are largely overlap with previously identified wheat head
             which_overlap_object = gaussians.reset_label(obj_used_mask=obj_used_mask, set_which_object_to=num_wheat_head)
-            gaussians_obj = deepcopy(gaussians)
+            # only copy the 7 tensors needed for save_ply/prune_points, moved to CPU to avoid doubling VRAM
+            gaussians_obj = GaussianModel(gaussians.max_sh_degree)
+            gaussians_obj._xyz = gaussians._xyz.detach().cpu()
+            gaussians_obj._features_dc = gaussians._features_dc.detach().cpu()
+            gaussians_obj._features_rest = gaussians._features_rest.detach().cpu()
+            gaussians_obj._opacity = gaussians._opacity.detach().cpu()
+            gaussians_obj._scaling = gaussians._scaling.detach().cpu()
+            gaussians_obj._rotation = gaussians._rotation.detach().cpu()
+            gaussians_obj._which_object = gaussians._which_object.detach().cpu()
             if which_overlap_object is not None:
                 num_wheat_head -= 1 # if overlapping, then it's not a new wheat head
                 shutil.rmtree(this_mask_dir)
                 which_wheat_head = which_overlap_object
-                CONSOLE.print(f"===== This wheat head is largely overlapped with previous one {which_overlap_object}, Remove created {this_mask_dir} =====")
                 num_GS = torch.sum(gaussians_obj.get_which_object.detach() == which_wheat_head).item()
                 gaussians_obj.prune_points(mask=torch.flatten(gaussians_obj.get_which_object.detach() != which_wheat_head), during_training=False)
                 letter_suffix = find_new_mask_dir(img_dir, which_wheat_head)
-                gaussians_obj.save_ply(f"{ply_dir}/wh_{which_wheat_head:04}_{letter_suffix}.ply")
+                ply_futures.append(_overlay_executor.submit(gaussians_obj.save_ply, f"{ply_dir}/wh_{which_wheat_head:04}_{letter_suffix}.ply"))
                 this_mask_dir = f"{img_dir}/{which_wheat_head:04}_{letter_suffix}"
                 os.makedirs(this_mask_dir, exist_ok=True)
-                CONSOLE.print(f"Create new mask dir {this_mask_dir}")
+                # print(f"Create new mask dir {this_mask_dir}")  # debug detail
+                print(f"\n[mask {exp_id+1}/{len(all_mask_paths)}] Wheat head #{which_wheat_head} updated (overlap) — {len(matched_viewpoint_stack)} matches, {num_GS} Gaussians")
                 writer.writerow([f"{which_wheat_head:04}_{letter_suffix}", this_mask_name, str(len(matched_viewpoint_stack)), str(num_GS)])
                 results.flush()
             else:
-                CONSOLE.print(f"======== Identify {num_wheat_head}th new wheat head with {len(matched_viewpoint_stack)} matches ========")
                 which_wheat_head = num_wheat_head
                 num_GS = torch.sum(gaussians_obj.get_which_object.detach() == which_wheat_head).item()
                 gaussians_obj.prune_points(mask=torch.flatten(gaussians_obj.get_which_object.detach() != which_wheat_head), during_training=False)
-                gaussians_obj.save_ply(f"{ply_dir}/wh_{which_wheat_head:04}.ply")
+                ply_futures.append(_overlay_executor.submit(gaussians_obj.save_ply, f"{ply_dir}/wh_{which_wheat_head:04}.ply"))
+                print(f"\n[mask {exp_id+1}/{len(all_mask_paths)}] Wheat head #{which_wheat_head} found — {len(matched_viewpoint_stack)} matches, {num_GS} Gaussians")
                 writer.writerow([f"{which_wheat_head:04}", this_mask_name, str(len(matched_viewpoint_stack)), str(num_GS)])
                 results.flush()
 
-            # Save used count for future use
-            print(f"For wh {which_wheat_head}, all_counts.shape {all_counts.shape}")
-            counts_save_pth = f"{count_dir}/{which_wheat_head:04}.pt"
-            if os.path.exists(counts_save_pth):
-                print(f"{counts_save_pth} exists...removing...")
-                os.remove(counts_save_pth)
-            torch.save(all_counts.detach().cpu(), counts_save_pth)
+            if WANDB_ENABLED:
+                wandb.log({
+                    "wheat_heads_found": num_wheat_head,
+                    "head_matches": len(matched_viewpoint_stack),
+                    "head_gaussians": num_GS,
+                    "head_is_overlap": which_overlap_object is not None,
+                    "masks_processed": len(processed_masks),
+                    "masks_buffered": len(buffered_masks),
+                    "mask_progress_pct": (exp_id + 1) / len(all_mask_paths) * 100,
+                })
+
+            # Save used count for future use (commented out: per-head count files are not used by any downstream step)
+            # print(f"For wh {which_wheat_head}, all_counts.shape {all_counts.shape}")
+            # counts_save_pth = f"{count_dir}/{which_wheat_head:04}.pt"
+            # if os.path.exists(counts_save_pth):
+            #     print(f"{counts_save_pth} exists...removing...")
+            #     os.remove(counts_save_pth)
+            # torch.save(all_counts.detach().cpu(), counts_save_pth)
 
             #### Evaluation of refined training ####
-            # os.makedirs(f"{this_mask_dir}/overlay", exist_ok=True)  
+            # os.makedirs(f"{this_mask_dir}/overlay", exist_ok=True)
+            overlay_futures = []
             for i, viewpoint_cam in enumerate(viewpoint_stack + viewpoint_stack_eval):
                 with torch.no_grad():
                     render_pkg = flashsplat_render(viewpoint_cam, gaussians, pipe, background, used_mask=obj_used_mask)
                     render_alpha = render_pkg["alpha"].squeeze().detach().cpu()
-                    pred_seg = render_alpha.numpy() > 0.5          
+                    pred_seg = render_alpha.numpy() > 0.5
                     mask = Image.fromarray(np.where(pred_seg, 255, 0).astype(np.uint8), mode='L')
                     # mask.save(f"{this_mask_dir}/masks/{viewpoint_cam.image_name}.jpg")
-                    vis_image_w_overlay(img_tensor=viewpoint_cam.original_image, 
-                                        save_dir=f"{this_mask_dir}",
-                                        save_name=viewpoint_cam.image_name,
-                                        pred_seg=pred_seg,
-                                        resize_factor=4)
+                    if save_vis_overlay and (vis_max_heads == 0 or which_wheat_head <= vis_max_heads):
+                        # async: submit overlay save to background thread while GPU renders next camera
+                        overlay_futures.append(_overlay_executor.submit(
+                            vis_image_w_overlay,
+                            img_tensor=viewpoint_cam.original_image.detach().cpu(),  # CPU copy for thread safety
+                            save_dir=f"{this_mask_dir}",
+                            save_name=viewpoint_cam.image_name,
+                            pred_seg=pred_seg,
+                            resize_factor=4
+                        ))
                     # Update the 2D seg&count results
                     assert twoD_seg_results[viewpoint_cam.image_name].shape == render_alpha.shape
                     twoD_seg_results[viewpoint_cam.image_name][render_alpha > 0.5] = which_wheat_head
-                    # Update the saved 2D seg saved
-                    torch.save(twoD_seg_results[viewpoint_cam.image_name], f"{out_dir}/2DSeg/{viewpoint_cam.image_name}.pt")
+                    # 2DSeg saved once at end of pipeline (optimization 2: was per-camera per-head = 10,800 writes)
+            # wait for all overlay saves before moving to next wheat head
+            for f in overlay_futures:
+                f.result()
                     
         else:
-            CONSOLE.print(f"==== Not matchings found for {this_mask_name}. Add to Buffer. ====")
+            # print(f"==== Not matchings found for {this_mask_name}. Add to Buffer. ====")  # fires too often, not useful
             if this_mask_name not in processed_masks and this_mask_name not in buffered_masks:
                 buffered_masks.add(this_mask_name)
 
-        if exp_id % 5 == 0: # Save Gaussians every 5 distinct masks
-            gaussians.save_ply(f"{out_dir}/gaussians.ply")
-            print("Gaussians saved!")
+        # if exp_id % 5 == 0: # Save Gaussians every 5 distinct masks (commented out: checkpoint is never resumed from, and fires 1700x for 8500 masks)
+        #     gaussians.save_ply(f"{out_dir}/gaussians.ply")
+        #     print("Gaussians saved!")
 
-        print(f"======== Processed masks {len(processed_masks.union(buffered_masks))} / {len(all_mask_paths)} ========")
-        print("-" * 50)
+        # print(f"======== Processed masks {len(processed_masks.union(buffered_masks))} / {len(all_mask_paths)} ========")  # tqdm bar already shows this
+        # print("-" * 50)
         
     gaussians.save_ply(f"{out_dir}/gaussians.ply")
     results.close()
+
+    # wait for all async PLY saves to finish before saving final state
+    for f in ply_futures:
+        f.result()
+
+    # save all 2DSeg label maps once at the end (optimization 2: was 300 heads × 36 cameras = 10,800 writes)
+    all_eval_cams = viewpoint_stack + viewpoint_stack_eval
+    seg_futures = [
+        _overlay_executor.submit(torch.save, twoD_seg_results[cam.image_name], f"{out_dir}/2DSeg/{cam.image_name}.pt")
+        for cam in all_eval_cams
+    ]
+    for f in seg_futures:
+        f.result()
+    _overlay_executor.shutdown(wait=True)
+
+    print(f"\n{'='*60}")
+    print(f"  SEGMENTATION COMPLETE")
+    print(f"{'='*60}")
+    print(f"  Wheat heads found:       {num_wheat_head}")
+    print(f"  Masks matched:           {len(processed_masks)} / {len(all_mask_paths)}")
+    print(f"  Masks never matched:     {len(buffered_masks)}   (no cross-camera confirmation)")
+    print(f"  Results saved to:        {out_dir}")
+    print(f"{'='*60}")
+
+    if WANDB_ENABLED:
+        wandb.summary["total_wheat_heads"] = num_wheat_head
+        wandb.summary["masks_matched"] = len(processed_masks)
+        wandb.summary["masks_unmatched"] = len(buffered_masks)
+        wandb.summary["total_masks"] = len(all_mask_paths)
+        wandb.finish()
         
 if __name__ == "__main__":
     # Set up command line argument parser
@@ -400,8 +478,12 @@ if __name__ == "__main__":
     parser.add_argument('--load_iteration', type=str, default="-1")
     parser.add_argument("--exp_name", type=str, help="Exp name")
     parser.add_argument("--iou_threshold", type=float, default=0.5, help="IOU threshold for matching")
+    parser.add_argument("--save_vis_overlay", action="store_true", default=True, help="Save overlay JPGs per wheat head per camera")
+    parser.add_argument("--no_save_vis_overlay", dest="save_vis_overlay", action="store_false")
+    parser.add_argument("--vis_max_heads", type=int, default=10, help="Save overlays for first N heads only. 0 = all heads.")
     args = parser.parse_args(sys.argv[1:])
     print("Optimizing " + args.model_path)
 
-    training(lp.extract(args), op.extract(args), pp.extract(args), 
-             args.load_iteration, args.exp_name, args.iou_threshold)
+    training(lp.extract(args), op.extract(args), pp.extract(args),
+             args.load_iteration, args.exp_name, args.iou_threshold,
+             args.save_vis_overlay, args.vis_max_heads)

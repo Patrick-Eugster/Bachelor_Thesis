@@ -1,26 +1,61 @@
-import subprocess
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+import subprocess
 import sys
 import time
+import datetime
 
 # --- CONFIGURATION ---
 DATASET_PATH = "../Wheat3DGS-Yolo-SAM/data/plot_461"
 EXP_NAME = "run_1"
-DATA_DEVICE_CPU = True   # Set True to keep images in RAM instead of VRAM (safer for 16GB GPU)
-RESOLUTION = 2           # 1 = full resolution, 2 = half (saves ~4x rasterizer VRAM), 4 = quarter
-OPACITY_PRUNE_THRESHOLD = 0.005  # Gaussians below this opacity get pruned. Default 0.005. Raise to 0.01 to save VRAM
+DATA_DEVICE_CPU = True # Set True to keep images in RAM instead of VRAM (works only for some steps)
+
+RESOLUTION = 2 # 1 = full resolution, 2 = half (saves ~4x rasterizer VRAM), 4 = quarter
+OPACITY_PRUNE_THRESHOLD = 0.005  # Gaussians below this opacity get pruned. Default: 0.005. Raise to 0.01 to save VRAM (safe for wheat)
+SH_DEGREE = 3 # Spherical harmonics degree for view-dependent color. Default: 3. Set to 0 to save VRAM                     
+DENSIFY_UNTIL_ITER = 11000 # Stop adding new Gaussians after this iteration. Default: 11000. Lower to save VRAM (less detail)
+DENSIFY_GRAD_THRESHOLD = 0.0002  # Min gradient to split a Gaussian. Default: 0.0002. Raise to 0.0003 to save VRAM (slightly less detail)
 
 # output folder is auto-named from settings so different configs never overwrite each other
-MODEL_PATH = f"{DATASET_PATH}/3dgs_output_res{RESOLUTION}_op{str(OPACITY_PRUNE_THRESHOLD).replace('.', '_')}"
+_op  = str(OPACITY_PRUNE_THRESHOLD).replace('.', '_')
+_dgt = str(DENSIFY_GRAD_THRESHOLD).replace('.', '_')
+MODEL_PATH = f"{DATASET_PATH}/3dgs_output_res{RESOLUTION}_opt{_op}_shd{SH_DEGREE}_dui{DENSIFY_UNTIL_ITER}_dgt{_dgt}"
+
+# --- SEGMENTATION VISUALIZATION ---
+SAVE_VIS_OVERLAY = True  # Save overlay JPGs showing each wheat head projected onto all cameras
+VIS_MAX_HEADS = 10 # Save overlays for first N heads only. 0 = all heads (~10800 files for 300 heads x 36 cameras)
+
+# --- LOG FILE ---
+LOG_FILE = f"{MODEL_PATH}/logs/{EXP_NAME}.txt"  # terminal output saved here. Set to None to disable.
+LOG_SEG_ONLY = True  # True = only log Step 4 (run_3d_seg). False = log the entire pipeline.
 
 # --- PIPELINE STEPS (toggle on/off) ---
 RUN_TRAIN = False         # Step 1: Train 3DGS model (the long one)
 RUN_RENDER = False        # Step 2: Render from original camera views
-RUN_METRICS = True       # Step 3: Compute PSNR/SSIM/LPIPS quality scores
-RUN_SEG = False           # Step 4: 3D wheat head segmentation
+RUN_METRICS = False       # Step 3: Compute PSNR/SSIM/LPIPS quality scores
+RUN_SEG = True           # Step 4: 3D wheat head segmentation
 RUN_RENDER_360 = False    # Step 5: Render 360 flyaround video
 RUN_EVAL = False          # Step 6: Evaluate segmentation quality (IoU)
 
+
+
+class _Tee:
+    """Writes all print() output to both the terminal and a log file simultaneously."""
+    def __init__(self, filepath):
+        os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
+        self.file = open(filepath, 'w', encoding='utf-8')
+        self._stdout = sys.stdout
+        self.file.write(f"=== Pipeline log started {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n\n")
+        self.file.flush()
+    def write(self, data):
+        self._stdout.write(data)
+        self.file.write(data)
+    def flush(self):
+        self._stdout.flush()
+        self.file.flush()
+    def close(self):
+        sys.stdout = self._stdout
+        self.file.close()
 
 
 def fmt_time(seconds):
@@ -33,9 +68,19 @@ def fmt_time(seconds):
 def run_command(command_list):
     """Helper to run a terminal command and wait for it to finish."""
     print(f"\n>>> RUNNING: {' '.join(command_list)}\n")
-    result = subprocess.run(command_list)
-    if result.returncode != 0:
-        print(f"!!! ERROR: Command failed with code {result.returncode}")
+    if LOG_FILE:
+        # capture subprocess output line by line so it goes through sys.stdout (= _Tee) and into the log
+        process = subprocess.Popen(command_list, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        for line in process.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+        process.wait()
+        returncode = process.returncode
+    else:
+        result = subprocess.run(command_list)
+        returncode = result.returncode
+    if returncode != 0:
+        print(f"!!! ERROR: Command failed with code {returncode}")
         sys.exit(1)
 
 def run_step(step_name, command_list, timings):
@@ -53,6 +98,18 @@ def run_step(step_name, command_list, timings):
 
 
 def main():
+    tee = _Tee(LOG_FILE) if LOG_FILE and not LOG_SEG_ONLY else None
+    if tee:
+        sys.stdout = tee
+        print(f"Logging entire pipeline to: {os.path.abspath(LOG_FILE)}")
+
+    try:
+        _run_pipeline()
+    finally:
+        if tee:
+            tee.close()
+
+def _run_pipeline():
     data_device_flag = ["--data_device", "cpu"] if DATA_DEVICE_CPU else []
     resolution_str = str(RESOLUTION)
     timings = {}
@@ -66,6 +123,9 @@ def main():
             "--resolution", resolution_str,
             "--eval",
             "--opacity_cull_threshold", str(OPACITY_PRUNE_THRESHOLD),
+            "--sh_degree", str(SH_DEGREE),
+            "--densify_until_iter", str(DENSIFY_UNTIL_ITER),
+            "--densify_grad_threshold", str(DENSIFY_GRAD_THRESHOLD),
         ] + data_device_flag, timings)
 
     # Step 2: Render from original training/test camera views (for quality check)
@@ -87,15 +147,22 @@ def main():
 
     # Step 4: 3D Segmentation — assign wheat head IDs to Gaussians
     if RUN_SEG:
+        seg_tee = _Tee(LOG_FILE) if LOG_FILE and LOG_SEG_ONLY else None
+        if seg_tee:
+            sys.stdout = seg_tee
+            print(f"Logging Step 4 to: {os.path.abspath(LOG_FILE)}")
         run_step("4. Segmentation", [
             "python", "run_3d_seg.py",
             "-s", DATASET_PATH,
             "-m", MODEL_PATH,
             "--resolution", resolution_str,
             "--eval",
-            "--iou_threshold", "0.6",
-            "--exp_name", EXP_NAME
-        ] + data_device_flag, timings)
+            "--iou_threshold", "0.5",
+            "--exp_name", EXP_NAME,
+            "--vis_max_heads", str(VIS_MAX_HEADS),
+        ] + ([] if SAVE_VIS_OVERLAY else ["--no_save_vis_overlay"]) + data_device_flag, timings)
+        if seg_tee:
+            seg_tee.close()
 
     # Step 5: Render 360 flyaround video of the segmented wheat field
     if RUN_RENDER_360:
