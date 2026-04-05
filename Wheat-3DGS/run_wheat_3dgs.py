@@ -38,7 +38,6 @@ RUN_RENDER_360 = False    # Step 5: Render 360 flyaround video
 RUN_EVAL = False          # Step 6: Evaluate segmentation quality (IoU)
 
 
-
 class _Tee:
     """Writes all print() output to both the terminal and a log file simultaneously."""
     def __init__(self, filepath):
@@ -53,6 +52,10 @@ class _Tee:
     def flush(self):
         self._stdout.flush()
         self.file.flush()
+    def isatty(self):
+        return self._stdout.isatty()  # forward TTY check so wandb/rich keep colors
+    def fileno(self):
+        return self._stdout.fileno()  # forward file descriptor so wandb detects real terminal for OSC 8 links
     def close(self):
         sys.stdout = self._stdout
         self.file.close()

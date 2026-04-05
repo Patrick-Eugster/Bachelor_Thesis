@@ -94,13 +94,28 @@ def calculate_bbox_iou(box1, box2):
 def calculate_seg_iou(mask1, mask2):
     # Calculate intersection (logical AND)
     intersection = np.logical_and(mask1, mask2)
-    
+
     # Calculate union (logical OR)
     union = np.logical_or(mask1, mask2)
-    
+
     # Compute IoU
     iou = np.sum(intersection) / np.sum(union) if np.sum(union) > 0 else 0.0
     return iou
+
+def get_bbox_from_mask_gpu(mask_bool):
+    """GPU version of get_bbox_from_mask — input is a CUDA bool tensor (H, W)."""
+    pixels = mask_bool.nonzero(as_tuple=False)  # (N, 2): each row is [row_idx, col_idx]
+    if pixels.numel() == 0:
+        return None
+    y_min, x_min = pixels.min(dim=0).values
+    y_max, x_max = pixels.max(dim=0).values
+    return (x_min.item(), y_min.item(), x_max.item(), y_max.item())
+
+def calculate_seg_iou_gpu(mask1, mask2):
+    """GPU version of calculate_seg_iou — both inputs are CUDA bool tensors (H, W)."""
+    intersection = (mask1 & mask2).sum()
+    union = (mask1 | mask2).sum()
+    return (intersection / union).item() if union > 0 else 0.0
 
 ########### End of Image Helper Functions ###########
 
