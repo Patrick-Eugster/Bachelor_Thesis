@@ -31,11 +31,21 @@ LOG_SEG_ONLY = True  # True = only log Step 4 (run_3d_seg). False = log the enti
 
 # --- PIPELINE STEPS (toggle on/off) ---
 RUN_TRAIN = False         # Step 1: Train 3DGS model (the long one)
+
 RUN_RENDER = False        # Step 2: Render from original camera views
+
 RUN_METRICS = False       # Step 3: Compute PSNR/SSIM/LPIPS quality scores
-RUN_SEG = True           # Step 4: 3D wheat head segmentation
-RUN_RENDER_360 = False    # Step 5: Render 360 flyaround video
-RUN_EVAL = False          # Step 6: Evaluate segmentation quality (IoU)
+
+RUN_SEG = False           # Step 4: 3D wheat head segmentation
+
+RUN_RENDER_360 = False     # Step 5: Render 360 flyaround video
+FAST_RENDER_360 = True   # Step 5: False = original per-head flashsplat renders (correct colors); True = per-Gaussian coloring (fast)
+WHITE_BACKGROUND_360 = True  # Step 5: True = white background, False = black background
+N_FRAMES    = 200          # Step 5: number of frames in the flyaround video
+FRAMERATE   = 20          # Step 5: output video framerate (fps)
+ELEVATION   = 45          # Step 5: camera elevation angle in degrees
+
+RUN_EVAL = True          # Step 6: Evaluate segmentation quality (IoU)
 
 
 class _Tee:
@@ -190,14 +200,18 @@ def _run_pipeline():
 
     # Step 5: Render 360 flyaround video of the segmented wheat field
     if RUN_RENDER_360:
+        fast_render_flag = ["--fast_render"] if FAST_RENDER_360 else []
+        white_bg_flag = ["--white_background"] if WHITE_BACKGROUND_360 else []
         run_step("5. Render360", [
             "python", "render_360.py",
             "-s", DATASET_PATH,
             "-m", MODEL_PATH,
             "--render_type", "field",
             "--exp_name", EXP_NAME,
-            "--n_frames", "200"
-        ] + data_device_flag, timings)
+            "--n_frames", str(N_FRAMES),
+            "--framerate", str(FRAMERATE),
+            "--elevation", str(ELEVATION),
+        ] + fast_render_flag + white_bg_flag + data_device_flag, timings)
 
     # Step 6: Evaluate 3D segmentation quality (IoU vs SAM masks)
     if RUN_EVAL:

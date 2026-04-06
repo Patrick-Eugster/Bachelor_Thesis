@@ -1,9 +1,11 @@
 
 import gc
+import glob
 import math
 import os
 import shutil
 import subprocess
+import sys
 from argparse import ArgumentParser
 from os import makedirs
 
@@ -18,7 +20,7 @@ from scene import Scene
 from scene.cameras import MiniCam
 from utils.general_utils import safe_state
 from utils.graphics_utils import getProjectionMatrix, getWorld2View2
-from utils.wheatgs_helper import multi_instance_opt, render_360
+from utils.wheatgs_helper import render_360, render_360_fast
 
 #### Begin of 360-degree camera trajectory copied from gsgen ####
 # These two functions are adapted from the implementation in:
@@ -64,7 +66,7 @@ def opt_w_masks(viewpoint_cam, gaussians, pipe, background, obj_masks, obj_num=N
         obj_num = torch.unique(obj_masks).numel() - 1
     obj_masks = obj_masks.to(torch.float32).to("cuda")
     render_pkg = flashsplat_render(viewpoint_cam, gaussians, pipe, background, gt_mask=obj_masks.squeeze(), obj_num=obj_num)
-    print(render_pkg["render"].shape)
+    # print(render_pkg["render"].shape)  # debug leftover — render shape never changes
     used_count = render_pkg["used_count"].detach().cpu()
     return used_count, obj_num
 
@@ -127,7 +129,7 @@ def render_wheat_head(dataset : ModelParams, pipeline : PipelineParams, exp_name
                 "-framerate", str(framerate),
                 "-start_number", "0",
                 "-i", "%05d.png",  
-                "-vf", "scale=iw-mod(iw\,2):ih-mod(ih\,2)",
+                "-vf", r"scale=iw-mod(iw\,2):ih-mod(ih\,2)",
                 "-r", str(framerate),
                 "-vcodec", "libx264",
                 "-pix_fmt", "yuv420p",
@@ -136,8 +138,8 @@ def render_wheat_head(dataset : ModelParams, pipeline : PipelineParams, exp_name
             if not save_frames:
                 shutil.rmtree(render_path)
 
-def render_wheat_field(dataset : ModelParams, pipeline : PipelineParams, exp_name, 
-                       n_frames=100, framerate=10, elevation=45, save_frames=False, load_iteration=-1):
+def render_wheat_field(dataset : ModelParams, pipeline : PipelineParams, exp_name,
+                       n_frames=100, framerate=10, elevation=45, save_frames=False, load_iteration=-1, fast_render=False):
     seg2d_dir = os.path.join(dataset.model_path, "wheat-head", exp_name, "2DSeg")
     out_dir = os.path.join(dataset.model_path, "wheat-head", exp_name, "3DSeg")
     os.makedirs(out_dir, exist_ok=True)
@@ -157,33 +159,56 @@ def render_wheat_field(dataset : ModelParams, pipeline : PipelineParams, exp_nam
     # viewpoint_stack += viewpoint_stack_eval
     print(f"Length of viewpoint stack: {len(viewpoint_stack)}")
 
-    obj_num = 0
-    for viewpoint_cam in viewpoint_stack:
-        seg2d = torch.load(os.path.join(seg2d_dir, f"{viewpoint_cam.image_name}.pt"))
-        print(torch.max(seg2d))
-        if torch.max(seg2d) > obj_num:
-            obj_num = torch.max(seg2d)
-            print(f"Obj num updated to {obj_num}")
+    # Build all_obj_labels from the per-head PLY files saved by run_3d_seg.py (step 4).
+    # The whole-scene FlashSplat accumulation gives useless labels because background
+    # contributions dominate wheat head contributions for every Gaussian in the scene.
+    # The per-head PLY files contain 700-3000 Gaussians per head from step 4's targeted
+    # optimization. Their positions match gaussians.ply (the fine-tuned full scene model
+    # saved at the end of step 4) with 100% exact match — but NOT iteration_15000 (original
+    # model), because step 4 fine-tuning moves Gaussian positions.
+    ply_dir = os.path.join(dataset.model_path, "wheat-head", exp_name, "ply")
+    scene_ply = os.path.join(dataset.model_path, "wheat-head", exp_name, "gaussians.ply")
+    if os.path.exists(scene_ply) and os.path.exists(ply_dir):
+        # reload gaussians from fine-tuned model so positions match per-head PLYs
+        print(f"Loading fine-tuned scene model from step 4 ({scene_ply})...")
+        gaussians.load_ply(scene_ply)
+        print(f"Fine-tuned model: {len(gaussians.get_xyz)} Gaussians")
 
-    all_counts = None
-    for viewpoint_cam in viewpoint_stack:
-        seg2d = torch.load(os.path.join(seg2d_dir, f"{viewpoint_cam.image_name}.pt"))
-        used_count, flash_splat_obj_num = opt_w_masks(viewpoint_cam, gaussians, pipeline, background, seg2d, obj_num)
-        if all_counts is None:
-            all_counts = torch.zeros_like(used_count)
-        print(f"Used count: {used_count.shape}, flash_splat_obj_num {flash_splat_obj_num}")
-        all_counts += used_count
-        gc.collect()
-        torch.cuda.empty_cache()
-    print(f"All counts: {all_counts.shape}")
-    slackness = 0.0
-    torch.save(all_counts.detach().cpu(), os.path.join(dataset.model_path, "wheat-head", exp_name, "all_counts.pth"))
-    all_obj_labels = multi_instance_opt(all_counts, slackness)
-    print("All_obj_labels: ", all_obj_labels.shape)
-    # Save for future rendering
+        # build position → index lookup for O(1) matching
+        fine_xyz_np = gaussians.get_xyz.detach().cpu().numpy()
+        pos_to_idx = {fine_xyz_np[i].tobytes(): i for i in range(len(fine_xyz_np))}
+
+        # collect all per-head PLY files and find max head ID
+        head_plys = sorted(glob.glob(os.path.join(ply_dir, "wh_*.ply")))
+        def _head_id(path):
+            """Parse head ID from wh_0001.ply or wh_0001_a.ply → 1"""
+            return int(os.path.splitext(os.path.basename(path))[0].split('_')[1])
+        max_head_id = max(_head_id(p) for p in head_plys)
+
+        all_obj_labels = torch.zeros(max_head_id + 1, len(fine_xyz_np), dtype=torch.bool)
+        head_gs = GaussianModel(dataset.sh_degree)
+        for ply_file in head_plys:
+            head_id = _head_id(ply_file)
+            head_gs.load_ply(ply_file)
+            head_xyz_np = head_gs.get_xyz.detach().cpu().numpy()
+            for i in range(len(head_xyz_np)):
+                idx = pos_to_idx.get(head_xyz_np[i].tobytes(), -1)
+                if idx >= 0:
+                    all_obj_labels[head_id, idx] = True
+
+        n_labeled = all_obj_labels[1:].any(dim=0).sum().item()
+        print(f"Gaussians labeled from {len(head_plys)} PLY files: {n_labeled}/{len(fine_xyz_np)} ({100*n_labeled/len(fine_xyz_np):.1f}%)")
+    else:
+        print("WARNING: gaussians.ply or ply/ not found — cannot build labels. Aborting.")
+        return
+
+    labels_mb = all_obj_labels.numel() * all_obj_labels.element_size() / 1e6
+    print(f"Saving all_obj_labels ({labels_mb:.0f} MB)...")
     torch.save(all_obj_labels.detach().cpu(), os.path.join(dataset.model_path, "wheat-head", exp_name, "all_obj_labels.pth"))
-    output_video = render_360(viewpoint_stack[0], scene.cameras_extent, out_dir, n_frames, framerate, gaussians, pipeline, background, 
-                              all_obj_labels=all_obj_labels, elevation=elevation)
+    print("Starting render loop...")
+    render_fn = render_360_fast if fast_render else render_360
+    output_video = render_fn(viewpoint_stack[0], scene.cameras_extent, out_dir, n_frames, framerate, gaussians, pipeline, background,
+                             all_obj_labels=all_obj_labels, all_counts=None, elevation=elevation)
     if not save_frames: # if not specified then remove the saved frames for generating video
         shutil.rmtree(out_dir)
 
@@ -200,11 +225,12 @@ if __name__ == "__main__":
     parser.add_argument("--framerate", type=int, default=10, help="framerate of the rendered video")
     parser.add_argument("--elevation", type=int, default=45, help="elevation angle for the camera trajectory rotating around the scene")
     parser.add_argument("--save_frames", action="store_true", help="If specified, save frames in addition to output video")
+    parser.add_argument("--fast_render", action="store_true", help="Use single colored render per frame instead of N_heads flashsplat renders (~N_heads× faster)")
     args = get_combined_args(parser)
     print(f"Rendering {args.model_path} for 3D segmentation experiment {args.exp_name}, Option: {args.render_type}")
     if args.render_type == "field":
         print("Render the 3D segmentation on the whole wheat field")
-        render_wheat_field(model.extract(args), pipeline.extract(args), args.exp_name, args.n_frames, args.framerate, args.elevation, args.save_frames)
+        render_wheat_field(model.extract(args), pipeline.extract(args), args.exp_name, args.n_frames, args.framerate, args.elevation, args.save_frames, fast_render=args.fast_render)
     elif args.render_type == "head":
         print("Render each individual segmented wheat head")
         render_wheat_head(model.extract(args), pipeline.extract(args), args.exp_name, args.n_frames, args.framerate, args.elevation, args.save_frames)

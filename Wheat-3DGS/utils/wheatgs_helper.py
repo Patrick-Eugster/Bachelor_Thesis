@@ -270,7 +270,7 @@ def eval_obj_labels(all_obj_labels, viewpoint_cam, gaussians, pipe, background):
         max_alpha[pix_mask] = render_alpha[pix_mask]
     return pred_mask
 
-def render_360(og_view, scene_radius, render_path, n_frames, framerate, gaussians, pipeline, background, elevation=45, all_obj_labels=None):
+def render_360(og_view, scene_radius, render_path, n_frames, framerate, gaussians, pipeline, background, elevation=45, all_obj_labels=None, all_counts=None):
     from gaussian_renderer import render
     os.makedirs(render_path, exist_ok=True)
     gs_centroid = torch.mean(gaussians.get_xyz.detach(), dim=0).cpu().tolist()
@@ -279,7 +279,10 @@ def render_360(og_view, scene_radius, render_path, n_frames, framerate, gaussian
     znear, zfar = og_view.znear, og_view.zfar
     camera_distance = scene_radius * 2
     c2ws = get_camera_path_fixed_elevation(n_frames=n_frames, n_circles=1, camera_distance=camera_distance, cam_center=gs_centroid, elevation=elevation)
-    for idx in tqdm(range(len(c2ws)), desc="render360"):
+    print_every = max(1, n_frames // 10)  # print progress ~10 times total
+    for idx in range(len(c2ws)):
+        if idx % print_every == 0:
+            print(f"render360: frame {idx}/{n_frames}")
         c2w = c2ws[idx]
         c2w = np.vstack([c2w, [0.0, 0.0, 0.0, 1.0]])
         w2c = np.linalg.inv(np.float64(c2w))
@@ -300,21 +303,24 @@ def render_360(og_view, scene_radius, render_path, n_frames, framerate, gaussian
         torchvision.utils.save_image(rgb_image, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
         gc.collect()
         torch.cuda.empty_cache()
-        
+    print(f"render360: frame {n_frames}/{n_frames} — done")
+
     output_video = os.path.join(os.path.dirname(render_path), "wheat_field_360.mp4")
-    try:
-        (
-            ffmpeg
-            .input(f"{render_path}/%05d.png", framerate=framerate, start_number=0)
-            .filter("scale", "iw-mod(iw,2)", "ih-mod(ih,2)")  # Scale filter
-            .output(output_video, r=framerate, vcodec="libx264", pix_fmt="yuv420p")
-            .global_args("-loglevel", "error")  # Set global log level
-            .run(capture_stdout=True, capture_stderr=True)
-        )
-        print(f"Video created successfully at {output_video}!")
-    except ffmpeg.Error as e:
-        print("Error during FFmpeg execution:")
-        print("STDERR:", e.stderr.decode())
+    print("Stitching frames into video...")
+    subprocess.run([
+        "ffmpeg",
+        "-loglevel", "error",
+        "-y",
+        "-framerate", str(framerate),
+        "-start_number", "0",
+        "-i", os.path.join(render_path, "%05d.png"),
+        "-vf", r"scale=iw-mod(iw\,2):ih-mod(ih\,2)",
+        "-r", str(framerate),
+        "-vcodec", "libx264",
+        "-pix_fmt", "yuv420p",
+        output_video
+    ], check=True)
+    print(f"Video saved to {output_video}")
     
     # subprocess.run([
     #     "module load ffmpeg/6.0 && ",
@@ -332,4 +338,100 @@ def render_360(og_view, scene_radius, render_path, n_frames, framerate, gaussian
     
     # shutil.rmtree(render_path)
     return output_video
-    
+
+
+def render_360_fast(og_view, scene_radius, render_path, n_frames, framerate, gaussians, pipeline, background, elevation=45, all_obj_labels=None, all_counts=None):
+    """Per-Gaussian colored 360 flyaround — bakes head colors into Gaussians, 1 render per frame.
+
+    ~N_heads times faster than render_360 while still showing distinct per-head colors.
+    Bakes a HSV palette into features_dc for labeled Gaussians, renders, then restores originals.
+    If all_obj_labels is None, falls back to plain RGB render with no coloring.
+    all_counts is accepted but ignored.
+    """
+    import colorsys
+    from gaussian_renderer import render
+    os.makedirs(render_path, exist_ok=True)
+    gs_centroid = torch.mean(gaussians.get_xyz.detach(), dim=0).cpu().tolist()
+    width, height = math.floor(og_view.image_width / 2), math.floor(og_view.image_height / 2)
+    fovy, fovx = og_view.FoVy, og_view.FoVx
+    znear, zfar = og_view.znear, og_view.zfar
+    camera_distance = scene_radius * 2
+    c2ws = get_camera_path_fixed_elevation(n_frames=n_frames, n_circles=1, camera_distance=camera_distance, cam_center=gs_centroid, elevation=elevation)
+
+    orig_features_dc = None
+    orig_features_rest = None
+    if all_obj_labels is not None:
+        # build HSV palette for heads 1..n_heads-1 (index 0 = background, skipped)
+        n_heads = all_obj_labels.shape[0]
+        SH_C0 = 0.28209479177387814
+        palette = []
+        for i in range(1, n_heads):
+            hue = (i - 1) / max(n_heads - 1, 1)
+            r, g, b = colorsys.hsv_to_rgb(hue, 0.85, 0.95)
+            palette.append([r, g, b])
+        palette = torch.tensor(palette, dtype=torch.float32)  # (n_heads-1, 3)
+
+        # save original Gaussian appearance so we can restore after rendering
+        orig_features_dc = gaussians._features_dc.data.clone()
+        orig_features_rest = gaussians._features_rest.data.clone()
+
+        # build new features_dc — labeled Gaussians get palette color, others keep original
+        new_features_dc = orig_features_dc.clone()
+        for head_id in range(1, n_heads):
+            mask = all_obj_labels[head_id].to(gaussians._features_dc.device)
+            if mask.sum().item() == 0:
+                continue
+            color = palette[head_id - 1].to(gaussians._features_dc.device)  # (3,)
+            # SH DC formula: f_dc = (RGB - 0.5) / C0
+            sh_val = (color - 0.5) / SH_C0
+            new_features_dc[mask, 0, :] = sh_val.unsqueeze(0)
+        gaussians._features_dc.data.copy_(new_features_dc)
+
+        # zero out features_rest for labeled Gaussians only — removes view-dependent shimmer so colors stay flat
+        labeled_mask = all_obj_labels[1:].any(dim=0).to(gaussians._features_rest.device)
+        gaussians._features_rest.data[labeled_mask] = 0.0
+
+        n_labeled = labeled_mask.sum().item()
+        n_total = len(gaussians.get_xyz)
+        print(f"render360_fast: baked colors for {n_labeled}/{n_total} Gaussians across {n_heads-1} heads")
+
+    print_every = max(1, n_frames // 10)
+    for idx in range(len(c2ws)):
+        if idx % print_every == 0:
+            print(f"render360_fast: frame {idx}/{n_frames}")
+        c2w = c2ws[idx]
+        c2w = np.vstack([c2w, [0.0, 0.0, 0.0, 1.0]])
+        w2c = np.linalg.inv(np.float64(c2w))
+        world_view_transform = torch.tensor(w2c.astype(np.float32)).transpose(0, 1).cuda()
+        projection_matrix = getProjectionMatrix(znear, zfar, fovx, fovy).transpose(0,1).cuda()
+        full_proj_transform = (world_view_transform.unsqueeze(0).bmm(projection_matrix.unsqueeze(0))).squeeze(0)
+        view = MiniCam(width, height, fovy, fovx, znear, zfar, world_view_transform, full_proj_transform)
+        render_pkg = render(view, gaussians, pipeline, background)
+        rendering = render_pkg["render"].detach().cpu()
+        torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
+    print(f"render360_fast: frame {n_frames}/{n_frames} — done")
+
+    # restore original Gaussian appearance
+    if orig_features_dc is not None:
+        gaussians._features_dc.data.copy_(orig_features_dc)
+        gaussians._features_rest.data.copy_(orig_features_rest)
+    torch.cuda.empty_cache()
+
+    output_video = os.path.join(os.path.dirname(render_path), "wheat_field_360.mp4")
+    print("Stitching frames into video...")
+    subprocess.run([
+        "ffmpeg",
+        "-loglevel", "error",
+        "-y",
+        "-framerate", str(framerate),
+        "-start_number", "0",
+        "-i", os.path.join(render_path, "%05d.png"),
+        "-vf", r"scale=iw-mod(iw\,2):ih-mod(ih\,2)",
+        "-r", str(framerate),
+        "-vcodec", "libx264",
+        "-pix_fmt", "yuv420p",
+        output_video
+    ], check=True)
+    print(f"Video saved to {output_video}")
+
+    return output_video

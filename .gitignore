@@ -30,6 +30,7 @@ Wheat-3DGS/**/outputs/
 Wheat-3DGS/**/results/
 Wheat-3DGS/**/build/
 Wheat-3DGS/**/tensorboard_3d/
+Wheat-3DGS/**/wandb/
 Wheat-3DGS/**/screenshots/
 Wheat-3DGS/**/sbatch_log/
 Wheat-3DGS/**/cameras.json
