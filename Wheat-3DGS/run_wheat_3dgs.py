@@ -70,13 +70,34 @@ def fmt_time(seconds):
 
 def run_command(command_list):
     """Helper to run a terminal command and wait for it to finish."""
+    import pty, os as _os, termios
     print(f"\n>>> RUNNING: {' '.join(command_list)}\n")
     if LOG_FILE:
-        # capture subprocess output line by line so it goes through sys.stdout (= _Tee) and into the log
-        process = subprocess.Popen(command_list, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-        for line in process.stdout:
-            sys.stdout.write(line)
+        # use a PTY so the child process sees a real terminal — preserves wandb colors and OSC 8 links
+        master_fd, slave_fd = pty.openpty()
+        # disable ONLCR: PTYs normally translate \n -> \r\n, which breaks tqdm's \r line overwrites
+        attrs = termios.tcgetattr(slave_fd)
+        attrs[1] &= ~termios.ONLCR
+        termios.tcsetattr(slave_fd, termios.TCSANOW, attrs)
+        process = subprocess.Popen(command_list, stdout=slave_fd, stderr=slave_fd)
+        _os.close(slave_fd)
+        buf = b""
+        while True:
+            try:
+                chunk = _os.read(master_fd, 4096)
+            except OSError:
+                break  # child closed the PTY (process exited)
+            buf += chunk
+            # flush complete lines immediately so output appears in real time
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                text = line.decode("utf-8", errors="replace") + "\n"
+                sys.stdout.write(text)
+                sys.stdout.flush()
+        if buf:  # flush any remaining partial line
+            sys.stdout.write(buf.decode("utf-8", errors="replace"))
             sys.stdout.flush()
+        _os.close(master_fd)
         process.wait()
         returncode = process.returncode
     else:

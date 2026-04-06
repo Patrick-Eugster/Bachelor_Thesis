@@ -1,0 +1,56 @@
+{
+  "os": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python": "CPython 3.12.3",
+  "startedAt": "2026-04-05T22:07:21.170552Z",
+  "args": [
+    "-s",
+    "../Wheat3DGS-Yolo-SAM/data/plot_461",
+    "-m",
+    "../Wheat3DGS-Yolo-SAM/data/plot_461/3dgs_output_res2_opt0_005_shd3_dui11000_dgt0_0002",
+    "--resolution",
+    "2",
+    "--eval",
+    "--iou_threshold",
+    "0.5",
+    "--exp_name",
+    "run_1",
+    "--vis_max_heads",
+    "10",
+    "--data_device",
+    "cpu"
+  ],
+  "program": "/workspace/Wheat-3DGS/run_3d_seg.py",
+  "codePath": "Wheat-3DGS/run_3d_seg.py",
+  "codePathLocal": "run_3d_seg.py",
+  "git": {
+    "remote": "https://github.com/Patrick-Eugster/Bachelor_Thesis.git",
+    "commit": "b75ff41b74213b7f454870f9acba17a06b65ccc6"
+  },
+  "email": "pehd.eugster@gmail.com",
+  "root": "/workspace/Wheat-3DGS",
+  "host": "5f6be745636b",
+  "executable": "/usr/bin/python",
+  "cpu_count": 6,
+  "cpu_count_logical": 12,
+  "gpu": "NVIDIA GeForce RTX 5070 Ti",
+  "gpu_count": 1,
+  "disk": {
+    "/": {
+      "total": "1081101176832",
+      "used": "59589697536"
+    }
+  },
+  "memory": {
+    "total": "36776902656"
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA GeForce RTX 5070 Ti",
+      "memoryTotal": "17094934528",
+      "architecture": "Blackwell",
+      "uuid": "GPU-25ab4bed-771a-4889-fc94-ce73bd3ab302"
+    }
+  ],
+  "cudaVersion": "13.1",
+  "writerId": "s5tc64rx8t1sqd1xmp3zdgqo97mzvdwg"
+}

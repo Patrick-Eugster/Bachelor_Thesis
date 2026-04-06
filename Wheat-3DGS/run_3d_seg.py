@@ -170,7 +170,7 @@ def find_match(target_viewpoint_stack, gs_params, obj_used_mask, iou_threshold, 
     
     assert len(new_viewpoint_stack) == len(match_mask_paths)
     if verbose:
-        print(f"  Matched {len(new_viewpoint_stack)} / {len(target_viewpoint_stack)} cameras" +
+        tqdm.write(f"  Matched {len(new_viewpoint_stack)} / {len(target_viewpoint_stack)} cameras" +
             (f", mean IoU {sum_max_iou / len(new_viewpoint_stack):.3f} > {iou_threshold}"
             if len(new_viewpoint_stack) > 0 else " (no matches)"))
     return new_viewpoint_stack, match_mask_paths
@@ -292,7 +292,7 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
         all_counts = opt_label_w_seg(gaussians, [this_viewpoint_cam], [this_mask_path], pipe, background, pts_filter)
         all_obj_labels = counts_to_obj_labels(all_counts)
         if torch.sum(all_obj_labels, dim=1)[1] == 0:
-            print(f"WARNING: Can't identify Gaussians for mask {this_mask_name}, skipping")
+            tqdm.write(f"WARNING: Can't identify Gaussians for mask {this_mask_name}, skipping")
             continue
         obj_used_mask = (all_obj_labels[1]).bool()
 
@@ -346,7 +346,7 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
                     bbox_cache = bbox_cache,
                 )
                 if len(new_viewpoint_stack) == 0:
-                    print(f"  Fine-tuning converged after {i} iteration(s)")
+                    tqdm.write(f"  Fine-tuning converged after {i} iteration(s)")
                     break
                 else:
                     matched_viewpoint_stack += new_viewpoint_stack # as a whole
@@ -376,7 +376,7 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
                 this_mask_dir = f"{img_dir}/{which_wheat_head:04}_{letter_suffix}"
                 os.makedirs(this_mask_dir, exist_ok=True)
                 # print(f"Create new mask dir {this_mask_dir}")  # debug detail
-                print(f"[mask {exp_id+1}/{len(all_mask_paths)}] Wheat head #{which_wheat_head} updated (overlap) — {len(matched_viewpoint_stack)} matches, {num_GS} Gaussians")
+                tqdm.write(f"[mask {exp_id+1}/{len(all_mask_paths)}] Wheat head #{which_wheat_head} updated (overlap) — {len(matched_viewpoint_stack)} matches, {num_GS} Gaussians\n")
                 writer.writerow([f"{which_wheat_head:04}_{letter_suffix}", this_mask_name, str(len(matched_viewpoint_stack)), str(num_GS)])
                 results.flush()
             else:
@@ -384,7 +384,7 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
                 num_GS = torch.sum(gaussians_obj.get_which_object.detach() == which_wheat_head).item()
                 gaussians_obj.prune_points(mask=torch.flatten(gaussians_obj.get_which_object.detach() != which_wheat_head), during_training=False)
                 ply_futures.append(_overlay_executor.submit(gaussians_obj.save_ply, f"{ply_dir}/wh_{which_wheat_head:04}.ply"))
-                print(f"[mask {exp_id+1}/{len(all_mask_paths)}] Wheat head #{which_wheat_head} found — {len(matched_viewpoint_stack)} matches, {num_GS} Gaussians")
+                tqdm.write(f"[mask {exp_id+1}/{len(all_mask_paths)}] Wheat head #{which_wheat_head} found — {len(matched_viewpoint_stack)} matches, {num_GS} Gaussians\n")
                 writer.writerow([f"{which_wheat_head:04}", this_mask_name, str(len(matched_viewpoint_stack)), str(num_GS)])
                 results.flush()
 
