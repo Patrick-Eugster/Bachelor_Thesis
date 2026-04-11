@@ -2,7 +2,7 @@ import cv2
 import argparse
 import math
 from tqdm.auto import tqdm
-import imageio as iio
+import imageio.v2 as iio  # CHANGED: v2 avoids DeprecationWarning from imageio v3
 import random
 import os
 import os.path as osp
@@ -19,6 +19,9 @@ from viser.extras.colmap import (
     read_cameras_binary,
     read_images_binary,
     read_points3d_binary,
+    read_cameras_text,
+    read_images_text,
+    read_points3D_text,
 )
 from gsplat._helper import load_test_data
 from gsplat.rendering import rasterization
@@ -48,6 +51,9 @@ parser.add_argument("--port", type=int, default=8080, help="port for the viewer 
 parser.add_argument(
     "--backend", type=str, default="gsplat", help="gsplat, gsplat_legacy, inria"
 )
+# CHANGED: added --fast_render flag — pre-bakes HSV colors into Gaussians at startup (1 render/frame)
+# instead of calling eval_obj_labels per frame (300 FlashSplat renders/frame). Controlled by FAST_VIEWER in run_wheat_3dgs.py.
+parser.add_argument("--fast_render", action="store_true", help="pre-bake head colors into Gaussians (fast, flat colors) instead of eval_obj_labels per frame (slow, overlay colors)")
 args = parser.parse_args()
 assert args.scene_grid % 2 == 1, "scene_grid must be odd"
 pipe = pp.extract(args)
@@ -57,19 +63,41 @@ dataset.sh_degree = 0
 gaussians = GaussianModel(dataset.sh_degree)
 gaussians.load_ply(args.input_ply, remove_features_rest = True)
 print(f"Num of Gaussians loaded from {args.input_ply}: {len(gaussians.get_xyz)}")
-print(gaussians.get_which_object)
+# print(gaussians.get_which_object)  # CHANGED: commented out — prints a huge tensor, not useful
 torch.manual_seed(42)
 device = "cuda"
 
 all_obj_labels = torch.load(args.labels_path).cuda()
 
+# CHANGED: fast_render path — pre-bake HSV palette into _features_dc once at startup.
+# Same approach as render_360_fast in wheatgs_helper.py.
+# Unlabeled (background) Gaussians keep their original appearance.
+if args.fast_render:
+    import colorsys
+    SH_C0 = 0.28209479177387814
+    n_heads = all_obj_labels.shape[0]
+    print(f"Fast viewer: pre-baking colors for {n_heads - 1} heads into Gaussians...")
+    orig_features_dc   = gaussians._features_dc.clone()
+    orig_features_rest = gaussians._features_rest.clone() if gaussians._features_rest is not None else None
+    for head_id in range(1, n_heads):
+        mask = all_obj_labels[head_id].bool()
+        if mask.sum().item() == 0:
+            continue
+        hue = (head_id - 1) / max(n_heads - 1, 1)
+        r, g, b = colorsys.hsv_to_rgb(hue, 0.9, 0.9)
+        color = torch.tensor([(r - 0.5) / SH_C0, (g - 0.5) / SH_C0, (b - 0.5) / SH_C0],
+                             dtype=torch.float32, device="cuda")
+        # CHANGED: use .data for in-place modification — bypasses autograd leaf variable restriction
+        gaussians._features_dc.data[mask] = color.view(1, 1, 3)
+        if gaussians._features_rest is not None:
+            gaussians._features_rest.data[mask] = 0.0
+    print("Fast viewer: color bake done.")
+
 # Define gaussians and pipe
 
 @torch.no_grad()
-def viewer_render_fn(camera_state: nerfview.CameraState, 
-    img_wh: Tuple[int, int],
-    # gaussians: GaussianModel,
-    # pipe: dict,
+def viewer_render_fn(camera_state: nerfview.CameraState,
+    img_wh: Tuple[int, int],  # CHANGED: reverted back to old nerfview API — new API (render_state) broke zoom
 ) -> np.ndarray:  # Expected shape: (H, W, 3) with dtype uint8
     with torch.no_grad():
         W, H = img_wh
@@ -106,9 +134,13 @@ def viewer_render_fn(camera_state: nerfview.CameraState,
             # target_values = [27, 94, 14, 9, 24, 72, 8, 9, 32, 35, 41, 44, 50, 68]
         )
         img = rendered_output["render"].detach().cpu()
-        pred_seg = eval_obj_labels(all_obj_labels, camera.cuda(), gaussians, pipe, background).detach().cpu()
-        rgb_mask = visualize_obj(pred_seg) / 255.0
-        img = overlay_image(img, rgb_mask, alpha=0.3)
+        # CHANGED: fast_render skips eval_obj_labels (300 FlashSplat renders) — colors are already
+        # baked into _features_dc so the single render above already shows colored heads.
+        # Slow path: call eval_obj_labels and overlay the segmentation mask on the RGB render.
+        if not args.fast_render:
+            pred_seg = eval_obj_labels(all_obj_labels, camera.cuda(), gaussians, pipe, background).detach().cpu()
+            rgb_mask = visualize_obj(pred_seg) / 255.0
+            img = overlay_image(img, rgb_mask, alpha=0.3)
         img = (img.numpy() * 255).astype(np.uint8)
         img = img.transpose(1, 2, 0)  # Convert from CxHxW to HxWxC
         return img
@@ -122,11 +154,17 @@ colmap_path = args.colmap_path
 images_path = args.images_path
 downsample_factor = 10
 reorient_scene = True
-cameras = read_cameras_binary(os.path.join(colmap_path, "cameras.bin"))
-images = read_images_binary(os.path.join(colmap_path, "images.bin"))
-points3d = read_points3d_binary(os.path.join(colmap_path, "points3D.bin"))
+# CHANGED: auto-detect binary vs text COLMAP format — FIP data has .txt, others may have .bin
+if os.path.exists(os.path.join(colmap_path, "cameras.bin")):
+    cameras = read_cameras_binary(os.path.join(colmap_path, "cameras.bin"))
+    images = read_images_binary(os.path.join(colmap_path, "images.bin"))
+    points3d = read_points3d_binary(os.path.join(colmap_path, "points3D.bin"))
+else:
+    cameras = read_cameras_text(os.path.join(colmap_path, "cameras.txt"))
+    images = read_images_text(os.path.join(colmap_path, "images.txt"))
+    points3d = read_points3D_text(os.path.join(colmap_path, "points3D.txt"))
 points = np.array([points3d[p_id].xyz for p_id in points3d])
-print(f"Points centroid: {np.mean(points, axis=0)}")
+# print(f"Points centroid: {np.mean(points, axis=0)}")  # CHANGED: commented out
 
 img_ids = [im.id for im in images.values()]
 
@@ -144,15 +182,15 @@ def set_camera_frustums(
     image = None
     
     for img_id in tqdm(img_ids):
-        print(img_id)
+        # print(img_id)  # CHANGED: commented out — spams terminal for every camera
         img = images[img_id]
         cam = cameras[img.camera_id]
         W, H = cam.width, cam.height
         fx, fy, cx, cy = cam.params
-        print(f"Camera {img_id}: {W}x{H}, fx={fx}, fy={fy}, cx={cx}, cy={cy}")
+        # print(f"Camera {img_id}: {W}x{H}, fx={fx}, fy={fy}, cx={cx}, cy={cy}")  # CHANGED: commented out
         # Skip images that don't exist.
         image_filename = os.path.join(images_path, img.name)
-        
+
         elements = os.path.splitext(img.name)[0].split("_")
 
         if len(elements) == 5:
@@ -162,7 +200,7 @@ def set_camera_frustums(
                 group = 2
             else:
                 group = 3
-        print("elements:", elements, "group:", group)
+        # print("elements:", elements, "group:", group)  # CHANGED: commented out
 
         if int(elements[-1]) > 10:
             split = 'test'
@@ -208,7 +246,7 @@ def set_camera_frustums(
             fov = 2 * np.arctan2(H / 2, fy) 
             aspect = W / H
             fov *= 4 # 2.5 
-            print(f"fov {fov}, aspect {aspect}")
+            # print(f"fov {fov}, aspect {aspect}")  # CHANGED: commented out
             # Add frustum
             frustum = server.scene.add_camera_frustum(
                 f"/colmap/frame_{img_id}/frustum",
@@ -233,11 +271,14 @@ def set_camera_frustums(
     
     return camera_handles, frames
 
-_ = nerfview.Viewer(
+_viewer = nerfview.Viewer(
     server=server,
     render_fn=viewer_render_fn,
     mode="rendering",
 )
+# CHANGED: force viewer_res to max (2048) at startup — nerfview defaults to 2048 but the sidebar
+# slider is capped at 2048 so this is already the max without modifying nerfview's source
+_viewer.render_tab_state.viewer_res = 2048
 camera_handles, frames = set_camera_frustums(server)
 print("Viewer running... Ctrl+C to exit.")
 time.sleep(100000)

@@ -21,31 +21,58 @@ _op  = str(OPACITY_PRUNE_THRESHOLD).replace('.', '_')
 _dgt = str(DENSIFY_GRAD_THRESHOLD).replace('.', '_')
 MODEL_PATH = f"{DATASET_PATH}/3dgs_output_res{RESOLUTION}_opt{_op}_shd{SH_DEGREE}_dui{DENSIFY_UNTIL_ITER}_dgt{_dgt}"
 
+# --- SEGMENTATION INPUT SOURCE ---
+USE_YOLOSAM_SOURCE = False  # True = use DATASET_PATH/yolosam/bboxes + masks (ground truth, for comparison)
+                             # False = use DATASET_PATH/bboxes + masks (default, your predicted boxes)
+SEG_SOURCE_SUBDIR = "yolosam" if USE_YOLOSAM_SOURCE else ""
+
 # --- SEGMENTATION VISUALIZATION ---
 SAVE_VIS_OVERLAY = True  # Save overlay JPGs showing each wheat head projected onto all cameras
 VIS_MAX_HEADS = 10 # Save overlays for first N heads only. 0 = all heads (~10800 files for 300 heads x 36 cameras)
 
 # --- LOG FILE ---
-LOG_FILE = f"{MODEL_PATH}/logs/{EXP_NAME}.txt"  # terminal output saved here. Set to None to disable.
+LOG_FILE = f"{MODEL_PATH}/seg_logs/{EXP_NAME}.txt"  # terminal output saved here. Set to None to disable.
 LOG_SEG_ONLY = True  # True = only log Step 4 (run_3d_seg). False = log the entire pipeline.
 
+
 # --- PIPELINE STEPS (toggle on/off) ---
-RUN_TRAIN = False         # Step 1: Train 3DGS model (the long one)
+# Step 1: Train 3DGS model (the long one)
+RUN_TRAIN = False         
 
-RUN_RENDER = False        # Step 2: Render from original camera views
+# Step 2: Render from original camera views
+RUN_RENDER = False        
 
-RUN_METRICS = False       # Step 3: Compute PSNR/SSIM/LPIPS quality scores
+# Step 3: Compute PSNR/SSIM/LPIPS quality scores
+RUN_METRICS = False       
 
-RUN_SEG = False           # Step 4: 3D wheat head segmentation
+# Step 4: 3D wheat head segmentation + auto-export of gaussians_colored.ply
+RUN_SEG = False
 
-RUN_RENDER_360 = False     # Step 5: Render 360 flyaround video
-FAST_RENDER_360 = True   # Step 5: False = original per-head flashsplat renders (correct colors); True = per-Gaussian coloring (fast)
-WHITE_BACKGROUND_360 = True  # Step 5: True = white background, False = black background
-N_FRAMES    = 200          # Step 5: number of frames in the flyaround video
-FRAMERATE   = 20          # Step 5: output video framerate (fps)
-ELEVATION   = 45          # Step 5: camera elevation angle in degrees
+# Step 5: Render 360 flyaround video
+RUN_RENDER_360 = False
 
-RUN_EVAL = True          # Step 6: Evaluate segmentation quality (IoU)
+# Step 6: Evaluate segmentation quality — saves overlay PNGs per camera
+RUN_EVAL = False
+
+# Step 7: Launch interactive viser viewer in browser (Ctrl+C to stop)
+RUN_VIEWER = False
+
+# ===========================================
+# Step 5 Render additional settings:
+FAST_RENDER_360 = True # False = original per-head flashsplat renders (correct colors); True = per-Gaussian coloring (fast)
+WHITE_BACKGROUND_360 = True # True = white background, False = black background
+N_FRAMES    = 200  # number of frames in the flyaround video
+FRAMERATE   = 20 # output video framerate (fps)
+ELEVATION   = 45 # camera elevation angle in degrees
+
+# Step 7 (Viewer) additional settings:
+VIEWER_TYPE = "full" # "single" = with no wheat head coloring, "full" = with wheat head coloring
+FAST_VIEWER = True  # only used when VIEWER_TYPE="full"
+                    # False = eval_obj_labels per frame (300 FlashSplat renders, correct overlay colors)
+                    # True = pre-bake HSV colors into Gaussians at startup, 1 render/frame (fast, flat colors)
+VIEWER_PORT = 8080 # browser port — open http://localhost:VIEWER_PORT after launch
+
+
 
 
 class _Tee:
@@ -78,7 +105,7 @@ def fmt_time(seconds):
     s = int(seconds % 60)
     return f"{h}:{m:02d}:{s:02d}"
 
-def run_command(command_list):
+def run_command(command_list, cwd=None, allow_interrupt=False):
     """Helper to run a terminal command and wait for it to finish."""
     import pty, os as _os, termios
     print(f"\n>>> RUNNING: {' '.join(command_list)}\n")
@@ -89,41 +116,55 @@ def run_command(command_list):
         attrs = termios.tcgetattr(slave_fd)
         attrs[1] &= ~termios.ONLCR
         termios.tcsetattr(slave_fd, termios.TCSANOW, attrs)
-        process = subprocess.Popen(command_list, stdout=slave_fd, stderr=slave_fd)
+        process = subprocess.Popen(command_list, stdout=slave_fd, stderr=slave_fd, cwd=cwd)
         _os.close(slave_fd)
         buf = b""
-        while True:
-            try:
-                chunk = _os.read(master_fd, 4096)
-            except OSError:
-                break  # child closed the PTY (process exited)
-            buf += chunk
-            # flush complete lines immediately so output appears in real time
-            while b"\n" in buf:
-                line, buf = buf.split(b"\n", 1)
-                text = line.decode("utf-8", errors="replace") + "\n"
-                sys.stdout.write(text)
-                sys.stdout.flush()
+        try:
+            while True:
+                try:
+                    chunk = _os.read(master_fd, 4096)
+                except OSError:
+                    break  # child closed the PTY (process exited)
+                buf += chunk
+                # flush complete lines immediately so output appears in real time
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    text = line.decode("utf-8", errors="replace") + "\n"
+                    sys.stdout.write(text)
+                    sys.stdout.flush()
+        except KeyboardInterrupt:
+            # CHANGED: catch Ctrl+C — forward SIGINT to child so it shuts down cleanly,
+            # then fall through to process.wait() so the PTY is properly cleaned up
+            import signal
+            process.send_signal(signal.SIGINT)
         if buf:  # flush any remaining partial line
             sys.stdout.write(buf.decode("utf-8", errors="replace"))
             sys.stdout.flush()
         _os.close(master_fd)
-        process.wait()
+        try:
+            process.wait()
+        except KeyboardInterrupt:
+            # second Ctrl+C while waiting for child to exit — just kill it
+            process.kill()
+            process.wait()
         returncode = process.returncode
     else:
-        result = subprocess.run(command_list)
+        result = subprocess.run(command_list, cwd=cwd)
         returncode = result.returncode
     if returncode != 0:
-        print(f"!!! ERROR: Command failed with code {returncode}")
-        sys.exit(1)
+        if allow_interrupt:
+            print(f"\n>>> Viewer closed (exit code {returncode})")
+        else:
+            print(f"!!! ERROR: Command failed with code {returncode}")
+            sys.exit(1)
 
-def run_step(step_name, command_list, timings):
+def run_step(step_name, command_list, timings, cwd=None, allow_interrupt=False):
     """Run a pipeline step, print its duration, and store it in timings dict."""
     print(f"\n{'='*60}")
     print(f"  STEP: {step_name}")
     print(f"{'='*60}")
     t0 = time.perf_counter()
-    run_command(command_list)
+    run_command(command_list, cwd=cwd, allow_interrupt=allow_interrupt)
     elapsed = time.perf_counter() - t0
     timings[step_name] = elapsed
     print(f"\n>>> {step_name} finished in {fmt_time(elapsed)}")
@@ -185,6 +226,7 @@ def _run_pipeline():
         if seg_tee:
             sys.stdout = seg_tee
             print(f"Logging Step 4 to: {os.path.abspath(LOG_FILE)}")
+        seg_subdir_flag = ["--seg_source_subdir", SEG_SOURCE_SUBDIR] if SEG_SOURCE_SUBDIR else []
         run_step("4. Segmentation", [
             "python", "run_3d_seg.py",
             "-s", DATASET_PATH,
@@ -194,9 +236,18 @@ def _run_pipeline():
             "--iou_threshold", "0.5",
             "--exp_name", EXP_NAME,
             "--vis_max_heads", str(VIS_MAX_HEADS),
-        ] + ([] if SAVE_VIS_OVERLAY else ["--no_save_vis_overlay"]) + data_device_flag, timings)
+        ] + seg_subdir_flag + ([] if SAVE_VIS_OVERLAY else ["--no_save_vis_overlay"]) + data_device_flag, timings)
         if seg_tee:
             seg_tee.close()
+        # auto-export colored PLY right after segmentation — no separate toggle needed
+        exp_dir = os.path.join(MODEL_PATH, "wheat-head", EXP_NAME)
+        run_step("4b. Export Colored PLY", [
+            "python", "export_colored_ply.py",
+            "--gaussians_ply", os.path.join(exp_dir, "gaussians.ply"),
+            "--labels_path",   os.path.join(exp_dir, "all_obj_labels.pth"),
+            "--output_ply",    os.path.join(exp_dir, "gaussians_colored.ply"),
+            "--sh_degree",     str(SH_DEGREE),
+        ], timings)
 
     # Step 5: Render 360 flyaround video of the segmented wheat field
     if RUN_RENDER_360:
@@ -213,7 +264,7 @@ def _run_pipeline():
             "--elevation", str(ELEVATION),
         ] + fast_render_flag + white_bg_flag + data_device_flag, timings)
 
-    # Step 6: Evaluate 3D segmentation quality (IoU vs SAM masks)
+    # Step 6: Evaluate 3D segmentation quality — saves overlay PNGs per camera
     if RUN_EVAL:
         run_step("6. Eval", [
             "python", "eval_wheatgs.py",
@@ -223,6 +274,36 @@ def _run_pipeline():
             "--exp_name", EXP_NAME,
             "--skip_train"
         ] + data_device_flag, timings)
+
+    # Step 7: Interactive viser viewer — open http://localhost:VIEWER_PORT in browser, Ctrl+C to stop
+    if RUN_VIEWER:
+        viewer_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wheat3dgsviewer")
+        # use absolute paths — viewer runs from wheat3dgsviewer/ so relative paths would break
+        abs_model_path = os.path.abspath(MODEL_PATH)
+        abs_dataset_path = os.path.abspath(DATASET_PATH)
+        seg_ply = os.path.join(abs_model_path, "wheat-head", EXP_NAME, "gaussians.ply")
+        train_ply = os.path.join(abs_model_path, "point_cloud", "iteration_15000", "point_cloud.ply")
+        # prefer the fine-tuned step-4 model if it exists, otherwise fall back to step-1 model
+        input_ply = seg_ply if os.path.exists(seg_ply) else train_ply
+        if VIEWER_TYPE == "full":
+            labels_path = os.path.join(abs_model_path, "wheat-head", EXP_NAME, "all_obj_labels.pth")
+            fast_viewer_flag = ["--fast_render"] if FAST_VIEWER else []
+            viewer_cmd = [
+                "python", "wheatgs_rendering.py",
+                "--input_ply", input_ply,
+                "--labels_path", labels_path,
+                "--colmap_path", os.path.join(abs_dataset_path, "sparse", "0"),
+                "--images_path", os.path.join(abs_dataset_path, "images"),
+                "--port", str(VIEWER_PORT),
+            ] + fast_viewer_flag
+        else:
+            viewer_cmd = [
+                "python", "singlewheat_rendering.py",
+                "--input_ply", input_ply,
+                "--port", str(VIEWER_PORT),
+            ]
+        print(f"  Open http://localhost:{VIEWER_PORT} in your browser")
+        run_step("7. Viewer", viewer_cmd, timings, cwd=viewer_dir, allow_interrupt=True)
 
     # summary table
     total = sum(timings.values())

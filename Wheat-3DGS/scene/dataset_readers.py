@@ -146,7 +146,7 @@ def storePly(path, xyz, rgb):
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
 
-def readColmapSceneInfo(path, images, eval, llffhold=8, normalize=False):
+def readColmapSceneInfo(path, images, eval, llffhold=8, normalize=False, seg_source_subdir=""):
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
@@ -161,11 +161,12 @@ def readColmapSceneInfo(path, images, eval, llffhold=8, normalize=False):
     # Read images, bounding boxes and segmentation masks
     reading_dir = "images" if images == None else images
     
-    bboxes_dir = os.path.join(path, "bboxes")
+    seg_base = os.path.join(path, seg_source_subdir) if seg_source_subdir else path
+    bboxes_dir = os.path.join(seg_base, "bboxes")
     if not os.path.exists(bboxes_dir):
         print("No directory of saved bounding boxes found!")
         bboxes_dir = None
-    masks_dir = os.path.join(path, "masks")
+    masks_dir = os.path.join(seg_base, "masks")
     if not os.path.exists(masks_dir):
         print("No directory of saved segmentation masks found!")
         masks_dir = None

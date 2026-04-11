@@ -68,7 +68,7 @@ def get_render_label(viewpoint_camera, pc : GaussianModel, bg_color : torch.Tens
 def eval_obj_labels(all_obj_labels, viewpoint_cam, gaussians, pipe, background):
     from gaussian_renderer import flashsplat_render
     render_num = all_obj_labels.size(0)
-    print("render_num", render_num)
+    # print("render_num", render_num)  # CHANGED: commented out — fires on every interactive frame
     # render_num = 20 # OVERRIDE
     pred_mask = None
     max_alpha = None
