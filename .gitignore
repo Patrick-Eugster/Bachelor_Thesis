@@ -176,6 +176,7 @@ cmake-build-release/
 out/
 
 CLAUDE.md
+euler_setup.md
 phase1_packages.txt
 phase2_3_packages.txt
 
