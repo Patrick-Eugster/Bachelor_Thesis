@@ -320,7 +320,8 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
             num_wheat_head += 1 # Potential wheat head
             # if find a match, then it's processed and create a dir for it
             this_mask_dir = f"{img_dir}/{num_wheat_head:04}"
-            os.makedirs(this_mask_dir, exist_ok=True)
+            if save_vis_overlay and (vis_max_heads == 0 or num_wheat_head <= vis_max_heads):
+                os.makedirs(this_mask_dir, exist_ok=True)
             processed_masks.add(this_mask_name)
 
             # print(f"==== Start refine training w.r.t the {num_wheat_head}th potential wheat head found ====")  # covered by wheat head found message below

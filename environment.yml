@@ -1,37 +1,31 @@
 name: wheat3dgs
 channels:
   - pytorch
+  - nvidia
   - conda-forge
   - defaults
 dependencies:
-  - python=3.7.13
-  - pip=22.3.1
+  - python=3.10
+  - pip
   - numpy
   - scipy
   - matplotlib
   - pillow
-  - jupyterlab
-  - ipykernel
-  - ipython
+  - tqdm
+  - pyyaml
+  - plyfile
   - scikit-learn
   - shapely
   - ffmpeg
-  - cudatoolkit=11.6
-  - pytorch=1.12.1
-  - torchvision=0.13.1
-  - torchaudio=0.12.1
-  - pyqt
-  - plyfile
-  - tqdm
-  - pyyaml
+  - pytorch==2.1.2
+  - torchvision==0.16.2
+  - torchaudio==2.1.2
+  - pytorch-cuda=12.1
   - pip:
-      - rich
-      - gdown
       - wandb
-      - ffmpeg-python
-      - gitpython
       - opencv-python
+      - segment-anything
+      - gitpython
       - joblib
-      - submodules/simple-knn
-      - submodules/diff-gaussian-rasterization
-      - submodules/flashsplat-rasterization
+      - imageio
+      - rich
