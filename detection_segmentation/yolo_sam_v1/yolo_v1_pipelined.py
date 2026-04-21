@@ -2,7 +2,7 @@
 yolo_v2.py — pipelined YOLO inference (upgraded from yolo_v1.py)
 
 HOW IT WORKS:
-Each RAM chunk (BATCH_SIZE_RAM_FILES_YOLO images) is split into GPU sub-batches
+Each RAM chunk (RAM_CHUNK_SIZE_YOLO images) is split into GPU sub-batches
 (BATCH_SIZE_YOLO images each). These sub-batches are processed in a 3-stage pipeline:
 
     Stage 1 — Pre-Processing (CPU):  resize images to TARGET_IMAGE_SIZE with letterbox padding
@@ -102,7 +102,7 @@ def save_single_result(_, result, original_img, pad_info, original_path, bbox_fo
         preds[:, [0, 2]] = np.clip(preds[:, [0, 2]], 0, orig_w)
         preds[:, [1, 3]] = np.clip(preds[:, [1, 3]], 0, orig_h)
         # 3. VECTORIZED FILTERING. This mask instantly separates good and bad boxes in C++
-        mask = preds[:, 4] >= CONF_THRESHOLD_GOOD_BOX
+        mask = preds[:, 4] >= CONF_THRESHOLD_DETECTION
         good_preds = preds[mask]
         bad_preds = preds[~mask]
         good_count = len(good_preds)
@@ -116,7 +116,7 @@ def save_single_result(_, result, original_img, pad_info, original_path, bbox_fo
             bad_coords = bad_preds[:, :4].astype(int)
             bad_confs = bad_preds[:, 4]
         # 4. Draw Good Boxes (Blue) - directly on image
-        if SHOW_GOOD_BOXES and good_count > 0:
+        if SHOW_DETECTED_BOXES and good_count > 0:
             for j in range(good_count):
                 x1, y1, x2, y2 = good_coords[j]
                 conf = good_confs[j]
@@ -131,7 +131,7 @@ def save_single_result(_, result, original_img, pad_info, original_path, bbox_fo
                     cv2.putText(annotated_img, conf_text, pos, font, font_scale, (0, 0, 255),
                                 thickness=BOX_THICKNESS - 1, lineType=cv2.LINE_AA)
         # 5. Draw Bad Boxes (Red) - directly on image
-        if SHOW_REJECTED_RED_BOXES and bad_count > 0:
+        if SHOW_REJECTED_BOXES and bad_count > 0:
             for j in range(bad_count):
                 x1, y1, x2, y2 = bad_coords[j]
                 conf = bad_confs[j]
@@ -226,8 +226,8 @@ def run_yolo_phase(image_folders):
 
     # Load YOLO Model ONCE & Load custom model using local repo
     model = torch.hub.load(YOLO_DIR, 'custom', path=WHEAT_YOLO_MODEL, source='local')
-    model.conf = CONF_THRESHOLD_GOOD_AND_BAD_BOX
-    model.iou = IOU_THRESHOLD
+    model.conf = CONF_THRESHOLD_NMS_FLOOR
+    model.iou = IOU_THRESHOLD_NMS
     model.classes = CLASSES_TO_DETECT
 
     total_run_boxes = 0
@@ -269,8 +269,8 @@ def run_yolo_phase(image_folders):
         total_plot_boxes, total_plot_bad_boxes = 0, 0
 
         # Chunking loop to protect RAM
-        for chunk_start in range(0, len(image_files), BATCH_SIZE_RAM_FILES_YOLO):
-            chunk_files = image_files[chunk_start: chunk_start + BATCH_SIZE_RAM_FILES_YOLO]
+        for chunk_start in range(0, len(image_files), RAM_CHUNK_SIZE_YOLO):
+            chunk_files = image_files[chunk_start: chunk_start + RAM_CHUNK_SIZE_YOLO]
             print(f"  -> Processing chunk {chunk_start} to {chunk_start + len(chunk_files)} of {len(image_files)} images...")
 
             # Split chunk into GPU-sized sub-batches
@@ -301,7 +301,7 @@ def run_yolo_phase(image_folders):
                     orig_imgs = [x[1] for x in sub_data]  # originals → needed for box reversal later
                     pad_infos = [x[2] for x in sub_data]  # (scale, pad_left, pad_top) per image
 
-                    if b == 0 and chunk_start == 0 and SHOW_DEBUG_YOLO_RESIZE:
+                    if b == 0 and chunk_start == 0 and DEBUG_YOLO_RESIZE:
                         save_debug_image_yolo(resized_imgs, yolo_vis_folder)
 
                     # --- PRE-PROCESSING: submit resize for the NEXT sub-batch ---

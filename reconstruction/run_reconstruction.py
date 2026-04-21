@@ -6,13 +6,13 @@ import time
 import datetime
 
 # --- CONFIGURATION ---
-# DATASET_PATH = "plots/fip/plot_461"
-DATASET_PATH = "/cluster/scratch/peugste/plots/fip/plot_461"
+DATASET_PATH = "plots/fip/plot_461"
+# DATASET_PATH = "/cluster/scratch/peugste/plots/fip/plot_461"
 
 EXP_NAME = "run_1" # For run_3d_seg
 DATA_DEVICE_CPU = True # Set True to keep images in RAM instead of VRAM (works only for some steps)
 
-RESOLUTION = 1 # 1 = full resolution, 2 = half (saves ~4x rasterizer VRAM), 4 = quarter
+RESOLUTION = 2 # 1 = full resolution, 2 = half (saves ~4x rasterizer VRAM), 4 = quarter
 OPACITY_PRUNE_THRESHOLD = 0.005  # Gaussians below this opacity get pruned. Default: 0.005. Raise to 0.01 to save VRAM (safe for wheat)
 SH_DEGREE = 3 # Spherical harmonics degree for view-dependent color. Default: 3. Set to 0 to save VRAM
 DENSIFY_UNTIL_ITER = 11000 # Stop adding new Gaussians after this iteration. Default: 11000. Lower to save VRAM (less detail)
@@ -39,7 +39,7 @@ LOG_SEG_ONLY = True  # True = only log Step 4 (run_3d_seg). False = log the enti
 
 # --- PIPELINE STEPS (toggle on/off) ---
 # Step 1: Train 3DGS model (the long one)
-RUN_TRAIN = True
+RUN_TRAIN = False
 
 # Step 2: Render from original camera views
 RUN_RENDER = False
@@ -57,7 +57,7 @@ RUN_RENDER_360 = False
 RUN_EVAL = False
 
 # Step 7: Launch interactive viser viewer in browser (Ctrl+C to stop)
-RUN_VIEWER = False
+RUN_VIEWER = True
 
 # ===========================================
 # Step 5 Render additional settings:

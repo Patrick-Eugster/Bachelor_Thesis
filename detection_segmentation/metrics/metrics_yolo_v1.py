@@ -1,7 +1,7 @@
 """
 Before running, make sure that:
   - ONLY_LABELED_IMAGES = True  in config.py
-  - CONF_THRESHOLD_GOOD_AND_BAD_BOX = 0.01  in config.py
+  - CONF_THRESHOLD_NMS_FLOOR = 0.01  in config.py
 
 Run from workspace root with: python detection_segmentation/metrics/metrics_yolo_v1.py
 
@@ -54,14 +54,14 @@ matplotlib.use('Agg')  # headless backend — prevents Qt/display warnings in WS
 
 # Add yolo_sam_v1/ to path so config.py can be imported
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'yolo_sam_v1'))
-from config_v1 import DATA_DIR, CONF_THRESHOLD_GOOD_BOX, CONF_THRESHOLD_GOOD_AND_BAD_BOX, IOU_THRESHOLD
+from config_v1 import DATA_DIR, CONF_THRESHOLD_DETECTION, CONF_THRESHOLD_NMS_FLOOR, IOU_THRESHOLD_NMS
 
 
 # =====================================================================
 # Config
 # =====================================================================
 
-# IoU threshold for matching predicted to the GT boxes. This is SEPARATE from IOU_THRESHOLD in config.py
+# IoU threshold for matching predicted to the GT boxes. This is SEPARATE from IOU_THRESHOLD_NMS in config.py
 MATCHING_IOU_THRESHOLD = 0.35  # was 0.5 default
 
 # Where to save JSON results
@@ -192,8 +192,8 @@ def save_results_json(per_plot_results, iou_threshold, conf_threshold, ap=None):
         'config': {
             'matching_iou_threshold': iou_threshold,
             'conf_threshold_good_box': conf_threshold,
-            'conf_threshold_nms_floor': CONF_THRESHOLD_GOOD_AND_BAD_BOX,
-            'yolo_nms_iou_threshold': IOU_THRESHOLD,
+            'conf_threshold_nms_floor': CONF_THRESHOLD_NMS_FLOOR,
+            'yolo_nms_iou_threshold': IOU_THRESHOLD_NMS,
         },
         'per_plot': per_plot_results,
         'aggregated': aggregated,
@@ -597,7 +597,7 @@ def save_pr_curve(precisions, recalls, confs, ap, iou_threshold, title, out_path
                   total_preds=None, tp=None, fp=None, fn=None, mark_every=50):
     """Save a Precision-Recall curve image.
     mark_every: label every k-th prediction point on the curve with its confidence value.
-    total_preds/tp/fp/fn: counts at the fixed CONF_THRESHOLD_GOOD_BOX for the stats box.
+    total_preds/tp/fp/fn: counts at the fixed CONF_THRESHOLD_DETECTION for the stats box.
     """
     fig, ax = plt.subplots(figsize=(10, 7))
     ax_top = None
@@ -665,7 +665,7 @@ def save_pr_curve(precisions, recalls, confs, ap, iou_threshold, title, out_path
     if total_preds is not None:
         stats_lines = [
             f'Total preds (all conf (>=0.01)): {total_preds}',
-            f'above CONF_THRESHOLD_GOOD_BOX (>= {CONF_THRESHOLD_GOOD_BOX}):',
+            f'above CONF_THRESHOLD_DETECTION (>= {CONF_THRESHOLD_DETECTION}):',
             f'  TP: {tp}   FP: {fp}   (TP+FP = {tp + fp} preds)',
             f'  FN: {fn}   (missed GT boxes, not preds)',
         ]
@@ -772,10 +772,10 @@ def evaluate_all_plots(data_dir=None, iou_threshold=None):
     print(f" YOLO EVALUATION vs MANUAL LABELS")
     print(f"{'=' * 58}")
     print(f" Data dir:              {data_dir}")
-    print(f" Conf threshold (good): {CONF_THRESHOLD_GOOD_BOX}  (CONF_THRESHOLD_GOOD_BOX — used for precision/recall/F1)")
-    print(f" Conf threshold (NMS floor): {CONF_THRESHOLD_GOOD_AND_BAD_BOX}  (CONF_THRESHOLD_GOOD_AND_BAD_BOX — floor for AP curve)")
+    print(f" Conf threshold (good): {CONF_THRESHOLD_DETECTION}  (CONF_THRESHOLD_DETECTION — used for precision/recall/F1)")
+    print(f" Conf threshold (NMS floor): {CONF_THRESHOLD_NMS_FLOOR}  (CONF_THRESHOLD_NMS_FLOOR — floor for AP curve)")
     print(f" Matching IoU thr:      {iou_threshold}  (MATCHING_IOU_THRESHOLD)")
-    print(f" YOLO NMS IoU thr:      {IOU_THRESHOLD}  (IOU_THRESHOLD — used during YOLO inference, not here)")
+    print(f" YOLO NMS IoU thr:      {IOU_THRESHOLD_NMS}  (IOU_THRESHOLD_NMS — used during YOLO inference, not here)")
     print(f"{'=' * 58}\n")
 
     # wipe and recreate output folders so they only contain images from this run
@@ -895,7 +895,7 @@ def evaluate_all_plots(data_dir=None, iou_threshold=None):
         total_fp = sum(r['fp'] for r in per_plot_results)
         total_fn = sum(r['fn'] for r in per_plot_results)
         print(f"  AP@IoU{iou_threshold:.2f} = {ap:.4f}  "
-              f"(NMS floor: {CONF_THRESHOLD_GOOD_AND_BAD_BOX}, {len(all_pred_entries)} total preds, "
+              f"(NMS floor: {CONF_THRESHOLD_NMS_FLOOR}, {len(all_pred_entries)} total preds, "
               f"{sum(len(g) for g in all_gt_boxes_for_ap)} GT boxes)")
         pr_out = os.path.join(PR_CURVE_DIR, 'pr_curve_aggregated.png')
         save_pr_curve(precisions, recalls, confs, ap, iou_threshold,
@@ -903,7 +903,7 @@ def evaluate_all_plots(data_dir=None, iou_threshold=None):
                       total_preds=len(all_pred_entries), tp=total_tp, fp=total_fp, fn=total_fn)
     print()
 
-    save_results_json(per_plot_results, iou_threshold, CONF_THRESHOLD_GOOD_BOX, ap=ap)
+    save_results_json(per_plot_results, iou_threshold, CONF_THRESHOLD_DETECTION, ap=ap)
 
     return per_plot_results
 

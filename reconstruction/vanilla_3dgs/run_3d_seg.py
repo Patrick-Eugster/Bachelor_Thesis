@@ -31,19 +31,11 @@ from utils.wheatgs_utils import (
     vis_image_w_overlay
 )
 
-def find_new_mask_dir(img_dir, num_wheat_head):
-    """
-    Function used to find the previous-identified & overlapped segmentation's suffix
-    and reuturn the new letter suffix in order.
-    """
-    base_dir = f"{img_dir}/{num_wheat_head:04}"
-    existing_dirs = glob.glob(f"{base_dir}*")
-    assert existing_dirs, f"Error: No existing directory found for {base_dir}*"
-    for letter_suffix in string.ascii_lowercase:  # 'a' to 'z'
-        candidate_dir = f"{base_dir}_{letter_suffix}"
-        if candidate_dir not in existing_dirs:
-            new_dir = candidate_dir
-            break
+def find_new_mask_dir(overlap_counter, num_wheat_head):
+    """Return next letter suffix (a, b, c…) for an overlapping head, tracked in memory."""
+    count = overlap_counter.get(num_wheat_head, 0)
+    letter_suffix = string.ascii_lowercase[count]
+    overlap_counter[num_wheat_head] = count + 1
     return letter_suffix
 
 ########### Begin of Find & Match helper methods ###########
@@ -266,6 +258,7 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
     processed_masks = set()
     buffered_masks = set()
     num_wheat_head = 0
+    overlap_counter = {}  # tracks how many times each head has been updated via overlap (for letter suffix)
     ply_futures = []  # async PLY saves, waited on at end
     
     #### Iterate through all YOLO/SAM bbox/seg pairs
@@ -368,14 +361,16 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
             gaussians_obj._which_object = gaussians._which_object.detach().cpu()
             if which_overlap_object is not None:
                 num_wheat_head -= 1 # if overlapping, then it's not a new wheat head
-                shutil.rmtree(this_mask_dir)
+                if os.path.exists(this_mask_dir):
+                    shutil.rmtree(this_mask_dir)
                 which_wheat_head = which_overlap_object
                 num_GS = torch.sum(gaussians_obj.get_which_object.detach() == which_wheat_head).item()
                 gaussians_obj.prune_points(mask=torch.flatten(gaussians_obj.get_which_object.detach() != which_wheat_head), during_training=False)
-                letter_suffix = find_new_mask_dir(img_dir, which_wheat_head)
+                letter_suffix = find_new_mask_dir(overlap_counter, which_wheat_head)
                 ply_futures.append(_overlay_executor.submit(gaussians_obj.save_ply, f"{ply_dir}/wh_{which_wheat_head:04}_{letter_suffix}.ply"))
                 this_mask_dir = f"{img_dir}/{which_wheat_head:04}_{letter_suffix}"
-                os.makedirs(this_mask_dir, exist_ok=True)
+                if save_vis_overlay and (vis_max_heads == 0 or which_wheat_head <= vis_max_heads):
+                    os.makedirs(this_mask_dir, exist_ok=True)
                 # print(f"Create new mask dir {this_mask_dir}")  # debug detail
                 tqdm.write(f"[mask {exp_id+1}/{len(all_mask_paths)}] Wheat head #{which_wheat_head} updated (overlap) — {len(matched_viewpoint_stack)} matches, {num_GS} Gaussians\n")
                 writer.writerow([f"{which_wheat_head:04}_{letter_suffix}", this_mask_name, str(len(matched_viewpoint_stack)), str(num_GS)])

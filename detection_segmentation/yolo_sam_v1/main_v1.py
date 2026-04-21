@@ -36,14 +36,14 @@ def print_final_configuration_report(total_seconds, sam_seconds, total_images, t
     print("="*50)
     # 1. Hardware & Core Settings
     print(f"{'Device:':<25} {DEVICE}")
-    print(f"{'Confidence Threshold:':<25} {CONF_THRESHOLD_GOOD_BOX}")
-    print(f"{'IoU Threshold:':<25} {IOU_THRESHOLD}")
+    print(f"{'Confidence Threshold:':<25} {CONF_THRESHOLD_DETECTION}")
+    print(f"{'IoU Threshold (NMS):':<25} {IOU_THRESHOLD_NMS}")
     print(f"{'YOLO Resize Size:':<25} {TARGET_IMAGE_SIZE}px")
     print("-" * 50)
     # 2. Batching Strategies
     print(f"{'BATCH_SIZE_YOLO:':<25} {BATCH_SIZE_YOLO}")
     print(f"{'BATCH_SIZE_SAM_BOX:':<25} {BATCH_SIZE_SAM_BOX}")
-    print(f"{'BATCH_SIZE_RAM_FILES_YOLO:':<25} {BATCH_SIZE_RAM_FILES_YOLO}")
+    print(f"{'RAM_CHUNK_SIZE_YOLO:':<25} {RAM_CHUNK_SIZE_YOLO}")
     print("-" * 50)
     # 3. Dataset & Results
     print(f"{'Total Images Processed:':<25} {total_images}")
