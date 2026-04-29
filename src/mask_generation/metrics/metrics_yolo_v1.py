@@ -3,7 +3,7 @@ Before running, make sure that:
   - ONLY_LABELED_IMAGES = True  in config.py
   - CONF_THRESHOLD_NMS_FLOOR = 0.01  in config.py
 
-Run from workspace root with: python src/instance_segmentation/metrics/metrics_yolo_v1.py
+Run from workspace root with: python src/mask_generation/metrics/metrics_yolo_v1.py
 
 Per-image metrics are computed first (except AP which is pooled globally).
 Aggregated mean ± std is printed at the end. JSON saved to metrics/results/metrics_yolo_v1.json
@@ -54,7 +54,7 @@ import torch
 import matplotlib
 matplotlib.use('Agg')  # headless backend — prevents Qt/display warnings in WSL
 
-from instance_segmentation.yolo_sam_v1.config_v1 import (
+from mask_generation.yolo_sam_v1.config_v1 import (
     INPUT_DIR, RESULT_DIR, get_experiment_name,
     CONF_THRESHOLD_DETECTION, CONF_THRESHOLD_NMS_FLOOR, IOU_THRESHOLD_NMS,
     USE_PHONE_DATA,
@@ -68,7 +68,7 @@ from instance_segmentation.yolo_sam_v1.config_v1 import (
 # IoU threshold for matching predicted to GT boxes — separate from IOU_THRESHOLD_NMS in config.py
 MATCHING_IOU_THRESHOLD = 0.35  # was 0.5 default
 
-# Output dir: results/instance_segmentation/{camera}/evaluation/yolo_sam_v1/metrics_yolo_v1/{experiment}/
+# Output dir: results/mask_generation/{camera}/evaluation/yolo_sam_v1/metrics_yolo_v1/{experiment}/
 EVAL_DIR       = os.path.join(RESULT_DIR, "evaluation", "yolo_sam_v1", "metrics_yolo_v1", get_experiment_name())
 VIZ_DIR        = os.path.join(EVAL_DIR, "match_viz")
 HIST_DIR       = os.path.join(EVAL_DIR, "TP_IoU_histograms")

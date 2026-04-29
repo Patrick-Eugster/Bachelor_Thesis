@@ -10,12 +10,12 @@ import yaml
 import torch
 
 # Import globals and logic from our newly created modules
-from instance_segmentation.yolo_sam_v1.config_v1 import *
+from mask_generation.yolo_sam_v1.config_v1 import *
 # from yolo_v1 import run_yolo_phase
-from instance_segmentation.yolo_sam_v1.yolo_v1_pipelined import run_yolo_phase
+from mask_generation.yolo_sam_v1.yolo_v1_pipelined import run_yolo_phase
 
 # from sam_v1 import run_sam_phases
-from instance_segmentation.yolo_sam_v1.sam_v1_pipelined import run_sam_phase
+from mask_generation.yolo_sam_v1.sam_v1_pipelined import run_sam_phase
 
 # =====================================================================
 # --- HELPER FUNCTIONS FOR MAIN ---

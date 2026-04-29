@@ -7,9 +7,9 @@ from PIL import Image
 # =====================================================================
 # --- CONFIGURATION ---
 # =====================================================================
-BASE_DIR    = os.path.dirname(os.path.abspath(__file__))          # src/instance_segmentation/yolo_sam_v1/
-WEIGHTS_DIR = os.path.join(BASE_DIR, "..", "weights")             # src/instance_segmentation/weights/
-YOLO_DIR    = os.path.join(BASE_DIR, "..", "yolov5")              # src/instance_segmentation/yolov5/
+BASE_DIR    = os.path.dirname(os.path.abspath(__file__))          # src/mask_generation/yolo_sam_v1/
+WEIGHTS_DIR = os.path.join(BASE_DIR, "..", "weights")             # src/mask_generation/weights/
+YOLO_DIR    = os.path.join(BASE_DIR, "..", "yolov5")              # src/mask_generation/yolov5/
 
 # Model Paths
 WHEAT_YOLO_MODEL = os.path.join(WEIGHTS_DIR, "wheat_head_detection_model.pt")
@@ -47,7 +47,7 @@ SHOW_TIME_TOTAL = True           # print total pipeline timing at the end
 
 # --- RUN CONTROLS ---
 ONLY_YOLO = False                # stop after YOLO phase, skip SAM entirely
-LIMIT_PLOTS = 0                  # process only N plots (0 = all)
+LIMIT_PLOTS = 1                  # process only N plots (0 = all)
 LIMIT_IMAGES = 0                 # process only N images per plot (0 = all)
 ONLY_LABELED_IMAGES = False      # only run on images that have a manual label in manual_label/ — for metrics (ignores LIMIT_IMAGES)
 
@@ -58,7 +58,7 @@ USE_PHONE_DATA = False
 
 # --- EXPERIMENT NAMING ---
 # Controls where results (bboxes, masks, yolo_vis, sam_vis) are saved:
-#   results/instance_segmentation/{camera}/{plot}/yolo_sam_v1/{experiment}/
+#   results/mask_generation/{camera}/{plot}/yolo_sam_v1/{experiment}/
 #
 # EXPERIMENT_NAME options:
 #   "initial"      — default name for a first/scratch run (no date appended, safe to overwrite)
@@ -75,11 +75,11 @@ ROOT_DIR = os.path.join(BASE_DIR, "..", "..", "..")  # workspace root
 
 if USE_PHONE_DATA:
     INPUT_DIR  = os.path.join(ROOT_DIR, "input_plots", "phone")
-    RESULT_DIR = os.path.join(ROOT_DIR, "results", "instance_segmentation", "phone")
+    RESULT_DIR = os.path.join(ROOT_DIR, "results", "mask_generation", "phone")
     print("-> Using Dataset: PHONE DATA")
 else:
     INPUT_DIR  = os.path.join(ROOT_DIR, "input_plots", "fip")
-    RESULT_DIR = os.path.join(ROOT_DIR, "results", "instance_segmentation", "fip")
+    RESULT_DIR = os.path.join(ROOT_DIR, "results", "mask_generation", "fip")
     print("-> Using Dataset: FIP DATA")
 
 
@@ -98,14 +98,14 @@ def get_experiment_name():
         # fixed scratch name — never append date
         return "initial"
     if APPEND_DATE:
-        return f"{EXPERIMENT_NAME}_{datetime.datetime.now().strftime('%Y-%m-%d')}"
+        return f"{datetime.datetime.now().strftime('%Y-%m-%d')}_{EXPERIMENT_NAME}"
     return EXPERIMENT_NAME
 
 
 def get_result_path(image_folder):
     """Derive output result path for a given image folder.
 
-    input_plots/fip/plot_461/images/ → results/instance_segmentation/fip/plot_461/yolo_sam_v1/{experiment}/
+    input_plots/fip/plot_461/images/ → results/mask_generation/fip/plot_461/yolo_sam_v1/{experiment}/
     """
     plot_name = os.path.basename(os.path.dirname(image_folder))
     return os.path.join(RESULT_DIR, plot_name, "yolo_sam_v1", get_experiment_name())

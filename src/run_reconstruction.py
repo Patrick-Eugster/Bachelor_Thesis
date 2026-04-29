@@ -46,7 +46,7 @@ def _resolve_experiment_name():
         # fixed scratch name — never append date
         return "initial"
     if APPEND_DATE:
-        return f"{EXPERIMENT_NAME}_{datetime.datetime.now().strftime('%Y-%m-%d')}"
+        return f"{datetime.datetime.now().strftime('%Y-%m-%d')}_{EXPERIMENT_NAME}"
     return EXPERIMENT_NAME
 
 # --- TRAINING CONFIGURATION ---
@@ -65,10 +65,10 @@ EXP_NAME = "run_1"  # for run_3d_seg wheat head experiment sub-folder
 
 # --- SEGMENTATION INPUT SOURCE ---
 # Which detection results to use as input for 3DGS training + instance matching:
-DETECTION_EXPERIMENT = "initial"  # experiment name from results/instance_segmentation/
+DETECTION_EXPERIMENT = "initial"  # experiment name from results/mask_generation/
 USE_YOLOSAM_SOURCE   = False      # True = use yolosam/ ground truth bboxes + masks (for comparison)
                                    # False = use predicted bboxes + masks from DETECTION_EXPERIMENT
-_det_base      = os.path.join(RESULTS_BASE, "instance_segmentation", CAMERA, PLOT, "yolo_sam_v1", DETECTION_EXPERIMENT)
+_det_base      = os.path.join(RESULTS_BASE, "mask_generation", CAMERA, PLOT, "yolo_sam_v1", DETECTION_EXPERIMENT)
 SEG_SOURCE_DIR = os.path.join(_det_base, "yolosam") if USE_YOLOSAM_SOURCE else _det_base
 # auto-derived, never type manually — points to bboxes/ and masks/ used by all pipeline steps
 
@@ -202,7 +202,7 @@ def _run_pipeline():
             sys.stdout = seg_tee
             print(f"Logging Step 4 to: {os.path.abspath(LOG_FILE)}")
         run_step("4. Segmentation", [
-            "python", "src/instance_matching/run_3d_seg.py",
+            "python", "src/segmentation_3d/run_3d_seg.py",
             "-s", DATASET_PATH,
             "-m", MODEL_PATH,
             "--resolution", resolution_str,
@@ -216,7 +216,7 @@ def _run_pipeline():
         # auto-export colored PLY right after segmentation — no separate toggle needed
         exp_dir = os.path.join(MODEL_PATH, "wheat-head", EXP_NAME)
         run_step("4b. Export Colored PLY", [
-            "python", "src/instance_matching/export_colored_ply.py",
+            "python", "src/segmentation_3d/export_colored_ply.py",
             "--gaussians_ply", os.path.join(exp_dir, "gaussians.ply"),
             "--labels_path",   os.path.join(exp_dir, "all_obj_labels.pth"),
             "--output_ply",    os.path.join(exp_dir, "gaussians_colored.ply"),
@@ -241,7 +241,7 @@ def _run_pipeline():
     # Step 6: Evaluate 3D segmentation quality — saves overlay PNGs per camera
     if RUN_EVAL:
         run_step("6. Eval", [
-            "python", "src/instance_matching/eval_wheatgs.py",
+            "python", "src/segmentation_3d/eval_wheatgs.py",
             "-s", DATASET_PATH,
             "-m", MODEL_PATH,
             "--resolution", resolution_str,

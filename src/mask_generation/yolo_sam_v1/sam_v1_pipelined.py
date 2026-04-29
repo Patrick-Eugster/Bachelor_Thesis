@@ -39,7 +39,7 @@ import wandb
 from segment_anything import sam_model_registry, SamPredictor
 
 # Import from config
-from instance_segmentation.yolo_sam_v1.config_v1 import *
+from mask_generation.yolo_sam_v1.config_v1 import *
 
 
 # =====================================================================
@@ -186,7 +186,7 @@ def run_sam_phase(image_folders):
         plot_name = folder.split(os.sep)[-2] # Get parent folder name (e.g. plot_461)
         print(f"\n[SAM Phase] Processing Plot: {plot_name}")
 
-        base_result_path = get_result_path(folder)          # results/instance_segmentation/fip/plot_461/yolo_sam_v1/{experiment}/
+        base_result_path = get_result_path(folder)          # results/mask_generation/fip/plot_461/yolo_sam_v1/{experiment}/
         bbox_folder    = os.path.join(base_result_path, "bboxes")   # read bboxes written by YOLO phase
         sam_vis_folder = os.path.join(base_result_path, "sam_vis")
         mask_folder    = os.path.join(base_result_path, "masks")

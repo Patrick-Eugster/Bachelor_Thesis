@@ -41,12 +41,12 @@ src/reconstruction/**/dist/
 src/viewer/**/build/
 
 # --- Detection/Segmentation runtime outputs ---
-src/instance_segmentation/**/runs/*
-src/instance_segmentation/**/yolo_vis/
-src/instance_segmentation/**/sam_vis/
+src/mask_generation/**/runs/*
+src/mask_generation/**/yolo_vis/
+src/mask_generation/**/sam_vis/
 
 # --- Weights ---
-src/instance_segmentation/weights/
+src/mask_generation/weights/
 
 # --- Data and results (managed separately) ---
 input_plots/

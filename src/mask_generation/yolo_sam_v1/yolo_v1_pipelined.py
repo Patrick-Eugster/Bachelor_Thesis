@@ -38,7 +38,7 @@ from PIL import Image
 import shutil
 
 # Import from config
-from instance_segmentation.yolo_sam_v1.config_v1 import *
+from mask_generation.yolo_sam_v1.config_v1 import *
 
 
 # =====================================================================
@@ -238,7 +238,7 @@ def run_yolo_phase(image_folders):
 
         # Setup Output Directories
         base_plot_path  = os.path.dirname(folder)           # input_plots/fip/plot_461/
-        base_result_path = get_result_path(folder)          # results/instance_segmentation/fip/plot_461/yolo_sam_v1/{experiment}/
+        base_result_path = get_result_path(folder)          # results/mask_generation/fip/plot_461/yolo_sam_v1/{experiment}/
         yolo_vis_folder = os.path.join(base_result_path, "yolo_vis")
         bbox_folder     = os.path.join(base_result_path, "bboxes")
         # only create bboxes_with_conf when running in metrics mode — no point saving it for full runs
