@@ -36,18 +36,21 @@ archive/
 **/*.egg-info/
 
 # --- Viewer & Reconstruction build artifacts ---
-reconstruction/**/build/
-reconstruction/**/dist/
-viewer/**/build/
+src/reconstruction/**/build/
+src/reconstruction/**/dist/
+src/viewer/**/build/
 
 # --- Detection/Segmentation runtime outputs ---
-detection_segmentation/**/runs/*
-detection_segmentation/**/yolo_vis/
-detection_segmentation/**/sam_vis/
-detection_segmentation/metrics/results/
+src/instance_segmentation/**/runs/*
+src/instance_segmentation/**/yolo_vis/
+src/instance_segmentation/**/sam_vis/
 
 # --- Weights ---
-detection_segmentation/weights/
+src/instance_segmentation/weights/
+
+# --- Data and results (managed separately) ---
+input_plots/
+results/
 
 # --- Weight/model files (keep yolov5 configs) ---
 **/*.pt
