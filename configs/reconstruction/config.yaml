@@ -1,0 +1,53 @@
+# @package _global_
+defaults:
+  - /dataset: fip         # override on CLI: dataset=phone  (/ = search from configs/ root)
+  - _self_
+
+plot: "plot_461"
+experiment_name: "initial"
+append_date: false
+detection_experiment: "initial"
+exp_name: "run_1"         # wheat-head segmentation sub-folder name
+use_yolosam_source: false # true = use ground truth yolosam bboxes+masks instead of predicted
+
+# training params
+resolution: 2
+sh_degree: 3
+opacity_prune_threshold: 0.005
+data_device_cpu: true
+densify_until_iter: 11000
+densify_grad_threshold: 0.0002
+
+# pipeline step toggles (all off by default — enable on CLI or edit here)
+run_train: false
+run_render: false
+run_metrics: false
+run_seg: false
+run_render_360: false
+run_eval: false
+run_viewer: false
+
+# segmentation visualization
+save_vis_overlay: true
+vis_max_heads: 10
+
+# render 360
+fast_render_360: true
+white_background_360: true
+n_frames: 200
+framerate: 20
+elevation: 45
+
+# viewer
+viewer_type: "full"
+fast_viewer: true
+viewer_port: 8080
+
+# logging
+log_seg_only: true
+
+# hydra: don't create outputs/ folder in workspace root
+hydra:
+  output_subdir: null
+  run:
+    dir: .

@@ -1,0 +1,4 @@
+name: phone
+input_dir: input_plots/phone
+result_dir_masks: results/mask_generation/phone
+result_dir_recon: results/reconstruction/phone

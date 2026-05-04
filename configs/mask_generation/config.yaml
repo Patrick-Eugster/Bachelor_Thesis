@@ -1,0 +1,51 @@
+# @package _global_
+defaults:
+  - /dataset: fip         # override on CLI: dataset=phone  (/ = search from configs/ root)
+  - _self_
+
+experiment_name: "initial"
+append_date: false
+
+# model files (inside src/mask_generation/weights/)
+wheat_yolo_model: "wheat_head_detection_model.pt"
+sam_checkpoint: "sam_vit_h_4b8939.pth"
+
+# detection thresholds
+conf_threshold_nms_floor: 0.2
+conf_threshold_detection: 0.35
+iou_threshold_nms: 0.45
+classes_to_detect: [0]        # YOLO class filter — 0 = wheat head
+
+# image processing
+resize_method: "LANCZOS"      # options: LANCZOS, BICUBIC, BILINEAR, NEAREST
+target_image_size: 1280
+batch_size_yolo: 25
+ram_chunk_size_yolo: 100
+batch_size_sam_box: 1
+max_threads: 10
+
+# visualization
+show_labels: true
+show_rejected_boxes: true
+show_detected_boxes: true
+box_thickness: 2
+label_font_scale: 1
+
+# debug / timing
+debug_yolo_resize: false
+show_time_yolo: true
+show_time_sam: true
+show_time_total: true
+
+# run controls
+only_yolo: false
+limit_plots: 1
+limit_images: 0
+only_labeled_images: false
+wandb_enabled: false
+
+# hydra: don't create outputs/ folder in workspace root
+hydra:
+  output_subdir: null
+  run:
+    dir: .

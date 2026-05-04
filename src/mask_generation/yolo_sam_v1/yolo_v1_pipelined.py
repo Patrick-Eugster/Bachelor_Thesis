@@ -37,8 +37,15 @@ import torch
 from PIL import Image
 import shutil
 
-# Import from config
-from mask_generation.yolo_sam_v1.config_v1 import *
+from utils.config_utils import get_mask_generation_result_path, get_weights_dir
+
+# map YAML string → PIL resize constant
+_RESIZE_METHODS = {
+    "LANCZOS":  Image.LANCZOS,
+    "BICUBIC":  Image.BICUBIC,
+    "BILINEAR": Image.BILINEAR,
+    "NEAREST":  Image.NEAREST,
+}
 
 
 # =====================================================================
@@ -52,8 +59,8 @@ def reset_folder(folder_path):
     os.makedirs(folder_path, exist_ok=True)  # Recreates the empty folder
 
 
-def resize_single_image(img_path, target_size):
-    """For Parallelized CPU Image Resizing. 
+def resize_single_image(img_path, target_size, resize_method):
+    """For Parallelized CPU Image Resizing.
     Scale the image so the longer side fits target_size, then pad to a square with grey borders (letterbox)."""
     img_orig = Image.open(img_path).convert('RGB')
     orig_w, orig_h = img_orig.size
@@ -71,8 +78,8 @@ def resize_single_image(img_path, target_size):
     # Calculate exact top/bottom/left/right padding using YOLO's odd-pixel math
     top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
     left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-    # 4. Resize the image using PIL RESIZE_METHOD
-    img_resized = img_orig.resize((new_unpad_w, new_unpad_h), resample=RESIZE_METHOD)
+    # 4. Resize the image using the configured resize method
+    img_resized = img_orig.resize((new_unpad_w, new_unpad_h), resample=resize_method)
     # 5. Create the gray canvas and paste the image over it
     canvas = Image.new('RGB', (target_size, target_size), (114, 114, 114))
     canvas.paste(img_resized, (left, top))
@@ -81,8 +88,8 @@ def resize_single_image(img_path, target_size):
     return np.array(canvas), np.array(img_orig), pad_info
 
 
-def save_single_result(_, result, original_img, pad_info, original_path, bbox_folder, bboxes_with_conf_folder, yolo_vis_folder):
-    """Reverse letterbox math to map boxes back to original image coordinates, 
+def save_single_result(_, result, original_img, pad_info, original_path, bbox_folder, bboxes_with_conf_folder, yolo_vis_folder, cfg):
+    """Reverse letterbox math to map boxes back to original image coordinates,
     draw them, and save .pt tensors + .jpg visualization."""
     save_name = os.path.splitext(os.path.basename(original_path))[0]
     r, pad_left, pad_top = pad_info  # Extract math from the resize step
@@ -102,7 +109,7 @@ def save_single_result(_, result, original_img, pad_info, original_path, bbox_fo
         preds[:, [0, 2]] = np.clip(preds[:, [0, 2]], 0, orig_w)
         preds[:, [1, 3]] = np.clip(preds[:, [1, 3]], 0, orig_h)
         # 3. VECTORIZED FILTERING. This mask instantly separates good and bad boxes in C++
-        mask = preds[:, 4] >= CONF_THRESHOLD_DETECTION
+        mask = preds[:, 4] >= cfg.conf_threshold_detection
         good_preds = preds[mask]
         bad_preds = preds[~mask]
         good_count = len(good_preds)
@@ -116,35 +123,35 @@ def save_single_result(_, result, original_img, pad_info, original_path, bbox_fo
             bad_coords = bad_preds[:, :4].astype(int)
             bad_confs = bad_preds[:, 4]
         # 4. Draw Good Boxes (Blue) - directly on image
-        if SHOW_DETECTED_BOXES and good_count > 0:
+        if cfg.show_detected_boxes and good_count > 0:
             for j in range(good_count):
                 x1, y1, x2, y2 = good_coords[j]
                 conf = good_confs[j]
-                cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (0, 0, 255), thickness=BOX_THICKNESS)
-                if SHOW_LABELS:
+                cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (0, 0, 255), thickness=cfg.box_thickness)
+                if cfg.show_labels:
                     conf_text = f"{conf:.2f}"
                     font = cv2.FONT_HERSHEY_SIMPLEX
-                    font_scale = LABEL_FONT_SCALE * 0.7
+                    font_scale = cfg.label_font_scale * 0.7
                     pos = (x1, y1 - 8)
                     cv2.putText(annotated_img, conf_text, pos, font, font_scale, (255, 255, 255),
-                                thickness=BOX_THICKNESS + 1, lineType=cv2.LINE_AA)
+                                thickness=cfg.box_thickness + 1, lineType=cv2.LINE_AA)
                     cv2.putText(annotated_img, conf_text, pos, font, font_scale, (0, 0, 255),
-                                thickness=BOX_THICKNESS - 1, lineType=cv2.LINE_AA)
+                                thickness=cfg.box_thickness - 1, lineType=cv2.LINE_AA)
         # 5. Draw Bad Boxes (Red) - directly on image
-        if SHOW_REJECTED_BOXES and bad_count > 0:
+        if cfg.show_rejected_boxes and bad_count > 0:
             for j in range(bad_count):
                 x1, y1, x2, y2 = bad_coords[j]
                 conf = bad_confs[j]
-                cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (255, 30, 30), thickness=BOX_THICKNESS)
-                if SHOW_LABELS:
+                cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (255, 30, 30), thickness=cfg.box_thickness)
+                if cfg.show_labels:
                     conf_text = f"{conf:.2f}"
                     font = cv2.FONT_HERSHEY_SIMPLEX
-                    font_scale = LABEL_FONT_SCALE * 0.7
+                    font_scale = cfg.label_font_scale * 0.7
                     pos = (x1, y1 + 25)
                     cv2.putText(annotated_img, conf_text, pos, font, font_scale, (255, 255, 255),
-                                thickness=BOX_THICKNESS + 1, lineType=cv2.LINE_AA)
+                                thickness=cfg.box_thickness + 1, lineType=cv2.LINE_AA)
                     cv2.putText(annotated_img, conf_text, pos, font, font_scale, (255, 30, 30),
-                                thickness=max(1, BOX_THICKNESS - 1), lineType=cv2.LINE_AA)
+                                thickness=max(1, cfg.box_thickness - 1), lineType=cv2.LINE_AA)
     # 6. Save Tensors for SAM (4 cols: x1,y1,x2,y2 — good boxes only)
     if len(good_boxes_for_sam) > 0:
         valid_tensor = torch.tensor(good_boxes_for_sam)
@@ -178,24 +185,24 @@ def save_debug_image_yolo(resized_imgs, folder):
 # -------- PIPELINE HELPERS (new in v2) --------
 # =====================================================================
 
-def _resize_sub_batch(files, target_size):
+def _resize_sub_batch(files, target_size, resize_method, max_threads):
     """Resize one GPU sub-batch of images in parallel, returns list of (resized, original, pad_info).
-    Uses MAX_THREADS//2 so resize and save can run simultaneously without starving NMS on the main thread."""
-    n_workers = min(max(1, MAX_THREADS // 2), len(files))
+    Uses max_threads//2 so resize and save can run simultaneously without starving NMS on the main thread."""
+    n_workers = min(max(1, max_threads // 2), len(files))
     with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as pool:
-        return list(pool.map(lambda p: resize_single_image(p, target_size), files))
+        return list(pool.map(lambda p: resize_single_image(p, target_size, resize_method), files))
 
 
 def _save_sub_batch(det_list, orig_imgs, pad_infos, files,
-                    bbox_folder, bboxes_with_conf_folder, yolo_vis_folder):
+                    bbox_folder, bboxes_with_conf_folder, yolo_vis_folder, cfg):
     """Save results for one GPU sub-batch in parallel, returns list of (good_count, bad_count).
-    Uses MAX_THREADS//2 so resize and save can run simultaneously without starving NMS on the main thread."""
-    n_workers = min(max(1, MAX_THREADS // 2), len(files))
+    Uses max_threads//2 so resize and save can run simultaneously without starving NMS on the main thread."""
+    n_workers = min(max(1, cfg.max_threads // 2), len(files))
     with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as pool:
         return list(pool.map(
             lambda i: save_single_result(
                 i, det_list[i], orig_imgs[i], pad_infos[i], files[i],
-                bbox_folder, bboxes_with_conf_folder, yolo_vis_folder
+                bbox_folder, bboxes_with_conf_folder, yolo_vis_folder, cfg
             ),
             range(len(files))
         ))
@@ -206,7 +213,7 @@ def print_performance_report_yolo(num_images, wall_time):
     avg = wall_time / max(1, num_images)
     print(f"=" * 45)
     print(f"       PLOT PERFORMANCE REPORT ({num_images} images)")
-    print(f"{'Total Time (pipelined):':<28} {wall_time:>8.2f}s")  # Total time = prep + gpu + disk
+    print(f"{'Total Time (pipelined):':<28} {wall_time:>8.2f}s")
     print(f"{'Avg per image:':<28} {avg:>8.2f}s")
     print("=" * 45 + "\n")
 
@@ -215,20 +222,25 @@ def print_performance_report_yolo(num_images, wall_time):
 # =====================================================================
 #  MAIN YOLO INFERENCE — PIPELINED (ALL PLOTS)
 # =====================================================================
-def run_yolo_phase(image_folders):
+def run_yolo_phase(image_folders, cfg):
     print("\n" + "=" * 50)
     print(" PHASE 1: LOADING YOLO AND PROCESSING ALL PLOTS")
     print("=" * 50)
 
-    if not os.path.exists(WHEAT_YOLO_MODEL):
-        print(f"ERROR: Wheat model not found at {WHEAT_YOLO_MODEL}")
+    weights_dir = get_weights_dir()
+    yolo_dir    = os.path.join(weights_dir, "..", "yolov5")
+    wheat_model = os.path.join(weights_dir, cfg.wheat_yolo_model)
+    resize_method = _RESIZE_METHODS[cfg.resize_method]
+
+    if not os.path.exists(wheat_model):
+        print(f"ERROR: Wheat model not found at {wheat_model}")
         return 0
 
     # Load YOLO Model ONCE & Load custom model using local repo
-    model = torch.hub.load(YOLO_DIR, 'custom', path=WHEAT_YOLO_MODEL, source='local')
-    model.conf = CONF_THRESHOLD_NMS_FLOOR
-    model.iou = IOU_THRESHOLD_NMS
-    model.classes = CLASSES_TO_DETECT
+    model = torch.hub.load(yolo_dir, 'custom', path=wheat_model, source='local')
+    model.conf = cfg.conf_threshold_nms_floor
+    model.iou  = cfg.iou_threshold_nms
+    model.classes = list(cfg.classes_to_detect)
 
     total_run_boxes = 0
 
@@ -237,12 +249,12 @@ def run_yolo_phase(image_folders):
         print(f"\n[YOLO Phase] Processing Plot: {plot_name}")
 
         # Setup Output Directories
-        base_plot_path  = os.path.dirname(folder)           # input_plots/fip/plot_461/
-        base_result_path = get_result_path(folder)          # results/mask_generation/fip/plot_461/yolo_sam_v1/{experiment}/
-        yolo_vis_folder = os.path.join(base_result_path, "yolo_vis")
-        bbox_folder     = os.path.join(base_result_path, "bboxes")
+        base_plot_path   = os.path.dirname(folder)                      # input_plots/fip/plot_461/
+        base_result_path = get_mask_generation_result_path(cfg, plot_name)  # results/mask_generation/...
+        yolo_vis_folder  = os.path.join(base_result_path, "yolo_vis")
+        bbox_folder      = os.path.join(base_result_path, "bboxes")
         # only create bboxes_with_conf when running in metrics mode — no point saving it for full runs
-        if ONLY_LABELED_IMAGES:
+        if cfg.only_labeled_images:
             bboxes_with_conf_folder = os.path.join(base_result_path, "bboxes_with_conf")
             reset_folder(bboxes_with_conf_folder)
         else:
@@ -252,91 +264,80 @@ def run_yolo_phase(image_folders):
 
         # Get Images
         image_files = glob.glob(os.path.join(folder, '*.png')) + glob.glob(os.path.join(folder, '*.jpg'))
-        if ONLY_LABELED_IMAGES:
-            # only keep images that have a manual label for metrics testing and ignores LIMIT_IMAGES
+        if cfg.only_labeled_images:
+            # only keep images that have a manual label for metrics testing and ignores limit_images
             label_dir = os.path.join(base_plot_path, 'manual_label')  # manual labels stay in input_plots/
             labeled_stems = {os.path.splitext(f)[0] for f in os.listdir(
                 label_dir) if f.endswith('.txt')} if os.path.isdir(label_dir) else set()
-            if LIMIT_IMAGES > 0:
-                print(f"---ONLY_LABELED_IMAGES=True: ignoring LIMIT_IMAGES={LIMIT_IMAGES}")
+            if cfg.limit_images > 0:
+                print(f"---ONLY_LABELED_IMAGES=True: ignoring LIMIT_IMAGES={cfg.limit_images}")
             image_files = [f for f in image_files if os.path.splitext(os.path.basename(f))[0] in labeled_stems]
             print(f"---ONLY_LABELED_IMAGES: filtered to {len(image_files)} labeled images")
             for f in image_files:
                 print(f"---ONLY_LABELED_IMAGES: using image: {os.path.basename(f)}")
-        elif LIMIT_IMAGES > 0:
-            image_files = image_files[:LIMIT_IMAGES]
+        elif cfg.limit_images > 0:
+            image_files = image_files[:cfg.limit_images]
 
         total_wall_time = 0.0
         total_plot_boxes, total_plot_bad_boxes = 0, 0
 
         # Chunking loop to protect RAM
-        for chunk_start in range(0, len(image_files), RAM_CHUNK_SIZE_YOLO):
-            chunk_files = image_files[chunk_start: chunk_start + RAM_CHUNK_SIZE_YOLO]
+        for chunk_start in range(0, len(image_files), cfg.ram_chunk_size_yolo):
+            chunk_files = image_files[chunk_start: chunk_start + cfg.ram_chunk_size_yolo]
             print(f"  -> Processing chunk {chunk_start} to {chunk_start + len(chunk_files)} of {len(image_files)} images...")
 
             # Split chunk into GPU-sized sub-batches
-            sub_batches = [chunk_files[i: i + BATCH_SIZE_YOLO]
-                           for i in range(0, len(chunk_files), BATCH_SIZE_YOLO)]
+            sub_batches = [chunk_files[i: i + cfg.batch_size_yolo]
+                           for i in range(0, len(chunk_files), cfg.batch_size_yolo)]
             n_sub = len(sub_batches)
 
             start_chunk = time.perf_counter()
 
             # Outer executor has 2 slots: one for the resize future, one for the save future.
-            # Each of those tasks spawns its own inner pool (MAX_THREADS//2) for per-image parallelism.
+            # Each of those tasks spawns its own inner pool (max_threads//2) for per-image parallelism.
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
 
                 # --- PRE-PROCESSING: kick off resize for sub-batch 0 immediately ---
-                # It runs in the background while the loop sets up, so it's often already
-                # done by the time we call .result() below.
-                resize_future = executor.submit(_resize_sub_batch, sub_batches[0], TARGET_IMAGE_SIZE)
+                resize_future = executor.submit(_resize_sub_batch, sub_batches[0], cfg.target_image_size, resize_method, cfg.max_threads)
 
                 prev_data = None   # holds (det_list, orig_imgs, pad_infos, files) from the previous GPU step
                 save_futures = []  # collect save futures so we can harvest box counts at the end
 
                 for b in range(n_sub):
                     # --- PRE-PROCESSING: collect resize results for the current sub-batch ---
-                    # .result() blocks until the parallel resize is done — usually already finished
-                    # since it ran during the previous GPU call.
                     sub_data = resize_future.result()
                     resized_imgs = [x[0] for x in sub_data]  # letterboxed images → go to GPU
-                    orig_imgs = [x[1] for x in sub_data]  # originals → needed for box reversal later
-                    pad_infos = [x[2] for x in sub_data]  # (scale, pad_left, pad_top) per image
+                    orig_imgs    = [x[1] for x in sub_data]  # originals → needed for box reversal later
+                    pad_infos    = [x[2] for x in sub_data]  # (scale, pad_left, pad_top) per image
 
-                    if b == 0 and chunk_start == 0 and DEBUG_YOLO_RESIZE:
+                    if b == 0 and chunk_start == 0 and cfg.debug_yolo_resize:
                         save_debug_image_yolo(resized_imgs, yolo_vis_folder)
 
                     # --- PRE-PROCESSING: submit resize for the NEXT sub-batch ---
-                    # This starts immediately and runs in parallel while the GPU works below.
                     if b + 1 < n_sub:
-                        resize_future = executor.submit(_resize_sub_batch, sub_batches[b + 1], TARGET_IMAGE_SIZE)
+                        resize_future = executor.submit(_resize_sub_batch, sub_batches[b + 1], cfg.target_image_size, resize_method, cfg.max_threads)
 
                     # --- POST-PROCESSING: submit save for the PREVIOUS sub-batch ---
-                    # Also starts immediately and runs in parallel while the GPU works below.
-                    # save_single_result reverses letterbox math, draws boxes, writes .pt + .jpg.
                     if prev_data is not None:
                         prev_det, prev_orig, prev_pad, prev_files = prev_data
                         sf = executor.submit(_save_sub_batch, prev_det, prev_orig, prev_pad, prev_files,
-                                             bbox_folder, bboxes_with_conf_folder, yolo_vis_folder)
+                                             bbox_folder, bboxes_with_conf_folder, yolo_vis_folder, cfg)
                         save_futures.append(sf)
-                        prev_data = None  # drop reference so RAM can be freed once the save thread is done
+                        prev_data = None
 
                     # --- GPU INFERENCE: run YOLO on the current sub-batch ---
-                    # Main thread blocks here. The resize (next) and save (prev) run on CPU in parallel.
                     torch.cuda.synchronize()
-                    batch_results = model(resized_imgs, size=TARGET_IMAGE_SIZE)
+                    batch_results = model(resized_imgs, size=cfg.target_image_size)
                     torch.cuda.synchronize()
                     det_list = batch_results.tolist()
 
-                    # store results so we can submit the save on the next loop iteration
                     prev_data = (det_list, orig_imgs, pad_infos, list(sub_batches[b]))
 
                 # --- POST-PROCESSING: save the last sub-batch ---
-                # No next GPU call to overlap with, but we still submit so it runs in the background
-                # while the executor waits for all futures to finish on __exit__.
                 if prev_data is not None:
                     prev_det, prev_orig, prev_pad, prev_files = prev_data
                     sf = executor.submit(_save_sub_batch, prev_det, prev_orig, prev_pad, prev_files,
-                                         bbox_folder, bboxes_with_conf_folder, yolo_vis_folder)
+                                         bbox_folder, bboxes_with_conf_folder, yolo_vis_folder, cfg)
                     save_futures.append(sf)
 
                 # Collect box counts from all completed save futures
@@ -351,7 +352,7 @@ def run_yolo_phase(image_folders):
         # Final Performance Report for the entire plot
         print(f"-> YOLO detected a total of {total_plot_boxes} good wheat heads across {len(image_files)} images.")
         print(f"-> YOLO detected a total of {total_plot_bad_boxes} wheat heads below threshold as bad boxes.")
-        if SHOW_TIME_YOLO:
+        if cfg.show_time_yolo:
             print_performance_report_yolo(len(image_files), total_wall_time)
 
         total_run_boxes += total_plot_boxes

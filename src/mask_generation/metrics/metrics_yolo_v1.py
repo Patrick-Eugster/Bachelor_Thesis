@@ -54,16 +54,38 @@ import torch
 import matplotlib
 matplotlib.use('Agg')  # headless backend — prevents Qt/display warnings in WSL
 
-from mask_generation.yolo_sam_v1.config_v1 import (
-    INPUT_DIR, RESULT_DIR, get_experiment_name,
-    CONF_THRESHOLD_DETECTION, CONF_THRESHOLD_NMS_FLOOR, IOU_THRESHOLD_NMS,
-    USE_PHONE_DATA,
-)
-
+import datetime
+from omegaconf import OmegaConf
 
 # =====================================================================
-# Config
+# Config  (edit these two lines to switch dataset / experiment)
 # =====================================================================
+DATASET_NAME    = "fip"      # "fip" or "phone"
+EXPERIMENT_NAME = "initial"  # matches the experiment name used during detection
+APPEND_DATE     = False      # must match what was set during detection run
+
+_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")
+_cfg  = OmegaConf.load(os.path.join(_ROOT, "configs", "mask_generation", "config.yaml"))
+_ds   = OmegaConf.load(os.path.join(_ROOT, "configs", "dataset", f"{DATASET_NAME}.yaml"))
+
+CONF_THRESHOLD_DETECTION  = _cfg.conf_threshold_detection
+CONF_THRESHOLD_NMS_FLOOR  = _cfg.conf_threshold_nms_floor
+IOU_THRESHOLD_NMS         = _cfg.iou_threshold_nms
+
+INPUT_DIR  = _ds.input_dir
+RESULT_DIR = _ds.result_dir_masks
+
+
+def get_experiment_name():
+    """Resolve the experiment name — mirrors the same 3-option logic used in the pipeline."""
+    if not EXPERIMENT_NAME:
+        return datetime.datetime.now().strftime("%Y-%m-%d_%H%M")
+    if EXPERIMENT_NAME == "initial":
+        return "initial"
+    if APPEND_DATE:
+        return f"{datetime.datetime.now().strftime('%Y-%m-%d')}_{EXPERIMENT_NAME}"
+    return EXPERIMENT_NAME
+
 
 # IoU threshold for matching predicted to GT boxes — separate from IOU_THRESHOLD_NMS in config.py
 MATCHING_IOU_THRESHOLD = 0.35  # was 0.5 default
@@ -765,7 +787,7 @@ def save_metrics_config():
     config = {
         "experiment":   get_experiment_name(),
         "date":         datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "dataset":      "phone" if USE_PHONE_DATA else "fip",
+        "dataset":      DATASET_NAME,
         "method":       "yolo_sam_v1",
         "eval_script":  "metrics_yolo_v1",
         "detection_thresholds": {

@@ -1,0 +1,4 @@
+name: fip
+input_dir: input_plots/fip
+result_dir_masks: results/mask_generation/fip
+result_dir_recon: results/reconstruction/fip
