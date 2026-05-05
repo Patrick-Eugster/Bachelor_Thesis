@@ -37,7 +37,7 @@ import shutil
 import wandb
 from segment_anything import sam_model_registry, SamPredictor
 
-from utils.config_utils import get_mask_generation_result_path, get_weights_dir
+from utils.config_utils import get_mask_generation_result_path
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -152,7 +152,7 @@ def run_sam_phase(image_folders, cfg):
     print(" PHASE 2: LOADING SAM AND PROCESSING ALL PLOTS")
     print("="*50)
 
-    weights_dir   = get_weights_dir()
+    weights_dir    = os.path.join(os.path.dirname(__file__), "..", "weights")
     sam_checkpoint = os.path.join(weights_dir, cfg.sam_checkpoint)
 
     if cfg.wandb_enabled:
@@ -197,22 +197,29 @@ def run_sam_phase(image_folders, cfg):
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
 
             # --- PRE-PROCESSING: kick off load for image 0 immediately ---
+            # It runs in the background while the loop sets up, so it's often already
+            # done by the time we call .result() below.
             load_future = executor.submit(_load_image_and_bbox, image_files[0], bbox_folder)
 
             prev_save_data = None
 
             for i in range(n_images):
                 # --- PRE-PROCESSING: collect load results for the current image ---
+                # .result() blocks until the parallel load is done — usually already finished
+                # since it ran during the previous GPU call.
                 image_name, save_name, image, bbox = load_future.result()
 
                 if os.path.exists(os.path.join(sam_vis_folder, image_name)):
                     continue
 
                 # --- PRE-PROCESSING: submit load for the NEXT image ---
+                # This starts immediately and runs in parallel while the GPU works below.
                 if i + 1 < n_images:
                     load_future = executor.submit(_load_image_and_bbox, image_files[i + 1], bbox_folder)
 
                 # --- POST-PROCESSING: submit save for the PREVIOUS image ---
+                # Also starts immediately and runs in parallel while the GPU works below.
+                # _save_image_results writes all mask PNGs + the overlay visualization.
                 if prev_save_data is not None:
                     sf = executor.submit(_save_image_results, *prev_save_data, cfg.max_threads)
                     save_futures.append(sf)
@@ -229,8 +236,10 @@ def run_sam_phase(image_folders, cfg):
                 bbox = bbox.to(DEVICE)
 
                 # --- GPU INFERENCE: image embedding (the heavy bottleneck) ---
+                # Main thread blocks here. load(N+1) and save(N-1) run on CPU in parallel.
                 t_start_img = time.perf_counter()
 
+                # 2. Image Embedding (heavy part)
                 predictor.set_image(image)  # only takes one image at a time
                 torch.cuda.synchronize()
                 t_embed = time.perf_counter() - t_start_img
@@ -238,9 +247,11 @@ def run_sam_phase(image_folders, cfg):
                 # --- GPU INFERENCE: predict masks (batched to prevent VRAM overflow) ---
                 t_start_pred = time.perf_counter()
 
+                # 3. Predict Masks (Batching to prevent RAM/VRAM overflow)
                 transformed_boxes = predictor.transform.apply_boxes_torch(bbox, image.shape[:2])
                 all_masks_np = []
 
+                # Process boxes in batches to save memory
                 with torch.no_grad():
                     for b_idx in range(0, len(transformed_boxes), cfg.batch_size_sam_box):
                         batch_boxes = transformed_boxes[b_idx : b_idx + cfg.batch_size_sam_box]
@@ -253,6 +264,7 @@ def run_sam_phase(image_folders, cfg):
                         masks_batch_np = (masks.squeeze(1).cpu().numpy() * 255).astype(np.uint8)
                         all_masks_np.append(masks_batch_np)
 
+                # Combine all chunks back into one numpy array
                 masks_np = np.concatenate(all_masks_np, axis=0)
                 torch.cuda.synchronize()
                 t_pred = time.perf_counter() - t_start_pred
@@ -269,13 +281,17 @@ def run_sam_phase(image_folders, cfg):
                 total_sam_pure_time += (t_embed + t_pred)
                 total_sam_images += 1
 
+                # store results so we can submit the save on the next loop iteration
                 prev_save_data = (masks_np, image, save_name, image_name, mask_folder, sam_vis_folder)
 
+                # Cleanup loop to prevent VRAM overflow
                 predictor.reset_image()
                 torch.cuda.empty_cache()
                 gc.collect()
 
             # --- POST-PROCESSING: save the last image ---
+            # No next GPU call to overlap with, but we still submit so it runs in the background
+            # while the executor waits for all futures to finish on __exit__.
             if prev_save_data is not None:
                 sf = executor.submit(_save_image_results, *prev_save_data, cfg.max_threads)
                 save_futures.append(sf)

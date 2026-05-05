@@ -21,11 +21,6 @@ def resolve_experiment_name(cfg):
     return cfg.experiment_name
 
 
-def get_weights_dir():
-    """Absolute path to src/mask_generation/weights/ — derived from this file's location."""
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "mask_generation", "weights")
-
-
 def get_dataset_path(cfg):
     """Absolute path to the input plot: input_plots/fip/plot_461/ — reconstruction only."""
     return os.path.join(cfg.dataset.input_dir, cfg.plot)

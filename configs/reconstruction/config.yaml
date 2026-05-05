@@ -46,6 +46,11 @@ viewer_port: 8080
 # logging
 log_seg_only: true
 
+# wandb — set true to log training + segmentation progress to wandb.ai dashboard
+# one-time setup: run 'wandb login' in terminal and paste API key from wandb.ai
+# WARNING: set false on Euler (SLURM) unless wandb login has been run there first
+wandb_enabled: false
+
 # hydra: don't create outputs/ folder in workspace root
 hydra:
   output_subdir: null

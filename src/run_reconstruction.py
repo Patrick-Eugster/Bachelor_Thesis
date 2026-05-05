@@ -147,10 +147,11 @@ def _run_pipeline(cfg):
     seg_source   = get_seg_source_dir(cfg)
     log_file     = get_log_file(model_path, cfg.exp_name)
 
-    data_device_flag = ["--data_device", "cpu"] if cfg.data_device_cpu else []
-    resolution_str   = str(cfg.resolution)
-    seg_dir_flag     = ["--seg_dir", seg_source]
-    timings          = {}
+    data_device_flag  = ["--data_device", "cpu"] if cfg.data_device_cpu else []
+    wandb_flag        = ["--wandb_enabled"] if cfg.wandb_enabled else []
+    resolution_str    = str(cfg.resolution)
+    seg_dir_flag      = ["--seg_dir", seg_source]
+    timings           = {}
 
     _check_overwrite(model_path, cfg)
     _save_config(model_path, cfg)
@@ -167,7 +168,7 @@ def _run_pipeline(cfg):
             "--sh_degree", str(cfg.sh_degree),
             "--densify_until_iter", str(cfg.densify_until_iter),
             "--densify_grad_threshold", str(cfg.densify_grad_threshold),
-        ] + seg_dir_flag + data_device_flag, timings, log_file)
+        ] + seg_dir_flag + data_device_flag + wandb_flag, timings, log_file)
 
     # Step 2: Render from original training/test camera views (for quality check)
     if cfg.run_render:
@@ -201,7 +202,7 @@ def _run_pipeline(cfg):
             "--iou_threshold", "0.5",
             "--exp_name", cfg.exp_name,
             "--vis_max_heads", str(cfg.vis_max_heads),
-        ] + seg_dir_flag + ([] if cfg.save_vis_overlay else ["--no_save_vis_overlay"]) + data_device_flag, timings, log_file)
+        ] + seg_dir_flag + ([] if cfg.save_vis_overlay else ["--no_save_vis_overlay"]) + data_device_flag + wandb_flag, timings, log_file)
         if seg_tee:
             seg_tee.close()
         # auto-export colored PLY right after segmentation — no separate toggle needed

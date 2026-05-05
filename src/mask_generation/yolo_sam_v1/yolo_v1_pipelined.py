@@ -37,7 +37,7 @@ import torch
 from PIL import Image
 import shutil
 
-from utils.config_utils import get_mask_generation_result_path, get_weights_dir
+from utils.config_utils import get_mask_generation_result_path
 
 # map YAML string → PIL resize constant
 _RESIZE_METHODS = {
@@ -78,7 +78,7 @@ def resize_single_image(img_path, target_size, resize_method):
     # Calculate exact top/bottom/left/right padding using YOLO's odd-pixel math
     top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
     left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-    # 4. Resize the image using the configured resize method
+    # 4. Resize the image using the configured resize method (PIL RESIZE_METHOD)
     img_resized = img_orig.resize((new_unpad_w, new_unpad_h), resample=resize_method)
     # 5. Create the gray canvas and paste the image over it
     canvas = Image.new('RGB', (target_size, target_size), (114, 114, 114))
@@ -227,8 +227,8 @@ def run_yolo_phase(image_folders, cfg):
     print(" PHASE 1: LOADING YOLO AND PROCESSING ALL PLOTS")
     print("=" * 50)
 
-    weights_dir = get_weights_dir()
-    yolo_dir    = os.path.join(weights_dir, "..", "yolov5")
+    weights_dir = os.path.join(os.path.dirname(__file__), "..", "weights")
+    yolo_dir    = os.path.join(os.path.dirname(__file__), "..", "yolov5")
     wheat_model = os.path.join(weights_dir, cfg.wheat_yolo_model)
     resize_method = _RESIZE_METHODS[cfg.resize_method]
 
@@ -298,6 +298,8 @@ def run_yolo_phase(image_folders, cfg):
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
 
                 # --- PRE-PROCESSING: kick off resize for sub-batch 0 immediately ---
+                # It runs in the background while the loop sets up, so it's often already
+                # done by the time we call .result() below.
                 resize_future = executor.submit(_resize_sub_batch, sub_batches[0], cfg.target_image_size, resize_method, cfg.max_threads)
 
                 prev_data = None   # holds (det_list, orig_imgs, pad_infos, files) from the previous GPU step
@@ -305,6 +307,8 @@ def run_yolo_phase(image_folders, cfg):
 
                 for b in range(n_sub):
                     # --- PRE-PROCESSING: collect resize results for the current sub-batch ---
+                    # .result() blocks until the parallel resize is done — usually already finished
+                    # since it ran during the previous GPU call.
                     sub_data = resize_future.result()
                     resized_imgs = [x[0] for x in sub_data]  # letterboxed images → go to GPU
                     orig_imgs    = [x[1] for x in sub_data]  # originals → needed for box reversal later
@@ -314,10 +318,13 @@ def run_yolo_phase(image_folders, cfg):
                         save_debug_image_yolo(resized_imgs, yolo_vis_folder)
 
                     # --- PRE-PROCESSING: submit resize for the NEXT sub-batch ---
+                    # This starts immediately and runs in parallel while the GPU works below.
                     if b + 1 < n_sub:
                         resize_future = executor.submit(_resize_sub_batch, sub_batches[b + 1], cfg.target_image_size, resize_method, cfg.max_threads)
 
                     # --- POST-PROCESSING: submit save for the PREVIOUS sub-batch ---
+                    # Also starts immediately and runs in parallel while the GPU works below.
+                    # save_single_result reverses letterbox math, draws boxes, writes .pt + .jpg.
                     if prev_data is not None:
                         prev_det, prev_orig, prev_pad, prev_files = prev_data
                         sf = executor.submit(_save_sub_batch, prev_det, prev_orig, prev_pad, prev_files,
@@ -326,14 +333,18 @@ def run_yolo_phase(image_folders, cfg):
                         prev_data = None
 
                     # --- GPU INFERENCE: run YOLO on the current sub-batch ---
+                    # Main thread blocks here. The resize (next) and save (prev) run on CPU in parallel.
                     torch.cuda.synchronize()
                     batch_results = model(resized_imgs, size=cfg.target_image_size)
                     torch.cuda.synchronize()
                     det_list = batch_results.tolist()
 
+                    # store results so we can submit the save on the next loop iteration
                     prev_data = (det_list, orig_imgs, pad_infos, list(sub_batches[b]))
 
                 # --- POST-PROCESSING: save the last sub-batch ---
+                # No next GPU call to overlap with, but we still submit so it runs in the background
+                # while the executor waits for all futures to finish on __exit__.
                 if prev_data is not None:
                     prev_det, prev_orig, prev_pad, prev_files = prev_data
                     sf = executor.submit(_save_sub_batch, prev_det, prev_orig, prev_pad, prev_files,

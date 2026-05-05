@@ -29,12 +29,10 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
-WANDB_ENABLED = True  # set False to skip all wandb logging
-
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, wandb_enabled=False):
 
     plot_name = os.path.basename(dataset.source_path)
-    if WANDB_ENABLED:
+    if wandb_enabled:
         wandb.init(project="wheat3dgs-train", name=plot_name)
 
     first_iter = 0
@@ -156,7 +154,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 print(f"[ITER {iteration}] avg/iter — render: {acc_render/n:.1f}ms  loss+bwd: {acc_loss/n:.1f}ms  densify: {acc_densify/n:.1f}ms  optim: {acc_optim/n:.1f}ms  total: {(acc_render+acc_loss+acc_densify+acc_optim)/n:.1f}ms")
                 acc_render = acc_loss = acc_densify = acc_optim = acc_iters = 0.0
 
-            if WANDB_ENABLED:
+            if wandb_enabled:
                 wandb.log({
                     "iter": iteration,
                     "loss/total": loss.item(),
@@ -174,7 +172,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
 
-    if WANDB_ENABLED:
+    if wandb_enabled:
         wandb.finish()
 
 def prepare_output_and_logger(args):    
@@ -230,7 +228,7 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 if tb_writer:
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
-                if WANDB_ENABLED:
+                if wandb_enabled:
                     wandb.log({f"eval/{config['name']}_l1": l1_test.item(), f"eval/{config['name']}_psnr": psnr_test.item(), "iter": iteration})
 
         if tb_writer:
@@ -251,6 +249,7 @@ if __name__ == "__main__":
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[7_000, 15_000])
     parser.add_argument("--start_checkpoint", type=str, default = None)
+    parser.add_argument("--wandb_enabled", action="store_true", default=False)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     
@@ -261,7 +260,7 @@ if __name__ == "__main__":
 
     # Start GUI server, configure and run training
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.wandb_enabled)
 
     # All done
     print("\nTraining complete.")

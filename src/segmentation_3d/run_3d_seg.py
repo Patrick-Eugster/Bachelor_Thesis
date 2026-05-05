@@ -15,7 +15,6 @@ import torch.nn.functional as F
 from PIL import Image
 from tqdm import tqdm
 
-WANDB_ENABLED = True  # Log progress to wandb dashboard. Set False to skip. One-time setup: run 'wandb login'
 
 from gaussians.arguments import ModelParams, PipelineParams, OptimizationParams
 from gaussians.gaussian_renderer import flashsplat_render
@@ -175,7 +174,7 @@ def update_processed_masks(processed_masks, new_mask_paths):
 
 ########### End of Find & Match helper methods ###########
         
-def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_vis_overlay, vis_max_heads):
+def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_vis_overlay, vis_max_heads, wandb_enabled=False):
     # All 3DSeg results will be saved under 3dgs_model_path/wheat-head/(exp_name)
     out_dir = os.path.join(dataset.model_path, "wheat-head", exp_name)
     sub_dirs = ["ply", "img", "count"]
@@ -238,7 +237,7 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
     assert len(all_mask_paths) == num_bboxes
     print(f"Total of {len(all_mask_paths)} mask & bounding box pairs found")
 
-    if WANDB_ENABLED:
+    if wandb_enabled:
         import wandb
         wandb.init(
             project="wheat3dgs-seg",
@@ -384,7 +383,7 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
                 writer.writerow([f"{which_wheat_head:04}", this_mask_name, str(len(matched_viewpoint_stack)), str(num_GS)])
                 results.flush()
 
-            if WANDB_ENABLED:
+            if wandb_enabled:
                 wandb.log({
                     "wheat_heads_found": num_wheat_head,
                     "head_matches": len(matched_viewpoint_stack),
@@ -469,7 +468,7 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
     print(f"  Results saved to:        {out_dir}")
     print(f"{'='*60}")
 
-    if WANDB_ENABLED:
+    if wandb_enabled:
         wandb.summary["total_wheat_heads"] = num_wheat_head
         wandb.summary["masks_matched"] = len(processed_masks)
         wandb.summary["masks_unmatched"] = len(buffered_masks)
@@ -488,9 +487,10 @@ if __name__ == "__main__":
     parser.add_argument("--save_vis_overlay", action="store_true", default=True, help="Save overlay JPGs per wheat head per camera")
     parser.add_argument("--no_save_vis_overlay", dest="save_vis_overlay", action="store_false")
     parser.add_argument("--vis_max_heads", type=int, default=10, help="Save overlays for first N heads only. 0 = all heads.")
+    parser.add_argument("--wandb_enabled", action="store_true", default=False)
     args = parser.parse_args(sys.argv[1:])
     print("Optimizing " + args.model_path)
 
     training(lp.extract(args), op.extract(args), pp.extract(args),
              args.load_iteration, args.exp_name, args.iou_threshold,
-             args.save_vis_overlay, args.vis_max_heads)
+             args.save_vis_overlay, args.vis_max_heads, args.wandb_enabled)
