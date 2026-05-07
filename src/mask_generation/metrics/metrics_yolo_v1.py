@@ -1,9 +1,12 @@
 """
-Before running, make sure that:
-  - ONLY_LABELED_IMAGES = True  in config.py
-  - CONF_THRESHOLD_NMS_FLOOR = 0.01  in config.py
+Before running, generate YOLO predictions using the metrics config:
 
-Run from workspace root with: python src/mask_generation/metrics/metrics_yolo_v1.py
+  python src/mask_generation/yolo_sam_v1/main_v1.py --config-name mask_generation/metrics
+
+This automatically sets only_labeled_images=true and conf_threshold_nms_floor=0.01.
+Then run the metrics script from the workspace root:
+
+  python src/mask_generation/metrics/metrics_yolo_v1.py
 
 Per-image metrics are computed first (except AP which is pooled globally).
 Aggregated mean ± std is printed at the end. JSON saved to metrics/results/metrics_yolo_v1.json
@@ -64,8 +67,10 @@ DATASET_NAME    = "fip"      # "fip" or "phone"
 EXPERIMENT_NAME = "initial"  # matches the experiment name used during detection
 APPEND_DATE     = False      # must match what was set during detection run
 
-_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")
-_cfg  = OmegaConf.load(os.path.join(_ROOT, "configs", "mask_generation", "config.yaml"))
+_ROOT     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")
+_base_cfg = OmegaConf.load(os.path.join(_ROOT, "configs", "mask_generation", "config.yaml"))
+_metrics_cfg = OmegaConf.load(os.path.join(_ROOT, "configs", "mask_generation", "metrics.yaml"))
+_cfg  = OmegaConf.merge(_base_cfg, _metrics_cfg)  # metrics.yaml overrides take effect
 _ds   = OmegaConf.load(os.path.join(_ROOT, "configs", "dataset", f"{DATASET_NAME}.yaml"))
 
 CONF_THRESHOLD_DETECTION  = _cfg.conf_threshold_detection

@@ -1,0 +1,12 @@
+# @package _global_
+defaults:
+  - config        # inherit all settings from config.yaml
+  - _self_        # overrides below take precedence
+
+# required for metrics evaluation:
+# only_labeled_images limits YOLO to the manually labeled image per plot
+# and enables bboxes_with_conf/ output needed for the AP/PR curve
+only_labeled_images: true
+conf_threshold_nms_floor: 0.01  # low floor so the full confidence range is captured for AP
+limit_plots: 0   # 0 = no limit — override any debug value set in config.yaml
+limit_images: 0  # 0 = no limit — override any debug value set in config.yaml

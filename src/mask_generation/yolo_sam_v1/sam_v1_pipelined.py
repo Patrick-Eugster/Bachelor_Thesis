@@ -37,7 +37,7 @@ import shutil
 import wandb
 from segment_anything import sam_model_registry, SamPredictor
 
-from utils.config_utils import get_mask_generation_result_path
+from utils.path_utils import get_mask_generation_result_path
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -47,12 +47,16 @@ DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 # =====================================================================
 
 def reset_folder(folder_path):
+    """Deletes all contents of a folder and recreates it,
+    since thats cheaper than to go through the folder and delete every single item."""
     if os.path.exists(folder_path):
-        shutil.rmtree(folder_path)
-    os.makedirs(folder_path, exist_ok=True)
+        shutil.rmtree(folder_path)  # Deletes the folder and everything inside
+    os.makedirs(folder_path, exist_ok=True)  # Recreates the empty folder
 
 
 def id2rgb(id, max_num_obj=65535):
+    """Color Generator, turns a single number into a specific rgb color,
+    dynamically handles any ID number with a high maximum limit."""
     if id == 0:  # invalid region / background
         return np.zeros((3, ), dtype=np.uint8)
     if not 0 <= id <= max_num_obj:
@@ -62,17 +66,20 @@ def id2rgb(id, max_num_obj=65535):
     h = ((id * golden_ratio) % 1)  # Ensure value is between 0 and 1
     s = 0.5 + (id % 2) * 0.5  # Alternate between 0.5 and 1.0
     l = 0.5
+    # Use colorsys to convert HSL to RGB
     r, g, b = colorsys.hls_to_rgb(h, l, s)
     return np.array([int(r*255), int(g*255), int(b*255)], dtype=np.uint8)
 
 
 def visualize_obj(objects):
+    """For visualize color mask, basically every wheat head another color."""
     assert len(objects.shape) == 2
+    # Create the blank RGB canvas
     rgb_mask = np.zeros((*objects.shape, 3), dtype=np.uint8)
-    all_obj_ids = np.unique(objects)
+    all_obj_ids = np.unique(objects)  # Get all unique IDs present in the image
     for id in all_obj_ids:
         if id == 0:
-            continue
+            continue  # Skip the background
         colored_mask = id2rgb(id)
         rgb_mask[objects == id] = colored_mask
     return rgb_mask
@@ -86,6 +93,7 @@ def print_sam_step_report(idx, total_imgs, name, n_heads, t_embed, t_pred):
 
 
 def print_sam_plot_summary(num_images, total_time):
+    """Prints the final summary for the entire plot's SAM processing."""
     print(f"\n" + "="*45)
     print(f"      SAM PLOT SUMMARY ({num_images} images)")
     print("="*45)
@@ -116,6 +124,7 @@ def _save_image_results(masks_np, image, save_name, image_name, mask_folder, sam
     """Save all mask PNGs and the overlay visualization for one image. Returns t_save."""
     t_start_save = time.perf_counter()
 
+    # 4. Saving & Visualization (Parallel CPU Saving)
     objects = np.zeros((masks_np.shape[1], masks_np.shape[2]), dtype=np.uint16)
     save_tasks = []
 
@@ -127,6 +136,7 @@ def _save_image_results(masks_np, image, save_name, image_name, mask_folder, sam
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_threads) as executor:
         list(executor.map(lambda arg: cv2.imwrite(arg[0], arg[1]), save_tasks))
 
+    # Reverted to your highly efficient sparse NumPy math
     color_mask = visualize_obj(objects) / 255.0
     color_img = image / 255.0
     non_black_pixels = np.any(color_mask > 0, axis=-1)
@@ -194,6 +204,7 @@ def run_sam_phase(image_folders, cfg):
         save_futures = []  # collect save futures so we can harvest t_save at the end
 
         # Outer executor has 2 slots: one for the load future, one for the save future.
+        # The save task spawns its own inner pool (max_threads) for parallel mask PNG writing.
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
 
             # --- PRE-PROCESSING: kick off load for image 0 immediately ---
@@ -201,7 +212,7 @@ def run_sam_phase(image_folders, cfg):
             # done by the time we call .result() below.
             load_future = executor.submit(_load_image_and_bbox, image_files[0], bbox_folder)
 
-            prev_save_data = None
+            prev_save_data = None  # holds (masks_np, image, save_name, image_name, ...) from previous GPU step
 
             for i in range(n_images):
                 # --- PRE-PROCESSING: collect load results for the current image ---
@@ -223,7 +234,7 @@ def run_sam_phase(image_folders, cfg):
                 if prev_save_data is not None:
                     sf = executor.submit(_save_image_results, *prev_save_data, cfg.max_threads)
                     save_futures.append(sf)
-                    prev_save_data = None
+                    prev_save_data = None  # drop reference so RAM can be freed once save is done
 
                 # Handle skip cases (missing bbox file or no detections)
                 if bbox is None:
@@ -240,7 +251,7 @@ def run_sam_phase(image_folders, cfg):
                 t_start_img = time.perf_counter()
 
                 # 2. Image Embedding (heavy part)
-                predictor.set_image(image)  # only takes one image at a time
+                predictor.set_image(image)  # only takes one image at a time, thats why batch_size_sam_box=1
                 torch.cuda.synchronize()
                 t_embed = time.perf_counter() - t_start_img
 
@@ -252,7 +263,7 @@ def run_sam_phase(image_folders, cfg):
                 all_masks_np = []
 
                 # Process boxes in batches to save memory
-                with torch.no_grad():
+                with torch.no_grad():  # important for Batch Size 1
                     for b_idx in range(0, len(transformed_boxes), cfg.batch_size_sam_box):
                         batch_boxes = transformed_boxes[b_idx : b_idx + cfg.batch_size_sam_box]
                         masks, _, _ = predictor.predict_torch(
@@ -261,6 +272,8 @@ def run_sam_phase(image_folders, cfg):
                             boxes=batch_boxes,
                             multimask_output=False
                         )
+                        # squeeze(1) removes the empty dimension, leaving [Batch, H, W]
+                        # immediately move to CPU and convert to uint8 to free up VRAM
                         masks_batch_np = (masks.squeeze(1).cpu().numpy() * 255).astype(np.uint8)
                         all_masks_np.append(masks_batch_np)
 

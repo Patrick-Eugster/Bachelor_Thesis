@@ -6,7 +6,7 @@ import datetime
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
-from utils.config_utils import (
+from utils.path_utils import (
     resolve_experiment_name,
     get_dataset_path,
     get_reconstruction_model_path,

@@ -37,7 +37,7 @@ import torch
 from PIL import Image
 import shutil
 
-from utils.config_utils import get_mask_generation_result_path
+from utils.path_utils import get_mask_generation_result_path
 
 # map YAML string → PIL resize constant
 _RESIZE_METHODS = {
