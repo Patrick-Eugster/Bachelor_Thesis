@@ -61,11 +61,12 @@ import datetime
 from omegaconf import OmegaConf
 
 # =====================================================================
-# Config  (edit these two lines to switch dataset / experiment)
+# Config
 # =====================================================================
-DATASET_NAME    = "fip"      # "fip" or "phone"
-EXPERIMENT_NAME = "initial"  # matches the experiment name used during detection
-APPEND_DATE     = False      # must match what was set during detection run
+DATASET_NAME         = "fip"      # "fip" or "phone"
+DETECTION_EXPERIMENT = "metrics_v1"  # exact folder name of the yolo_sam detection run to evaluate
+METRICS_EXPERIMENT   = "initial"  # name for this metrics output — can differ from detection
+PREPEND_DATE         = False      # prepends today's date to METRICS_EXPERIMENT: "2025-04-28_initial"
 
 _ROOT     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")
 _base_cfg = OmegaConf.load(os.path.join(_ROOT, "configs", "mask_generation", "config.yaml"))
@@ -81,22 +82,22 @@ INPUT_DIR  = _ds.input_dir
 RESULT_DIR = _ds.result_dir_masks
 
 
-def get_experiment_name():
-    """Resolve the experiment name — mirrors the same 3-option logic used in the pipeline."""
-    if not EXPERIMENT_NAME:
+def get_metrics_experiment():
+    """Resolve the metrics output experiment name — same 3-option logic as the pipeline."""
+    if not METRICS_EXPERIMENT:
         return datetime.datetime.now().strftime("%Y-%m-%d_%H%M")
-    if EXPERIMENT_NAME == "initial":
+    if METRICS_EXPERIMENT == "initial":
         return "initial"
-    if APPEND_DATE:
-        return f"{datetime.datetime.now().strftime('%Y-%m-%d')}_{EXPERIMENT_NAME}"
-    return EXPERIMENT_NAME
+    if PREPEND_DATE:
+        return f"{datetime.datetime.now().strftime('%Y-%m-%d')}_{METRICS_EXPERIMENT}"
+    return METRICS_EXPERIMENT
 
 
 # IoU threshold for matching predicted to GT boxes — separate from IOU_THRESHOLD_NMS in config.py
 MATCHING_IOU_THRESHOLD = 0.35  # was 0.5 default
 
-# Output dir: results/mask_generation/{camera}/evaluation/yolo_sam_v1/metrics_yolo_v1/{experiment}/
-EVAL_DIR       = os.path.join(RESULT_DIR, "evaluation", "yolo_sam_v1", "metrics_yolo_v1", get_experiment_name())
+# Output dir: results/mask_generation/{dataset}/evaluation/yolo_sam_v1/metrics_yolo_v1/{experiment}/
+EVAL_DIR       = os.path.join(RESULT_DIR, "evaluation", "yolo_sam_v1", "metrics_yolo_v1", get_metrics_experiment())
 VIZ_DIR        = os.path.join(EVAL_DIR, "match_viz")
 HIST_DIR       = os.path.join(EVAL_DIR, "TP_IoU_histograms")
 HEATMAP_FP_DIR = os.path.join(EVAL_DIR, "heatmaps_FP")
@@ -772,10 +773,9 @@ def evaluate_single_image(pred_pt_path, gt_label_path, image_path, iou_threshold
 def find_labeled_plots(input_dir):
     """Collect all GT files and return as list of (input_plot_dir, result_plot_dir, gt_label_path, image_stem)."""
     labeled = []
-    exp = get_experiment_name()
     for plot_name in sorted(os.listdir(input_dir)):
         input_plot_dir  = os.path.join(input_dir, plot_name)
-        result_plot_dir = os.path.join(RESULT_DIR, plot_name, "yolo_sam_v1", exp)
+        result_plot_dir = os.path.join(RESULT_DIR, plot_name, "yolo_sam_v1", DETECTION_EXPERIMENT)
         label_dir = os.path.join(input_plot_dir, 'manual_label')
         if not os.path.isdir(label_dir):
             continue
@@ -790,7 +790,7 @@ def save_metrics_config():
     """Save config.yaml with all parameters used for this evaluation run."""
     os.makedirs(EVAL_DIR, exist_ok=True)
     config = {
-        "experiment":   get_experiment_name(),
+        "experiment":   get_metrics_experiment(),
         "date":         datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
         "dataset":      DATASET_NAME,
         "method":       "yolo_sam_v1",

@@ -175,8 +175,8 @@ def update_processed_masks(processed_masks, new_mask_paths):
 ########### End of Find & Match helper methods ###########
         
 def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_vis_overlay, vis_max_heads, wandb_enabled=False):
-    # All 3DSeg results will be saved under 3dgs_model_path/wheat-head/(exp_name)
-    out_dir = os.path.join(dataset.model_path, "wheat-head", exp_name)
+    # All 3DSeg results will be saved under 3dgs_model_path/segmentation_3d/(exp_name)
+    out_dir = os.path.join(dataset.model_path, "segmentation_3d", exp_name)
     sub_dirs = ["ply", "img", "count"]
     for sub_dir in sub_dirs:
         os.makedirs(os.path.join(out_dir, sub_dir), exist_ok=True)

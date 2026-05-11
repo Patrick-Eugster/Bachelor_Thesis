@@ -10,24 +10,49 @@ Each FIP plot has **one manually labeled image** in `input_plots/fip/{plot}/manu
 ```bash
 python src/mask_generation/yolo_sam_v1/main_v1.py --config-name mask_generation/metrics
 ```
-This loads all settings from `config.yaml` as usual, but automatically overrides the four values that must be set for metrics:
+This loads all settings from `config.yaml` as usual, but automatically overrides the values that must be set for metrics:
 - `only_labeled_images: true` — only processes the manually labeled image per plot, and saves `bboxes_with_conf/` needed for the AP curve
 - `conf_threshold_nms_floor: 0.01` — low floor so the full confidence range is captured for AP
+- `only_yolo: true` — SAM is not needed for metrics, skips it entirely
 - `limit_plots: 0` — no limit (overrides any debug value in config.yaml)
 - `limit_images: 0` — no limit (overrides any debug value in config.yaml)
 
 These overrides live in `configs/mask_generation/metrics.yaml` — no manual edits to `config.yaml` needed.
 
-**Step 2 — Run the metrics script:**
+**Step 2 — Set experiment names and run the metrics script:**
+
+Open `metrics_yolo_v1.py` and set the constants at the top:
+```python
+DETECTION_EXPERIMENT = "metrics_v1"  # must match the experiment_name used in Step 1
+METRICS_EXPERIMENT   = "initial"     # name for this metrics output — can be different
+```
+Then run:
 ```bash
 python src/mask_generation/metrics/metrics_yolo_v1.py
 ```
 
-To change dataset or experiment, edit the constants at the top of the script:
+## Experiment Names
+
+There are **two separate experiment names** at the top of `metrics_yolo_v1.py`:
+
 ```python
-DATASET_NAME    = "fip"      # switch to "phone" for phone data
-EXPERIMENT_NAME = "initial"  # or a custom name / "" for timestamp
-APPEND_DATE     = False
+DATASET_NAME         = "fip"         # "fip" or "phone"
+DETECTION_EXPERIMENT = "metrics_v1"  # exact folder name of the detection run to read from
+METRICS_EXPERIMENT   = "initial"     # name for this metrics output — can be different
+PREPEND_DATE         = False         # prepends today's date to METRICS_EXPERIMENT
+```
+
+- **`DETECTION_EXPERIMENT`** — points to the yolo_sam detection run you want to evaluate. Must exactly match the folder name created in Step 1 (e.g. `metrics_v1` if you ran detection with `experiment_name=metrics_v1`). Reads from `results/mask_generation/fip/{plot}/yolo_sam_v1/{DETECTION_EXPERIMENT}/`.
+- **`METRICS_EXPERIMENT`** — controls where the metrics results are saved, independently of the detection run. This lets you re-run metrics with different settings (e.g. a different `MATCHING_IOU_THRESHOLD`) on the same detection output and save each run separately without overwriting.
+
+Example: run metrics twice with different IoU thresholds on the same detection output:
+```python
+DETECTION_EXPERIMENT = "metrics_v1"
+METRICS_EXPERIMENT   = "iou35"       # MATCHING_IOU_THRESHOLD = 0.35
+# run → results saved to evaluation/.../iou35/
+
+METRICS_EXPERIMENT   = "iou50"       # MATCHING_IOU_THRESHOLD = 0.50
+# run → results saved to evaluation/.../iou50/
 ```
 
 ## Key Design Decisions
@@ -39,21 +64,21 @@ APPEND_DATE     = False
 
 ## Output
 
-Results are saved to `results/mask_generation/fip/evaluation/yolo_sam_v1/metrics_yolo_v1/{experiment}/`:
+Results are saved to `results/mask_generation/fip/evaluation/yolo_sam_v1/metrics_yolo_v1/{METRICS_EXPERIMENT}/`:
 
-| Folder | Content |
-|--------|---------|
-| `config.yaml` | Copy of the config used for this run |
-| `metrics_yolo_v1.json` | AP, precision, recall, TP/FP/FN counts |
-| `match_viz/` | Original image with colored boxes: blue=TP, yellow-orange=FP, red=FN |
-| `TP_IoU_histograms/` | Histogram of TP/FP/FN IoU values per image + aggregated |
-| `heatmaps_FP/` | FP density heatmap overlaid on image |
-| `heatmaps_FN/` | FN density heatmap overlaid on image |
-| `pr_curves/` | PR curve: precision vs recall across all confidence thresholds |
+| Folder / File | Description |
+|---|---|
+| `config.yaml` | Parameters used for this run |
+| `metrics_yolo_v1.json` | Aggregated and per-plot precision, recall, F1, AP, TP/FP/FN counts |
+| `match_viz/` | Image with colored boxes: **blue = TP**, **orange = FP** (false alarm), **red = FN** (missed head) — good for visually diagnosing what YOLO gets wrong |
+| `TP_IoU_histograms/` | Histogram of IoU values for TP matches — a peak near 1.0 means tight boxes, spread toward 0.35 means loose |
+| `heatmaps_FP/` | Spatial heatmap of FP box centers — shows where false positives cluster (e.g. near poles or field edges) |
+| `heatmaps_FN/` | Spatial heatmap of FN box centers — shows where missed detections cluster (e.g. dense or occluded regions) |
+| `pr_curves/` | Precision-recall curve across all confidence thresholds — curve pushed to top-right is better, area under it is AP |
 
 ## AP Implementation
 
-COCO-style 101-point interpolated AP. All predictions pooled globally, sorted by confidence descending. AP reported as `AP@IoU{MATCHING_IOU_THRESHOLD}`.
+COCO-style 101-point interpolated AP. All predictions across all plots pooled globally, sorted by confidence descending. AP reported as `AP@IoU{MATCHING_IOU_THRESHOLD}`.
 
 ## Heatmap Notes
 

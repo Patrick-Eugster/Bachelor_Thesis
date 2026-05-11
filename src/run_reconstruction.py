@@ -6,7 +6,7 @@ import datetime
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
-from utils.path_utils import (
+from wheat_utils.path_utils import (
     resolve_experiment_name,
     get_dataset_path,
     get_reconstruction_model_path,
@@ -206,7 +206,7 @@ def _run_pipeline(cfg):
         if seg_tee:
             seg_tee.close()
         # auto-export colored PLY right after segmentation — no separate toggle needed
-        exp_dir = os.path.join(model_path, "wheat-head", cfg.exp_name)
+        exp_dir = os.path.join(model_path, "segmentation_3d", cfg.exp_name)
         run_step("4b. Export Colored PLY", [
             "python", "src/segmentation_3d/export_colored_ply.py",
             "--gaussians_ply", os.path.join(exp_dir, "gaussians.ply"),
@@ -246,12 +246,12 @@ def _run_pipeline(cfg):
         viewer_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer")
         abs_model_path   = os.path.abspath(model_path)
         abs_dataset_path = os.path.abspath(dataset_path)
-        seg_ply   = os.path.join(abs_model_path, "wheat-head", cfg.exp_name, "gaussians.ply")
+        seg_ply   = os.path.join(abs_model_path, "segmentation_3d", cfg.exp_name, "gaussians.ply")
         train_ply = os.path.join(abs_model_path, "point_cloud", "iteration_15000", "point_cloud.ply")
         # prefer the fine-tuned step-4 model if it exists, otherwise fall back to step-1 model
         input_ply = seg_ply if os.path.exists(seg_ply) else train_ply
         if cfg.viewer_type == "full":
-            labels_path = os.path.join(abs_model_path, "wheat-head", cfg.exp_name, "all_obj_labels.pth")
+            labels_path = os.path.join(abs_model_path, "segmentation_3d", cfg.exp_name, "all_obj_labels.pth")
             fast_viewer_flag = ["--fast_render"] if cfg.fast_viewer else []
             viewer_cmd = [
                 "python", "wheatgs_rendering.py",

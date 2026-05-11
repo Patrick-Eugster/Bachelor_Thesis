@@ -3,20 +3,20 @@ import datetime
 
 
 def resolve_experiment_name(cfg):
-    """Return final experiment name based on experiment_name and append_date.
+    """Return final experiment name based on experiment_name and prepend_date.
 
-    ""        → pure timestamp "2025-04-28_1430"           (append_date ignored)
-    "initial" → "initial"                                  (append_date ignored)
-    "my_run"  + append_date=False → "my_run"
-    "my_run"  + append_date=True  → "my_run_2025-04-28"
+    ""        → pure timestamp "2025-04-28_1430"            (prepend_date ignored)
+    "initial" → "initial"                                   (prepend_date ignored)
+    "my_run"  + prepend_date=False → "my_run"
+    "my_run"  + prepend_date=True  → "2025-04-28_my_run"
     """
     if not cfg.experiment_name:
-        # pure timestamp — append_date ignored to avoid double date
+        # pure timestamp — prepend_date ignored to avoid double date
         return datetime.datetime.now().strftime("%Y-%m-%d_%H%M")
     if cfg.experiment_name == "initial":
-        # fixed scratch name — never append date
+        # fixed scratch name — never prepend date
         return "initial"
-    if cfg.append_date:
+    if cfg.prepend_date:
         return f"{datetime.datetime.now().strftime('%Y-%m-%d')}_{cfg.experiment_name}"
     return cfg.experiment_name
 

@@ -5,13 +5,13 @@ defaults:
 
 plot: "plot_461"
 experiment_name: "initial"
-append_date: false
+prepend_date: false
 detection_experiment: "initial"
 exp_name: "run_1"         # wheat-head segmentation sub-folder name
 use_yolosam_source: false # true = use ground truth yolosam bboxes+masks instead of predicted
 
 # training params
-resolution: 2
+resolution: 1
 sh_degree: 3
 opacity_prune_threshold: 0.005
 data_device_cpu: true
@@ -51,8 +51,12 @@ log_seg_only: true
 # WARNING: set false on Euler (SLURM) unless wandb login has been run there first
 wandb_enabled: false
 
-# hydra: don't create outputs/ folder in workspace root
+# hydra: don't create outputs/ folder, write log to logs/ instead
 hydra:
   output_subdir: null
   run:
     dir: .
+  job_logging:
+    handlers:
+      file:
+        filename: logs/run_reconstruction.log

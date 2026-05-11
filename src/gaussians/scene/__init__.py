@@ -82,7 +82,7 @@ class Scene:
         if which_wheat_head is not None:
             print(f"Loading .PLY for wheat head {which_wheat_head}...")
             wheat_head = str(int(which_wheat_head)).zfill(4)
-            load_path = os.path.join(self.model_path, "wheat-head", "run1", wheat_head, f"{str(int(which_wheat_head)+1).zfill(4)}.ply")
+            load_path = os.path.join(self.model_path, "segmentation_3d", "run1", wheat_head, f"{str(int(which_wheat_head)+1).zfill(4)}.ply")
             self.gaussians.load_ply(load_path)
             xyz = self.gaussians.get_xyz.detach().cpu().numpy()
             _, diagonal = get_center_and_diag(np.transpose(xyz))

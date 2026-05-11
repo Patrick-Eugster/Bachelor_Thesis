@@ -108,9 +108,9 @@ def render_sets(dataset: ModelParams, pipeline: PipelineParams, exp_name, skip_t
 
         # Load fine-tuned gaussians.ply from step 4 — needed for correct RGB overlay render.
         # Step 4 fine-tunes Gaussian positions so iteration_15000 checkpoint won't match.
-        ply_dir = os.path.join(dataset.model_path, "wheat-head", exp_name, "ply")
-        scene_ply = os.path.join(dataset.model_path, "wheat-head", exp_name, "gaussians.ply")
-        twod_seg_dir = os.path.join(dataset.model_path, "wheat-head", exp_name, "2DSeg")
+        ply_dir = os.path.join(dataset.model_path, "segmentation_3d", exp_name, "ply")
+        scene_ply = os.path.join(dataset.model_path, "segmentation_3d", exp_name, "gaussians.ply")
+        twod_seg_dir = os.path.join(dataset.model_path, "segmentation_3d", exp_name, "2DSeg")
 
         if os.path.exists(scene_ply):
             print(f"Loading fine-tuned scene model: {scene_ply}")

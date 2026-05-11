@@ -11,7 +11,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from mask_generation.yolo_sam_v1.yolo_v1_pipelined import run_yolo_phase
 from mask_generation.yolo_sam_v1.sam_v1_pipelined import run_sam_phase
-from utils.path_utils import get_mask_generation_result_path
+from wheat_utils.path_utils import get_mask_generation_result_path
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 

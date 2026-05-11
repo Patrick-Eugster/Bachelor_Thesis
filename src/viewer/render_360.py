@@ -85,7 +85,7 @@ def render_wheat_head(dataset : ModelParams, pipeline : PipelineParams, exp_name
         znear, zfar = og_view.znear, og_view.zfar
         print(f"Fixed parameters width: {width} height {height} fovy {fovy} fovx {fovx}")
 
-        wheat_head_dir = os.path.join(dataset.model_path, "wheat-head", exp_name, "ply")
+        wheat_head_dir = os.path.join(dataset.model_path, "segmentation_3d", exp_name, "ply")
         # wheat_head_folders = [
         #     name for name in os.listdir(wheat_head_dir)
         #     if os.path.isdir(os.path.join(wheat_head_dir, name)) and name.isdigit()
@@ -140,8 +140,8 @@ def render_wheat_head(dataset : ModelParams, pipeline : PipelineParams, exp_name
 
 def render_wheat_field(dataset : ModelParams, pipeline : PipelineParams, exp_name,
                        n_frames=100, framerate=10, elevation=45, save_frames=False, load_iteration=-1, fast_render=False):
-    seg2d_dir = os.path.join(dataset.model_path, "wheat-head", exp_name, "2DSeg")
-    out_dir = os.path.join(dataset.model_path, "wheat-head", exp_name, "3DSeg")
+    seg2d_dir = os.path.join(dataset.model_path, "segmentation_3d", exp_name, "2DSeg")
+    out_dir = os.path.join(dataset.model_path, "segmentation_3d", exp_name, "3DSeg")
     os.makedirs(out_dir, exist_ok=True)
     gaussians = GaussianModel(dataset.sh_degree)
     try:
@@ -166,8 +166,8 @@ def render_wheat_field(dataset : ModelParams, pipeline : PipelineParams, exp_nam
     # optimization. Their positions match gaussians.ply (the fine-tuned full scene model
     # saved at the end of step 4) with 100% exact match — but NOT iteration_15000 (original
     # model), because step 4 fine-tuning moves Gaussian positions.
-    ply_dir = os.path.join(dataset.model_path, "wheat-head", exp_name, "ply")
-    scene_ply = os.path.join(dataset.model_path, "wheat-head", exp_name, "gaussians.ply")
+    ply_dir = os.path.join(dataset.model_path, "segmentation_3d", exp_name, "ply")
+    scene_ply = os.path.join(dataset.model_path, "segmentation_3d", exp_name, "gaussians.ply")
     if os.path.exists(scene_ply) and os.path.exists(ply_dir):
         # reload gaussians from fine-tuned model so positions match per-head PLYs
         print(f"Loading fine-tuned scene model from step 4 ({scene_ply})...")
@@ -204,7 +204,7 @@ def render_wheat_field(dataset : ModelParams, pipeline : PipelineParams, exp_nam
 
     labels_mb = all_obj_labels.numel() * all_obj_labels.element_size() / 1e6
     print(f"Saving all_obj_labels ({labels_mb:.0f} MB)...")
-    torch.save(all_obj_labels.detach().cpu(), os.path.join(dataset.model_path, "wheat-head", exp_name, "all_obj_labels.pth"))
+    torch.save(all_obj_labels.detach().cpu(), os.path.join(dataset.model_path, "segmentation_3d", exp_name, "all_obj_labels.pth"))
     print("Starting render loop...")
     render_fn = render_360_fast if fast_render else render_360
     output_video = render_fn(viewpoint_stack[0], scene.cameras_extent, out_dir, n_frames, framerate, gaussians, pipeline, background,

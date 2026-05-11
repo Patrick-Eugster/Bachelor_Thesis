@@ -37,7 +37,7 @@ import shutil
 import wandb
 from segment_anything import sam_model_registry, SamPredictor
 
-from utils.path_utils import get_mask_generation_result_path
+from wheat_utils.path_utils import get_mask_generation_result_path
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 

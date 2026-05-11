@@ -3,8 +3,8 @@ defaults:
   - /dataset: fip         # override on CLI: dataset=phone  (/ = search from configs/ root)
   - _self_
 
-experiment_name: "initial"
-append_date: false
+experiment_name: "metrics_v1"
+prepend_date: false
 
 # model files (inside src/mask_generation/weights/)
 wheat_yolo_model: "wheat_head_detection_model.pt"
@@ -39,13 +39,17 @@ show_time_total: true
 
 # run controls
 only_yolo: false
-limit_plots: 1
+limit_plots: 0
 limit_images: 0
 only_labeled_images: false
 wandb_enabled: false
 
-# hydra: don't create outputs/ folder in workspace root
+# hydra: don't create outputs/ folder, write log to logs/ instead
 hydra:
   output_subdir: null
   run:
     dir: .
+  job_logging:
+    handlers:
+      file:
+        filename: logs/main_v1.log
