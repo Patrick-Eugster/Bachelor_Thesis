@@ -23,6 +23,8 @@ dependencies:
   - torchaudio==2.1.2
   - pytorch-cuda=12.1
   - pip:
+      - hydra-core
+      - omegaconf
       - wandb
       - opencv-python
       - segment-anything
