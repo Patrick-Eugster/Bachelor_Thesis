@@ -1,4 +1,5 @@
 # training params for vanilla 3DGS
+iterations: 15000
 resolution: 1
 sh_degree: 3
 opacity_prune_threshold: 0.005

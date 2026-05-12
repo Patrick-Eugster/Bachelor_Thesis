@@ -164,6 +164,7 @@ def _run_pipeline(cfg):
             "-m", model_path,
             "--resolution", resolution_str,
             "--eval",
+            "--iterations", str(cfg.reconstruction.iterations),
             "--opacity_cull_threshold", str(cfg.reconstruction.opacity_prune_threshold),
             "--sh_degree", str(cfg.reconstruction.sh_degree),
             "--densify_until_iter", str(cfg.reconstruction.densify_until_iter),
@@ -177,7 +178,7 @@ def _run_pipeline(cfg):
             "-s", dataset_path,
             "-m", model_path,
             "--resolution", resolution_str,
-            "--iteration", "15000"
+            "--iteration", str(cfg.reconstruction.iterations)
         ] + seg_dir_flag + data_device_flag, timings, log_file)
 
     # Step 3: Compute PSNR/SSIM/LPIPS quality metrics on test views
@@ -247,7 +248,7 @@ def _run_pipeline(cfg):
         abs_model_path   = os.path.abspath(model_path)
         abs_dataset_path = os.path.abspath(dataset_path)
         seg_ply   = os.path.join(abs_model_path, "segmentation_3d", cfg.segmentation_3d.exp_name, "gaussians.ply")
-        train_ply = os.path.join(abs_model_path, "point_cloud", "iteration_15000", "point_cloud.ply")
+        train_ply = os.path.join(abs_model_path, "point_cloud", f"iteration_{cfg.reconstruction.iterations}", "point_cloud.ply")
         # prefer the fine-tuned step-4 model if it exists, otherwise fall back to step-1 model
         input_ply = seg_ply if os.path.exists(seg_ply) else train_ply
         if cfg.viewer_type == "full":
