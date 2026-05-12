@@ -36,14 +36,14 @@ def print_final_configuration_report(cfg, total_seconds, sam_seconds, total_imag
     print("="*50)
     # 1. Hardware & Core Settings
     print(f"{'Device:':<25} {DEVICE}")
-    print(f"{'Confidence Threshold:':<25} {cfg.conf_threshold_detection}")
-    print(f"{'IoU Threshold (NMS):':<25} {cfg.iou_threshold_nms}")
-    print(f"{'YOLO Resize Size:':<25} {cfg.target_image_size}px")
+    print(f"{'Confidence Threshold:':<25} {cfg.method.conf_threshold_detection}")
+    print(f"{'IoU Threshold (NMS):':<25} {cfg.method.iou_threshold_nms}")
+    print(f"{'YOLO Resize Size:':<25} {cfg.method.target_image_size}px")
     print("-" * 50)
     # 2. Batching Strategies
-    print(f"{'BATCH_SIZE_YOLO:':<25} {cfg.batch_size_yolo}")
-    print(f"{'BATCH_SIZE_SAM_BOX:':<25} {cfg.batch_size_sam_box}")
-    print(f"{'RAM_CHUNK_SIZE_YOLO:':<25} {cfg.ram_chunk_size_yolo}")
+    print(f"{'BATCH_SIZE_YOLO:':<25} {cfg.method.batch_size_yolo}")
+    print(f"{'BATCH_SIZE_SAM_BOX:':<25} {cfg.method.batch_size_sam_box}")
+    print(f"{'RAM_CHUNK_SIZE_YOLO:':<25} {cfg.method.ram_chunk_size_yolo}")
     print("-" * 50)
     # 3. Dataset & Results
     print(f"{'Total Images Processed:':<25} {total_images}")
@@ -97,14 +97,14 @@ def main(cfg: DictConfig):
     total_sam_pure_time = 0.0
     total_sam_images = 0
 
-    if cfg.only_yolo:
+    if cfg.method.only_yolo:
         print("\n ONLY_YOLO is set to True. Stopping script before SAM phase.")
     else:
         total_sam_pure_time, total_sam_images = run_sam_phase(image_folders, cfg)
 
     # 4. Final Report
     global_total_time = time.perf_counter() - global_start_time
-    if cfg.show_time_total:
+    if cfg.method.show_time_total:
         print_final_configuration_report(cfg, global_total_time, total_sam_pure_time, total_sam_images, total_plot_boxes)
 
 

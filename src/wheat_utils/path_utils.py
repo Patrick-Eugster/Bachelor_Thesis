@@ -48,7 +48,7 @@ def get_seg_source_dir(cfg):
 
     results/mask_generation/fip/plot_461/yolo_sam_v1/{detection_experiment}/
     """
-    base = os.path.join(cfg.dataset.result_dir_masks, cfg.plot, "yolo_sam_v1", cfg.detection_experiment)
+    base = os.path.join(cfg.dataset.result_dir_masks, cfg.plot, "yolo_sam_v1", cfg.segmentation_3d.detection_experiment)
     return os.path.join(base, "yolosam") if cfg.use_yolosam_source else base
 
 

@@ -1,22 +1,14 @@
 # @package _global_
 defaults:
-  - /dataset: fip         # override on CLI: dataset=phone  (/ = search from configs/ root)
+  - /dataset: fip                       # override on CLI: dataset=phone
+  - reconstruction: vanilla_3dgs        # override on CLI: reconstruction=2dgs
+  - segmentation_3d: default            # override on CLI: segmentation_3d=tight
   - _self_
 
 plot: "plot_461"
 experiment_name: "initial"
 prepend_date: false
-detection_experiment: "initial"
-exp_name: "run_1"         # wheat-head segmentation sub-folder name
-use_yolosam_source: false # true = use ground truth yolosam bboxes+masks instead of predicted
-
-# training params
-resolution: 1
-sh_degree: 3
-opacity_prune_threshold: 0.005
-data_device_cpu: true
-densify_until_iter: 11000
-densify_grad_threshold: 0.0002
+use_yolosam_source: false
 
 # pipeline step toggles (all off by default — enable on CLI or edit here)
 run_train: false
@@ -26,10 +18,6 @@ run_seg: false
 run_render_360: false
 run_eval: false
 run_viewer: false
-
-# segmentation visualization
-save_vis_overlay: true
-vis_max_heads: 10
 
 # render 360
 fast_render_360: true

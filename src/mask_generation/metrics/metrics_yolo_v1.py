@@ -68,15 +68,17 @@ DETECTION_EXPERIMENT = "metrics_v1"  # exact folder name of the yolo_sam detecti
 METRICS_EXPERIMENT   = "initial"  # name for this metrics output — can differ from detection
 PREPEND_DATE         = False      # prepends today's date to METRICS_EXPERIMENT: "2025-04-28_initial"
 
-_ROOT     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")
-_base_cfg = OmegaConf.load(os.path.join(_ROOT, "configs", "mask_generation", "config.yaml"))
+_ROOT        = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")
+_base_cfg    = OmegaConf.load(os.path.join(_ROOT, "configs", "mask_generation", "config.yaml"))
+_method_cfg  = OmegaConf.load(os.path.join(_ROOT, "configs", "mask_generation", "method", "yolo_sam_v1.yaml"))
 _metrics_cfg = OmegaConf.load(os.path.join(_ROOT, "configs", "mask_generation", "metrics.yaml"))
-_cfg  = OmegaConf.merge(_base_cfg, _metrics_cfg)  # metrics.yaml overrides take effect
+# merge: base → method → metrics (metrics overrides take effect last)
+_cfg  = OmegaConf.merge(_base_cfg, {"method": _method_cfg}, _metrics_cfg)
 _ds   = OmegaConf.load(os.path.join(_ROOT, "configs", "dataset", f"{DATASET_NAME}.yaml"))
 
-CONF_THRESHOLD_DETECTION  = _cfg.conf_threshold_detection
-CONF_THRESHOLD_NMS_FLOOR  = _cfg.conf_threshold_nms_floor
-IOU_THRESHOLD_NMS         = _cfg.iou_threshold_nms
+CONF_THRESHOLD_DETECTION  = _cfg.method.conf_threshold_detection
+CONF_THRESHOLD_NMS_FLOOR  = _cfg.method.conf_threshold_nms_floor
+IOU_THRESHOLD_NMS         = _cfg.method.iou_threshold_nms
 
 INPUT_DIR  = _ds.input_dir
 RESULT_DIR = _ds.result_dir_masks

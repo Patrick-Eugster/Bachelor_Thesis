@@ -145,11 +145,11 @@ def _run_pipeline(cfg):
     dataset_path = get_dataset_path(cfg)
     model_path   = get_reconstruction_model_path(cfg, exp_name)
     seg_source   = get_seg_source_dir(cfg)
-    log_file     = get_log_file(model_path, cfg.exp_name)
+    log_file     = get_log_file(model_path, cfg.segmentation_3d.exp_name)
 
-    data_device_flag  = ["--data_device", "cpu"] if cfg.data_device_cpu else []
+    data_device_flag  = ["--data_device", "cpu"] if cfg.reconstruction.data_device_cpu else []
     wandb_flag        = ["--wandb_enabled"] if cfg.wandb_enabled else []
-    resolution_str    = str(cfg.resolution)
+    resolution_str    = str(cfg.reconstruction.resolution)
     seg_dir_flag      = ["--seg_dir", seg_source]
     timings           = {}
 
@@ -164,10 +164,10 @@ def _run_pipeline(cfg):
             "-m", model_path,
             "--resolution", resolution_str,
             "--eval",
-            "--opacity_cull_threshold", str(cfg.opacity_prune_threshold),
-            "--sh_degree", str(cfg.sh_degree),
-            "--densify_until_iter", str(cfg.densify_until_iter),
-            "--densify_grad_threshold", str(cfg.densify_grad_threshold),
+            "--opacity_cull_threshold", str(cfg.reconstruction.opacity_prune_threshold),
+            "--sh_degree", str(cfg.reconstruction.sh_degree),
+            "--densify_until_iter", str(cfg.reconstruction.densify_until_iter),
+            "--densify_grad_threshold", str(cfg.reconstruction.densify_grad_threshold),
         ] + seg_dir_flag + data_device_flag + wandb_flag, timings, log_file)
 
     # Step 2: Render from original training/test camera views (for quality check)
@@ -200,19 +200,19 @@ def _run_pipeline(cfg):
             "--resolution", resolution_str,
             "--eval",
             "--iou_threshold", "0.5",
-            "--exp_name", cfg.exp_name,
-            "--vis_max_heads", str(cfg.vis_max_heads),
-        ] + seg_dir_flag + ([] if cfg.save_vis_overlay else ["--no_save_vis_overlay"]) + data_device_flag + wandb_flag, timings, log_file)
+            "--exp_name", cfg.segmentation_3d.exp_name,
+            "--vis_max_heads", str(cfg.segmentation_3d.vis_max_heads),
+        ] + seg_dir_flag + ([] if cfg.segmentation_3d.save_vis_overlay else ["--no_save_vis_overlay"]) + data_device_flag + wandb_flag, timings, log_file)
         if seg_tee:
             seg_tee.close()
         # auto-export colored PLY right after segmentation — no separate toggle needed
-        exp_dir = os.path.join(model_path, "segmentation_3d", cfg.exp_name)
+        exp_dir = os.path.join(model_path, "segmentation_3d", cfg.segmentation_3d.exp_name)
         run_step("4b. Export Colored PLY", [
             "python", "src/segmentation_3d/export_colored_ply.py",
             "--gaussians_ply", os.path.join(exp_dir, "gaussians.ply"),
             "--labels_path",   os.path.join(exp_dir, "all_obj_labels.pth"),
             "--output_ply",    os.path.join(exp_dir, "gaussians_colored.ply"),
-            "--sh_degree",     str(cfg.sh_degree),
+            "--sh_degree",     str(cfg.reconstruction.sh_degree),
         ], timings, log_file)
 
     # Step 5: Render 360 flyaround video of the segmented wheat field
@@ -224,7 +224,7 @@ def _run_pipeline(cfg):
             "-s", dataset_path,
             "-m", model_path,
             "--render_type", "field",
-            "--exp_name", cfg.exp_name,
+            "--exp_name", cfg.segmentation_3d.exp_name,
             "--n_frames", str(cfg.n_frames),
             "--framerate", str(cfg.framerate),
             "--elevation", str(cfg.elevation),
@@ -237,7 +237,7 @@ def _run_pipeline(cfg):
             "-s", dataset_path,
             "-m", model_path,
             "--resolution", resolution_str,
-            "--exp_name", cfg.exp_name,
+            "--exp_name", cfg.segmentation_3d.exp_name,
             "--skip_train"
         ] + seg_dir_flag + data_device_flag, timings, log_file)
 
@@ -246,12 +246,12 @@ def _run_pipeline(cfg):
         viewer_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer")
         abs_model_path   = os.path.abspath(model_path)
         abs_dataset_path = os.path.abspath(dataset_path)
-        seg_ply   = os.path.join(abs_model_path, "segmentation_3d", cfg.exp_name, "gaussians.ply")
+        seg_ply   = os.path.join(abs_model_path, "segmentation_3d", cfg.segmentation_3d.exp_name, "gaussians.ply")
         train_ply = os.path.join(abs_model_path, "point_cloud", "iteration_15000", "point_cloud.ply")
         # prefer the fine-tuned step-4 model if it exists, otherwise fall back to step-1 model
         input_ply = seg_ply if os.path.exists(seg_ply) else train_ply
         if cfg.viewer_type == "full":
-            labels_path = os.path.join(abs_model_path, "segmentation_3d", cfg.exp_name, "all_obj_labels.pth")
+            labels_path = os.path.join(abs_model_path, "segmentation_3d", cfg.segmentation_3d.exp_name, "all_obj_labels.pth")
             fast_viewer_flag = ["--fast_render"] if cfg.fast_viewer else []
             viewer_cmd = [
                 "python", "wheatgs_rendering.py",
@@ -283,9 +283,9 @@ def _run_pipeline(cfg):
     print("\n✅ PIPELINE FINISHED SUCCESSFULLY!")
 
 
-@hydra.main(version_base=None, config_path="../configs", config_name="reconstruction/config")
+@hydra.main(version_base=None, config_path="../configs", config_name="reconstruction_seg3d/config")
 def main(cfg: DictConfig):
-    log_file    = get_log_file(get_reconstruction_model_path(cfg, resolve_experiment_name(cfg)), cfg.exp_name)
+    log_file    = get_log_file(get_reconstruction_model_path(cfg, resolve_experiment_name(cfg)), cfg.segmentation_3d.exp_name)
     tee = _Tee(log_file) if log_file and not cfg.log_seg_only else None
     if tee:
         sys.stdout = tee

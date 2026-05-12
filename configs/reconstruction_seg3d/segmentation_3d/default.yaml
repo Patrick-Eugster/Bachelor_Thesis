@@ -1,0 +1,8 @@
+# segmentation output subfolder — change to re-run without overwriting
+exp_name: "run_1"
+# which yolo_sam detection run to read masks from
+detection_experiment: "initial"
+# save colored overlay images per head (useful for debugging)
+save_vis_overlay: true
+# only save overlays for first N heads (0 = all — can be slow for 300+ heads)
+vis_max_heads: 10

@@ -16,14 +16,15 @@ Run from the workspace root:
 python src/mask_generation/yolo_sam_v1/main_v1.py
 ```
 
-Configure via `configs/mask_generation/config.yaml` — set `plot`, `experiment_name`, thresholds, etc. Any parameter can also be overridden on the CLI without editing the file:
+Shared params (`experiment_name`, `limit_plots`, etc.) are in `configs/mask_generation/config.yaml`. Method-specific params (thresholds, batch sizes) are in `configs/mask_generation/method/yolo_sam_v1.yaml`. Any parameter can be overridden on the CLI:
 
 ```bash
-python src/mask_generation/yolo_sam_v1/main_v1.py dataset=phone plot=phone01
-python src/mask_generation/yolo_sam_v1/main_v1.py experiment_name=my_run conf_threshold_detection=0.4
+python src/mask_generation/yolo_sam_v1/main_v1.py dataset=phone
+python src/mask_generation/yolo_sam_v1/main_v1.py experiment_name=my_run limit_plots=1
+python src/mask_generation/yolo_sam_v1/main_v1.py method.conf_threshold_detection=0.4
 ```
 
-For metrics evaluation, use the metrics config (automatically sets `only_labeled_images=true` and `conf_threshold_nms_floor=0.01`):
+For metrics evaluation, use the metrics config (automatically sets `only_labeled_images=true` and `method.conf_threshold_nms_floor=0.01`):
 
 ```bash
 python src/mask_generation/yolo_sam_v1/main_v1.py --config-name mask_generation/metrics

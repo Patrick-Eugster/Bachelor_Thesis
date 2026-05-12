@@ -10,12 +10,11 @@ Each FIP plot has **one manually labeled image** in `input_plots/fip/{plot}/manu
 ```bash
 python src/mask_generation/yolo_sam_v1/main_v1.py --config-name mask_generation/metrics
 ```
-This loads all settings from `config.yaml` as usual, but automatically overrides the values that must be set for metrics:
+This loads all settings from `config.yaml` + `method/yolo_sam_v1.yaml` as usual, but automatically overrides the values that must be set for metrics:
 - `only_labeled_images: true` — only processes the manually labeled image per plot, and saves `bboxes_with_conf/` needed for the AP curve
-- `conf_threshold_nms_floor: 0.01` — low floor so the full confidence range is captured for AP
-- `only_yolo: true` — SAM is not needed for metrics, skips it entirely
-- `limit_plots: 0` — no limit (overrides any debug value in config.yaml)
-- `limit_images: 0` — no limit (overrides any debug value in config.yaml)
+- `limit_plots: 0` / `limit_images: 0` — no limit (overrides any debug value in config.yaml)
+- `method.conf_threshold_nms_floor: 0.01` — low floor so the full confidence range is captured for AP
+- `method.only_yolo: true` — SAM is not needed for metrics, skips it entirely
 
 These overrides live in `configs/mask_generation/metrics.yaml` — no manual edits to `config.yaml` needed.
 

@@ -36,7 +36,7 @@ Repeat until all masks are processed. Each accepted head gets a unique integer I
 
 ## Configuration
 
-Controlled via `configs/reconstruction/config.yaml`:
+Controlled via `configs/reconstruction_seg3d/segmentation_3d/default.yaml`:
 
 ```yaml
 exp_name: "run_1"           # subfolder name inside segmentation_3d/ — change to re-run without overwriting
@@ -88,4 +88,4 @@ Outputs overlay PNGs per camera into `test/segmentation/` showing predicted vs G
 
 ## Logging
 
-Segmentation output is logged to `seg_logs/{exp_name}.txt` inside the reconstruction experiment folder. Controlled by `log_seg_only: true` in `configs/reconstruction/config.yaml` — when true, only the segmentation step is logged to file (training stays terminal-only).
+Segmentation output is logged to `seg_logs/{exp_name}.txt` inside the reconstruction experiment folder. Controlled by `log_seg_only: true` in `configs/reconstruction_seg3d/segmentation_3d/default.yaml` — when true, only the segmentation step is logged to file (training stays terminal-only).

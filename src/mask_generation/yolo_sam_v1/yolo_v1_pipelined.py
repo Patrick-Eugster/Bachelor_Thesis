@@ -109,7 +109,7 @@ def save_single_result(_, result, original_img, pad_info, original_path, bbox_fo
         preds[:, [0, 2]] = np.clip(preds[:, [0, 2]], 0, orig_w)
         preds[:, [1, 3]] = np.clip(preds[:, [1, 3]], 0, orig_h)
         # 3. VECTORIZED FILTERING. This mask instantly separates good and bad boxes in C++
-        mask = preds[:, 4] >= cfg.conf_threshold_detection
+        mask = preds[:, 4] >= cfg.method.conf_threshold_detection
         good_preds = preds[mask]
         bad_preds = preds[~mask]
         good_count = len(good_preds)
@@ -123,35 +123,35 @@ def save_single_result(_, result, original_img, pad_info, original_path, bbox_fo
             bad_coords = bad_preds[:, :4].astype(int)
             bad_confs = bad_preds[:, 4]
         # 4. Draw Good Boxes (Blue) - directly on image
-        if cfg.show_detected_boxes and good_count > 0:
+        if cfg.method.show_detected_boxes and good_count > 0:
             for j in range(good_count):
                 x1, y1, x2, y2 = good_coords[j]
                 conf = good_confs[j]
-                cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (0, 0, 255), thickness=cfg.box_thickness)
-                if cfg.show_labels:
+                cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (0, 0, 255), thickness=cfg.method.box_thickness)
+                if cfg.method.show_labels:
                     conf_text = f"{conf:.2f}"
                     font = cv2.FONT_HERSHEY_SIMPLEX
-                    font_scale = cfg.label_font_scale * 0.7
+                    font_scale = cfg.method.label_font_scale * 0.7
                     pos = (x1, y1 - 8)
                     cv2.putText(annotated_img, conf_text, pos, font, font_scale, (255, 255, 255),
-                                thickness=cfg.box_thickness + 1, lineType=cv2.LINE_AA)
+                                thickness=cfg.method.box_thickness + 1, lineType=cv2.LINE_AA)
                     cv2.putText(annotated_img, conf_text, pos, font, font_scale, (0, 0, 255),
-                                thickness=cfg.box_thickness - 1, lineType=cv2.LINE_AA)
+                                thickness=cfg.method.box_thickness - 1, lineType=cv2.LINE_AA)
         # 5. Draw Bad Boxes (Red) - directly on image
-        if cfg.show_rejected_boxes and bad_count > 0:
+        if cfg.method.show_rejected_boxes and bad_count > 0:
             for j in range(bad_count):
                 x1, y1, x2, y2 = bad_coords[j]
                 conf = bad_confs[j]
-                cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (255, 30, 30), thickness=cfg.box_thickness)
-                if cfg.show_labels:
+                cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (255, 30, 30), thickness=cfg.method.box_thickness)
+                if cfg.method.show_labels:
                     conf_text = f"{conf:.2f}"
                     font = cv2.FONT_HERSHEY_SIMPLEX
-                    font_scale = cfg.label_font_scale * 0.7
+                    font_scale = cfg.method.label_font_scale * 0.7
                     pos = (x1, y1 + 25)
                     cv2.putText(annotated_img, conf_text, pos, font, font_scale, (255, 255, 255),
-                                thickness=cfg.box_thickness + 1, lineType=cv2.LINE_AA)
+                                thickness=cfg.method.box_thickness + 1, lineType=cv2.LINE_AA)
                     cv2.putText(annotated_img, conf_text, pos, font, font_scale, (255, 30, 30),
-                                thickness=max(1, cfg.box_thickness - 1), lineType=cv2.LINE_AA)
+                                thickness=max(1, cfg.method.box_thickness - 1), lineType=cv2.LINE_AA)
     # 6. Save Tensors for SAM (4 cols: x1,y1,x2,y2 — good boxes only)
     if len(good_boxes_for_sam) > 0:
         valid_tensor = torch.tensor(good_boxes_for_sam)
@@ -197,7 +197,7 @@ def _save_sub_batch(det_list, orig_imgs, pad_infos, files,
                     bbox_folder, bboxes_with_conf_folder, yolo_vis_folder, cfg):
     """Save results for one GPU sub-batch in parallel, returns list of (good_count, bad_count).
     Uses max_threads//2 so resize and save can run simultaneously without starving NMS on the main thread."""
-    n_workers = min(max(1, cfg.max_threads // 2), len(files))
+    n_workers = min(max(1, cfg.method.max_threads // 2), len(files))
     with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as pool:
         return list(pool.map(
             lambda i: save_single_result(
@@ -229,8 +229,8 @@ def run_yolo_phase(image_folders, cfg):
 
     weights_dir = os.path.join(os.path.dirname(__file__), "..", "weights")
     yolo_dir    = os.path.join(os.path.dirname(__file__), "..", "yolov5")
-    wheat_model = os.path.join(weights_dir, cfg.wheat_yolo_model)
-    resize_method = _RESIZE_METHODS[cfg.resize_method]
+    wheat_model = os.path.join(weights_dir, cfg.method.wheat_yolo_model)
+    resize_method = _RESIZE_METHODS[cfg.method.resize_method]
 
     if not os.path.exists(wheat_model):
         print(f"ERROR: Wheat model not found at {wheat_model}")
@@ -238,9 +238,9 @@ def run_yolo_phase(image_folders, cfg):
 
     # Load YOLO Model ONCE & Load custom model using local repo
     model = torch.hub.load(yolo_dir, 'custom', path=wheat_model, source='local')
-    model.conf = cfg.conf_threshold_nms_floor
-    model.iou  = cfg.iou_threshold_nms
-    model.classes = list(cfg.classes_to_detect)
+    model.conf = cfg.method.conf_threshold_nms_floor
+    model.iou  = cfg.method.iou_threshold_nms
+    model.classes = list(cfg.method.classes_to_detect)
 
     total_run_boxes = 0
 
@@ -282,13 +282,13 @@ def run_yolo_phase(image_folders, cfg):
         total_plot_boxes, total_plot_bad_boxes = 0, 0
 
         # Chunking loop to protect RAM
-        for chunk_start in range(0, len(image_files), cfg.ram_chunk_size_yolo):
-            chunk_files = image_files[chunk_start: chunk_start + cfg.ram_chunk_size_yolo]
+        for chunk_start in range(0, len(image_files), cfg.method.ram_chunk_size_yolo):
+            chunk_files = image_files[chunk_start: chunk_start + cfg.method.ram_chunk_size_yolo]
             print(f"  -> Processing chunk {chunk_start} to {chunk_start + len(chunk_files)} of {len(image_files)} images...")
 
             # Split chunk into GPU-sized sub-batches
-            sub_batches = [chunk_files[i: i + cfg.batch_size_yolo]
-                           for i in range(0, len(chunk_files), cfg.batch_size_yolo)]
+            sub_batches = [chunk_files[i: i + cfg.method.batch_size_yolo]
+                           for i in range(0, len(chunk_files), cfg.method.batch_size_yolo)]
             n_sub = len(sub_batches)
 
             start_chunk = time.perf_counter()
@@ -300,7 +300,7 @@ def run_yolo_phase(image_folders, cfg):
                 # --- PRE-PROCESSING: kick off resize for sub-batch 0 immediately ---
                 # It runs in the background while the loop sets up, so it's often already
                 # done by the time we call .result() below.
-                resize_future = executor.submit(_resize_sub_batch, sub_batches[0], cfg.target_image_size, resize_method, cfg.max_threads)
+                resize_future = executor.submit(_resize_sub_batch, sub_batches[0], cfg.method.target_image_size, resize_method, cfg.method.max_threads)
 
                 prev_data = None   # holds (det_list, orig_imgs, pad_infos, files) from the previous GPU step
                 save_futures = []  # collect save futures so we can harvest box counts at the end
@@ -314,13 +314,13 @@ def run_yolo_phase(image_folders, cfg):
                     orig_imgs    = [x[1] for x in sub_data]  # originals → needed for box reversal later
                     pad_infos    = [x[2] for x in sub_data]  # (scale, pad_left, pad_top) per image
 
-                    if b == 0 and chunk_start == 0 and cfg.debug_yolo_resize:
+                    if b == 0 and chunk_start == 0 and cfg.method.debug_yolo_resize:
                         save_debug_image_yolo(resized_imgs, yolo_vis_folder)
 
                     # --- PRE-PROCESSING: submit resize for the NEXT sub-batch ---
                     # This starts immediately and runs in parallel while the GPU works below.
                     if b + 1 < n_sub:
-                        resize_future = executor.submit(_resize_sub_batch, sub_batches[b + 1], cfg.target_image_size, resize_method, cfg.max_threads)
+                        resize_future = executor.submit(_resize_sub_batch, sub_batches[b + 1], cfg.method.target_image_size, resize_method, cfg.method.max_threads)
 
                     # --- POST-PROCESSING: submit save for the PREVIOUS sub-batch ---
                     # Also starts immediately and runs in parallel while the GPU works below.
@@ -335,7 +335,7 @@ def run_yolo_phase(image_folders, cfg):
                     # --- GPU INFERENCE: run YOLO on the current sub-batch ---
                     # Main thread blocks here. The resize (next) and save (prev) run on CPU in parallel.
                     torch.cuda.synchronize()
-                    batch_results = model(resized_imgs, size=cfg.target_image_size)
+                    batch_results = model(resized_imgs, size=cfg.method.target_image_size)
                     torch.cuda.synchronize()
                     det_list = batch_results.tolist()
 
@@ -363,7 +363,7 @@ def run_yolo_phase(image_folders, cfg):
         # Final Performance Report for the entire plot
         print(f"-> YOLO detected a total of {total_plot_boxes} good wheat heads across {len(image_files)} images.")
         print(f"-> YOLO detected a total of {total_plot_bad_boxes} wheat heads below threshold as bad boxes.")
-        if cfg.show_time_yolo:
+        if cfg.method.show_time_yolo:
             print_performance_report_yolo(len(image_files), total_wall_time)
 
         total_run_boxes += total_plot_boxes

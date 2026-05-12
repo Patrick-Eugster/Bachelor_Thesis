@@ -4,7 +4,7 @@
 
 Trains a 3D Gaussian Splatting model of a wheat plot from multi-view images and COLMAP camera calibration. The trained model is the input for 3D segmentation (step 4).
 
-Entry point: `src/run_reconstruction.py` — configured via `configs/reconstruction/config.yaml`.
+Entry point: `src/run_reconstruction.py` — configured via `configs/reconstruction_seg3d/config.yaml`.
 
 ---
 
@@ -16,7 +16,7 @@ Run from the workspace root:
 python src/run_reconstruction.py
 ```
 
-All pipeline steps are **off by default** — enable the ones you want in `configs/reconstruction/config.yaml` or pass them on the CLI:
+All pipeline steps are **off by default** — enable the ones you want in `configs/reconstruction_seg3d/config.yaml` or pass them on the CLI:
 
 ```bash
 python src/run_reconstruction.py run_train=true
@@ -28,14 +28,19 @@ python src/run_reconstruction.py dataset=phone plot=phone01 run_train=true exper
 
 ## Experiment Names
 
-Two separate experiment names in `configs/reconstruction/config.yaml`:
+Experiment names are split across two config files:
 
+`configs/reconstruction_seg3d/config.yaml`:
 ```yaml
 plot: "plot_461"             # which plot to process
 experiment_name: "initial"   # name for the 3DGS training output folder
 prepend_date: false          # prepends today's date: "2025-04-28_initial"
+```
+
+`configs/reconstruction_seg3d/segmentation_3d/default.yaml`:
+```yaml
 detection_experiment: "initial"  # which yolo_sam detection run to read masks from
-exp_name: "run_1"            # name for the segmentation subfolder (inside wheat-head/)
+exp_name: "run_1"                # name for the segmentation subfolder
 ```
 
 - **`experiment_name`** — controls the top-level output folder `results/reconstruction/fip/{plot}/vanilla_3dgs/{experiment_name}/`. All training, render, and metrics outputs go here. Named experiments (not `"initial"`) warn before overwriting.
@@ -63,7 +68,7 @@ All steps are independent toggles. Run them in order, but you can re-run any ind
 
 ## Key Training Parameters
 
-Set in `configs/reconstruction/config.yaml`:
+Set in `configs/reconstruction_seg3d/reconstruction/vanilla_3dgs.yaml`:
 
 | Parameter | Default | Notes |
 |-----------|---------|-------|

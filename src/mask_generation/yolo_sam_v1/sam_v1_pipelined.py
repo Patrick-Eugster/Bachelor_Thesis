@@ -163,12 +163,12 @@ def run_sam_phase(image_folders, cfg):
     print("="*50)
 
     weights_dir    = os.path.join(os.path.dirname(__file__), "..", "weights")
-    sam_checkpoint = os.path.join(weights_dir, cfg.sam_checkpoint)
+    sam_checkpoint = os.path.join(weights_dir, cfg.method.sam_checkpoint)
 
     if cfg.wandb_enabled:
         wandb.init(
             project="wheat3dgs-sam-v1",
-            config={"batch_size_sam_box": cfg.batch_size_sam_box, "device": DEVICE},
+            config={"batch_size_sam_box": cfg.method.batch_size_sam_box, "device": DEVICE},
         )
 
     # Load SAM Model ONCE
@@ -232,7 +232,7 @@ def run_sam_phase(image_folders, cfg):
                 # Also starts immediately and runs in parallel while the GPU works below.
                 # _save_image_results writes all mask PNGs + the overlay visualization.
                 if prev_save_data is not None:
-                    sf = executor.submit(_save_image_results, *prev_save_data, cfg.max_threads)
+                    sf = executor.submit(_save_image_results, *prev_save_data, cfg.method.max_threads)
                     save_futures.append(sf)
                     prev_save_data = None  # drop reference so RAM can be freed once save is done
 
@@ -264,8 +264,8 @@ def run_sam_phase(image_folders, cfg):
 
                 # Process boxes in batches to save memory
                 with torch.no_grad():  # important for Batch Size 1
-                    for b_idx in range(0, len(transformed_boxes), cfg.batch_size_sam_box):
-                        batch_boxes = transformed_boxes[b_idx : b_idx + cfg.batch_size_sam_box]
+                    for b_idx in range(0, len(transformed_boxes), cfg.method.batch_size_sam_box):
+                        batch_boxes = transformed_boxes[b_idx : b_idx + cfg.method.batch_size_sam_box]
                         masks, _, _ = predictor.predict_torch(
                             point_coords=None,
                             point_labels=None,
@@ -282,7 +282,7 @@ def run_sam_phase(image_folders, cfg):
                 torch.cuda.synchronize()
                 t_pred = time.perf_counter() - t_start_pred
 
-                if cfg.show_time_sam:
+                if cfg.method.show_time_sam:
                     print_sam_step_report(i, n_images, image_name, len(bbox), t_embed, t_pred)
                 if cfg.wandb_enabled:
                     wandb.log({
@@ -306,7 +306,7 @@ def run_sam_phase(image_folders, cfg):
             # No next GPU call to overlap with, but we still submit so it runs in the background
             # while the executor waits for all futures to finish on __exit__.
             if prev_save_data is not None:
-                sf = executor.submit(_save_image_results, *prev_save_data, cfg.max_threads)
+                sf = executor.submit(_save_image_results, *prev_save_data, cfg.method.max_threads)
                 save_futures.append(sf)
 
             # Collect t_save from all completed save futures and add to total
@@ -315,7 +315,7 @@ def run_sam_phase(image_folders, cfg):
 
         # Plot Final Summary for SAM
         sam_total_plot = time.perf_counter() - start_sam_plot
-        if cfg.show_time_sam:
+        if cfg.method.show_time_sam:
             print_sam_plot_summary(len(image_files), sam_total_plot)
         print(f"  Finished Plot: {plot_name}")
 
