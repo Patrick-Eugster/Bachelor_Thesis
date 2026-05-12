@@ -1,8 +1,14 @@
-# segmentation output subfolder — change to re-run without overwriting
+# segmentation params for run_3d_seg.py
+
+# output subfolder name inside segmentation_3d/ — change to re-run without overwriting previous results
+# e.g. exp_name=run_2 → results/.../segmentation_3d/run_2/
 exp_name: "run_1"
-# which yolo_sam detection run to read masks from
+
+# which yolo_sam detection run to read masks from — must match a folder in results/mask_generation/
 detection_experiment: "initial"
-# save colored overlay images per head (useful for debugging)
+
+# save colored overlay images showing which Gaussians were assigned to each head (useful for debugging)
 save_vis_overlay: true
-# only save overlays for first N heads (0 = all — can be slow for 300+ heads)
+
+# only save overlays for the first N heads — 0 = save all (can generate 300+ images, slow for large plots)
 vis_max_heads: 10

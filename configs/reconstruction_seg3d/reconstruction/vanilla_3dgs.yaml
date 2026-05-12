@@ -1,8 +1,27 @@
 # training params for vanilla 3DGS
+
+# total number of training iterations — standard 3DGS uses 30k, wheat pipeline uses 15k by default
+# LR scheduler is designed for 30k (position_lr_max_steps=30000), so 30k gives full LR decay
 iterations: 15000
+
+# image downscale factor — 1 = full resolution, 2 = half resolution
+# WARNING: full resolution (1) peaks at ~15-16 GB VRAM on FIP plots — use 2 if training OOMs
 resolution: 1
+
+# spherical harmonics degree — controls view-dependent color (0 to 3)
+# wheat has no shiny surfaces so sh_degree=0 saves ~1.3 GB VRAM with almost no quality loss
 sh_degree: 3
+
+# Gaussians below this opacity get pruned during densification — raise to 0.01 to save VRAM if OOM
 opacity_prune_threshold: 0.005
+
+# keep training images in RAM instead of VRAM — strongly recommended on 16 GB GPU
+# only the active render + gradients go to VRAM; small speed cost, prevents OOM
 data_device_cpu: true
+
+# stop adding new Gaussians after this iteration — Gaussian count peaks here (~iter 9000-11000)
+# most likely OOM point if it happens; does not need to change when increasing total iterations
 densify_until_iter: 11000
+
+# gradient threshold for splitting/cloning Gaussians — lower = more Gaussians = higher quality but more VRAM
 densify_grad_threshold: 0.0002

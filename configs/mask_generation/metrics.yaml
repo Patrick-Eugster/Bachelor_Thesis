@@ -6,6 +6,7 @@ defaults:
 # required for metrics evaluation:
 # only_labeled_images limits YOLO to the manually labeled image per plot
 # and enables bboxes_with_conf/ output needed for the AP/PR curve
+experiment_name: "metrics_v1"   # separate folder so metrics runs don't overwrite full detection runs
 only_labeled_images: true
 limit_plots: 0   # 0 = no limit — override any debug value set in config.yaml
 limit_images: 0  # 0 = no limit — override any debug value set in config.yaml

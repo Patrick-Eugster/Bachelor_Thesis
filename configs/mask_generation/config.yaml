@@ -4,13 +4,23 @@ defaults:
   - method: yolo_sam_v1        # override on CLI: method=yolo_sam_v2
   - _self_
 
+# name for the detection output folder — "initial" is a safe scratch name (no overwrite warning)
+# leave empty ("") for an auto timestamp: "2025-04-28_1430"
 experiment_name: "initial"
+
+# set true to prepend today's date to experiment_name: "2025-04-28_my_run" (ignored for "initial" or "")
 prepend_date: false
 
-# run controls
+# process only the first N plot folders — 0 = no limit (process all)
 limit_plots: 0
+
+# process only the first N images per plot — 0 = no limit (process all)
 limit_images: 0
+
+# true = only process images that have a manual_label/*.txt file (used for metrics evaluation)
 only_labeled_images: false
+
+# log SAM progress to wandb.ai dashboard (requires wandb login first)
 wandb_enabled: false
 
 # hydra: don't create outputs/ folder, write log to logs/ instead

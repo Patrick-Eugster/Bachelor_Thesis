@@ -18,40 +18,35 @@ This loads all settings from `config.yaml` + `method/yolo_sam_v1.yaml` as usual,
 
 These overrides live in `configs/mask_generation/metrics.yaml` — no manual edits to `config.yaml` needed.
 
-**Step 2 — Set experiment names and run the metrics script:**
+**Step 2 — Run the metrics script:**
 
-Open `metrics_yolo_v1.py` and set the constants at the top:
-```python
-DETECTION_EXPERIMENT = "metrics_v1"  # must match the experiment_name used in Step 1
-METRICS_EXPERIMENT   = "initial"     # name for this metrics output — can be different
-```
-Then run:
 ```bash
 python src/mask_generation/metrics/metrics_yolo_v1.py
 ```
 
-## Experiment Names
-
-There are **two separate experiment names** at the top of `metrics_yolo_v1.py`:
-
-```python
-DATASET_NAME         = "fip"         # "fip" or "phone"
-DETECTION_EXPERIMENT = "metrics_v1"  # exact folder name of the detection run to read from
-METRICS_EXPERIMENT   = "initial"     # name for this metrics output — can be different
-PREPEND_DATE         = False         # prepends today's date to METRICS_EXPERIMENT
+Override experiment names or any param on the CLI without editing files:
+```bash
+python src/mask_generation/metrics/metrics_yolo_v1.py detection_experiment=metrics_v1
+python src/mask_generation/metrics/metrics_yolo_v1.py dataset=phone detection_experiment=my_run
 ```
 
-- **`DETECTION_EXPERIMENT`** — points to the yolo_sam detection run you want to evaluate. Must exactly match the folder name created in Step 1 (e.g. `metrics_v1` if you ran detection with `experiment_name=metrics_v1`). Reads from `results/mask_generation/fip/{plot}/yolo_sam_v1/{DETECTION_EXPERIMENT}/`.
-- **`METRICS_EXPERIMENT`** — controls where the metrics results are saved, independently of the detection run. This lets you re-run metrics with different settings (e.g. a different `MATCHING_IOU_THRESHOLD`) on the same detection output and save each run separately without overwriting.
+## Experiment Names
+
+Configured in `configs/mask_generation/metrics_eval.yaml`:
+
+```yaml
+detection_experiment: "metrics_v1"  # exact folder name of the detection run to read from
+metrics_experiment: "initial"       # name for this metrics output — can be different
+prepend_date: false                  # prepends today's date to metrics_experiment
+```
+
+- **`detection_experiment`** — points to the yolo_sam detection run you want to evaluate. Must exactly match the folder name created in Step 1 (e.g. `metrics_v1` if you ran detection with `experiment_name=metrics_v1`). Reads from `results/mask_generation/fip/{plot}/yolo_sam_v1/{detection_experiment}/`.
+- **`metrics_experiment`** — controls where the metrics results are saved, independently of the detection run. This lets you re-run metrics with different settings (e.g. a different `matching_iou_threshold`) on the same detection output and save each run separately without overwriting.
 
 Example: run metrics twice with different IoU thresholds on the same detection output:
-```python
-DETECTION_EXPERIMENT = "metrics_v1"
-METRICS_EXPERIMENT   = "iou35"       # MATCHING_IOU_THRESHOLD = 0.35
-# run → results saved to evaluation/.../iou35/
-
-METRICS_EXPERIMENT   = "iou50"       # MATCHING_IOU_THRESHOLD = 0.50
-# run → results saved to evaluation/.../iou50/
+```bash
+python src/mask_generation/metrics/metrics_yolo_v1.py metrics_experiment=iou35 matching_iou_threshold=0.35
+python src/mask_generation/metrics/metrics_yolo_v1.py metrics_experiment=iou50 matching_iou_threshold=0.50
 ```
 
 ## Key Design Decisions
@@ -59,7 +54,7 @@ METRICS_EXPERIMENT   = "iou50"       # MATCHING_IOU_THRESHOLD = 0.50
 - `bboxes/*.pt` — 4-column `[x1, y1, x2, y2]` in absolute pixels, high-confidence only (SAM input, unchanged)
 - `bboxes_with_conf/*.pt` — 5-column `[x1, y1, x2, y2, conf]`, all NMS-passing boxes — only created when `only_labeled_images: true`
 - GT labels in `manual_label/*.txt` are YOLO format (normalized), converted to absolute pixels at load time
-- Matching uses greedy IoU ≥ `MATCHING_IOU_THRESHOLD` (0.35 default) — separate from YOLO's NMS `IOU_THRESHOLD_NMS`
+- Matching uses greedy IoU ≥ `matching_iou_threshold` (0.35 default, set in `metrics_eval.yaml`) — separate from YOLO's NMS `iou_threshold_nms`
 
 ## Output
 

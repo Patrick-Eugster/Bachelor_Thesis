@@ -1,0 +1,28 @@
+# @package _global_
+defaults:
+  - /dataset: fip              # override on CLI: dataset=phone
+  - method: yolo_sam_v1        # which detection method's thresholds to use for evaluation
+  - _self_
+
+# which yolo_sam detection run to evaluate
+# must match a folder in results/mask_generation/{dataset}/{plot}/yolo_sam_v1/
+# run detection first with: python src/mask_generation/yolo_sam_v1/main_v1.py --config-name mask_generation/metrics
+detection_experiment: "metrics_v1"
+
+# name for this metrics output folder — can differ from detection_experiment
+# allows re-running metrics with a different matching_iou_threshold on the same detection output
+metrics_experiment: "initial"
+
+# set true to prepend today's date to metrics_experiment: "2025-04-28_initial"
+prepend_date: false
+
+# IoU threshold for matching predicted boxes to GT boxes when computing precision/recall/F1
+# separate from iou_threshold_nms (which is used during YOLO inference, not here)
+# lower = more lenient matching; 0.35 is more lenient than the common 0.5
+matching_iou_threshold: 0.35
+
+# hydra: don't create outputs/ folder
+hydra:
+  output_subdir: null
+  run:
+    dir: .

@@ -1,4 +1,15 @@
+# dataset paths for phone camera data
+# note: run COLMAP first before any pipeline steps:
+# python src/reconstruction/convert.py -s input_plots/phone/{plot} --camera OPENCV
+
+# short identifier used in config saving and wandb logging
 name: phone
+
+# root folder containing plot subfolders — each plot has images/ and sparse/ inside
 input_dir: input_plots/phone
+
+# root folder where mask generation outputs (bboxes/, masks/) are saved
 result_dir_masks: results/mask_generation/phone
+
+# root folder where 3DGS training outputs are saved
 result_dir_recon: results/reconstruction/phone

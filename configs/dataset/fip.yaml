@@ -1,4 +1,13 @@
+# dataset paths for FIP (Field Imaging Platform) camera data
+
+# short identifier used in config saving and wandb logging
 name: fip
+
+# root folder containing plot subfolders — each plot has images/ and sparse/ inside
 input_dir: input_plots/fip
+
+# root folder where mask generation outputs (bboxes/, masks/) are saved
 result_dir_masks: results/mask_generation/fip
+
+# root folder where 3DGS training outputs are saved
 result_dir_recon: results/reconstruction/fip

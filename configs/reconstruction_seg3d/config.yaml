@@ -5,33 +5,56 @@ defaults:
   - segmentation_3d: default            # override on CLI: segmentation_3d=tight
   - _self_
 
+# which plot folder to process (must exist inside dataset.input_dir)
 plot: "plot_461"
+
+# name for the 3DGS training output folder — "initial" is a safe scratch name (no overwrite warning)
+# leave empty ("") for an auto timestamp: "2025-04-28_1430"
 experiment_name: "initial"
+
+# set true to prepend today's date to experiment_name: "2025-04-28_my_run" (ignored for "initial" or "")
 prepend_date: false
+
+# set true to use ground truth yolosam bboxes+masks instead of predicted ones (for ablation)
 use_yolosam_source: false
 
 # pipeline step toggles (all off by default — enable on CLI or edit here)
-run_train: false
-run_render: false
-run_metrics: false
-run_seg: false
-run_render_360: false
-run_eval: false
-run_viewer: false
+run_train: false       # step 1: train 3DGS model
+run_render: false      # step 2: render from training/test cameras (visual quality check)
+run_metrics: false     # step 3: compute PSNR/SSIM/LPIPS on test views → results.json
+run_seg: false         # step 4: assign 3D wheat head IDs to Gaussians (FlashSplat)
+run_render_360: false  # step 5: render 360° flyaround video
+run_eval: false        # step 6: evaluate 3D segmentation quality vs SAM masks
+run_viewer: false      # step 7: open interactive viser viewer in browser
 
-# render 360
+# render 360 settings
+# bake HSV colors into Gaussians for fast rendering (1 render/frame instead of N_heads renders)
 fast_render_360: true
+
+# use white background for the 360° video
 white_background_360: true
+
+# number of frames in the 360° video
 n_frames: 200
+
+# output video framerate (fps)
 framerate: 20
+
+# camera elevation angle in degrees above the scene
 elevation: 45
 
-# viewer
+# viewer settings
+# "full" = colored segmentation viewer (needs step 4 output), "single" = plain Gaussian viewer (works after step 1)
 viewer_type: "full"
+
+# bake HSV colors at startup for fast interactive rendering (~300 FlashSplat renders/frame otherwise makes it unusable)
 fast_viewer: true
+
+# browser port — open http://localhost:8080 after launching
 viewer_port: 8080
 
-# logging
+# logging — pipeline output is written to seg_logs/{exp_name}.txt inside the experiment folder
+# true = only log segmentation step (step 4) to file; training stays terminal-only since it's already verbose
 log_seg_only: true
 
 # wandb — set true to log training + segmentation progress to wandb.ai dashboard

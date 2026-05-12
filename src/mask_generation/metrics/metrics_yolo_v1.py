@@ -57,54 +57,19 @@ import torch
 import matplotlib
 matplotlib.use('Agg')  # headless backend — prevents Qt/display warnings in WSL
 
-import datetime
-from omegaconf import OmegaConf
+import hydra
+from omegaconf import DictConfig
 
-# =====================================================================
-# Config
-# =====================================================================
-DATASET_NAME         = "fip"      # "fip" or "phone"
-DETECTION_EXPERIMENT = "metrics_v1"  # exact folder name of the yolo_sam detection run to evaluate
-METRICS_EXPERIMENT   = "initial"  # name for this metrics output — can differ from detection
-PREPEND_DATE         = False      # prepends today's date to METRICS_EXPERIMENT: "2025-04-28_initial"
-
-_ROOT        = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")
-_base_cfg    = OmegaConf.load(os.path.join(_ROOT, "configs", "mask_generation", "config.yaml"))
-_method_cfg  = OmegaConf.load(os.path.join(_ROOT, "configs", "mask_generation", "method", "yolo_sam_v1.yaml"))
-_metrics_cfg = OmegaConf.load(os.path.join(_ROOT, "configs", "mask_generation", "metrics.yaml"))
-# merge: base → method → metrics (metrics overrides take effect last)
-_cfg  = OmegaConf.merge(_base_cfg, {"method": _method_cfg}, _metrics_cfg)
-_ds   = OmegaConf.load(os.path.join(_ROOT, "configs", "dataset", f"{DATASET_NAME}.yaml"))
-
-CONF_THRESHOLD_DETECTION  = _cfg.method.conf_threshold_detection
-CONF_THRESHOLD_NMS_FLOOR  = _cfg.method.conf_threshold_nms_floor
-IOU_THRESHOLD_NMS         = _cfg.method.iou_threshold_nms
-
-INPUT_DIR  = _ds.input_dir
-RESULT_DIR = _ds.result_dir_masks
-
-
-def get_metrics_experiment():
+def get_metrics_experiment(cfg):
     """Resolve the metrics output experiment name — same 3-option logic as the pipeline."""
-    if not METRICS_EXPERIMENT:
+    if not cfg.metrics_experiment:
         return datetime.datetime.now().strftime("%Y-%m-%d_%H%M")
-    if METRICS_EXPERIMENT == "initial":
+    if cfg.metrics_experiment == "initial":
         return "initial"
-    if PREPEND_DATE:
-        return f"{datetime.datetime.now().strftime('%Y-%m-%d')}_{METRICS_EXPERIMENT}"
-    return METRICS_EXPERIMENT
+    if cfg.prepend_date:
+        return f"{datetime.datetime.now().strftime('%Y-%m-%d')}_{cfg.metrics_experiment}"
+    return cfg.metrics_experiment
 
-
-# IoU threshold for matching predicted to GT boxes — separate from IOU_THRESHOLD_NMS in config.py
-MATCHING_IOU_THRESHOLD = 0.35  # was 0.5 default
-
-# Output dir: results/mask_generation/{dataset}/evaluation/yolo_sam_v1/metrics_yolo_v1/{experiment}/
-EVAL_DIR       = os.path.join(RESULT_DIR, "evaluation", "yolo_sam_v1", "metrics_yolo_v1", get_metrics_experiment())
-VIZ_DIR        = os.path.join(EVAL_DIR, "match_viz")
-HIST_DIR       = os.path.join(EVAL_DIR, "TP_IoU_histograms")
-HEATMAP_FP_DIR = os.path.join(EVAL_DIR, "heatmaps_FP")
-HEATMAP_FN_DIR = os.path.join(EVAL_DIR, "heatmaps_FN")
-PR_CURVE_DIR   = os.path.join(EVAL_DIR, "pr_curves")
 
 
 
@@ -195,8 +160,8 @@ def print_aggregated_results(per_plot_results):
     print()
 
 
-def save_results_json(per_plot_results, iou_threshold, conf_threshold, ap=None):
-    os.makedirs(EVAL_DIR, exist_ok=True)
+def save_results_json(per_plot_results, iou_threshold, cfg, eval_dir, ap=None):
+    os.makedirs(eval_dir, exist_ok=True)
 
     aggregated = {}
     for key in ['pred_count', 'gt_count', 'precision', 'recall', 'f1']:
@@ -217,15 +182,15 @@ def save_results_json(per_plot_results, iou_threshold, conf_threshold, ap=None):
     output = {
         'config': {
             'matching_iou_threshold': iou_threshold,
-            'conf_threshold_good_box': conf_threshold,
-            'conf_threshold_nms_floor': CONF_THRESHOLD_NMS_FLOOR,
-            'yolo_nms_iou_threshold': IOU_THRESHOLD_NMS,
+            'conf_threshold_good_box': cfg.method.conf_threshold_detection,
+            'conf_threshold_nms_floor': cfg.method.conf_threshold_nms_floor,
+            'yolo_nms_iou_threshold': cfg.method.iou_threshold_nms,
         },
         'per_plot': per_plot_results,
         'aggregated': aggregated,
     }
 
-    out_path = os.path.join(EVAL_DIR, 'metrics_yolo_v1.json')
+    out_path = os.path.join(eval_dir, 'metrics_yolo_v1.json')
     with open(out_path, 'w') as f:
         json.dump(output, f, indent=2)
     print(f"Results saved to: {out_path}\n")
@@ -620,7 +585,7 @@ def compute_ap(all_pred_entries, all_gt_boxes_list, iou_threshold):
 
 
 def save_pr_curve(precisions, recalls, confs, ap, iou_threshold, title, out_path,
-                  total_preds=None, tp=None, fp=None, fn=None, mark_every=50):
+                  conf_threshold_detection=None, total_preds=None, tp=None, fp=None, fn=None, mark_every=50):
     """Save a Precision-Recall curve image.
     mark_every: label every k-th prediction point on the curve with its confidence value.
     total_preds/tp/fp/fn: counts at the fixed CONF_THRESHOLD_DETECTION for the stats box.
@@ -691,7 +656,7 @@ def save_pr_curve(precisions, recalls, confs, ap, iou_threshold, title, out_path
     if total_preds is not None:
         stats_lines = [
             f'Total preds (all conf (>=0.01)): {total_preds}',
-            f'above CONF_THRESHOLD_DETECTION (>= {CONF_THRESHOLD_DETECTION}):',
+            f'above conf_threshold_detection (>= {conf_threshold_detection}):',
             f'  TP: {tp}   FP: {fp}   (TP+FP = {tp + fp} preds)',
             f'  FN: {fn}   (missed GT boxes, not preds)',
         ]
@@ -772,12 +737,12 @@ def evaluate_single_image(pred_pt_path, gt_label_path, image_path, iou_threshold
 # Aggregated Eval
 # =====================================================================
 
-def find_labeled_plots(input_dir):
+def find_labeled_plots(cfg):
     """Collect all GT files and return as list of (input_plot_dir, result_plot_dir, gt_label_path, image_stem)."""
     labeled = []
-    for plot_name in sorted(os.listdir(input_dir)):
-        input_plot_dir  = os.path.join(input_dir, plot_name)
-        result_plot_dir = os.path.join(RESULT_DIR, plot_name, "yolo_sam_v1", DETECTION_EXPERIMENT)
+    for plot_name in sorted(os.listdir(cfg.dataset.input_dir)):
+        input_plot_dir  = os.path.join(cfg.dataset.input_dir, plot_name)
+        result_plot_dir = os.path.join(cfg.dataset.result_dir_masks, plot_name, "yolo_sam_v1", cfg.detection_experiment)
         label_dir = os.path.join(input_plot_dir, 'manual_label')
         if not os.path.isdir(label_dir):
             continue
@@ -788,54 +753,61 @@ def find_labeled_plots(input_dir):
     return labeled
 
 
-def save_metrics_config():
+def save_metrics_config(cfg, eval_dir):
     """Save config.yaml with all parameters used for this evaluation run."""
-    os.makedirs(EVAL_DIR, exist_ok=True)
+    os.makedirs(eval_dir, exist_ok=True)
     config = {
-        "experiment":   get_metrics_experiment(),
+        "experiment":   get_metrics_experiment(cfg),
         "date":         datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "dataset":      DATASET_NAME,
+        "dataset":      cfg.dataset.name,
         "method":       "yolo_sam_v1",
         "eval_script":  "metrics_yolo_v1",
         "detection_thresholds": {
-            "conf_threshold_detection":  CONF_THRESHOLD_DETECTION,
-            "conf_threshold_nms_floor":  CONF_THRESHOLD_NMS_FLOOR,
-            "iou_threshold_nms":         IOU_THRESHOLD_NMS,
+            "conf_threshold_detection":  cfg.method.conf_threshold_detection,
+            "conf_threshold_nms_floor":  cfg.method.conf_threshold_nms_floor,
+            "iou_threshold_nms":         cfg.method.iou_threshold_nms,
         },
         "matching": {
-            "matching_iou_threshold": MATCHING_IOU_THRESHOLD,
+            "matching_iou_threshold": cfg.matching_iou_threshold,
         },
     }
-    config_path = os.path.join(EVAL_DIR, "config.yaml")
+    config_path = os.path.join(eval_dir, "config.yaml")
     with open(config_path, "w") as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
     print(f"Config saved → {config_path}")
 
 
-def evaluate_all_plots(iou_threshold=None):
+def evaluate_all_plots(cfg):
     """Evaluate all plots, then prints per-plot results and mean ± std aggregate, then saves full results as JSON."""
-    if iou_threshold is None:
-        iou_threshold = MATCHING_IOU_THRESHOLD
+    iou_threshold = cfg.matching_iou_threshold
 
-    save_metrics_config()
+    # derive all output paths from cfg
+    eval_dir       = os.path.join(cfg.dataset.result_dir_masks, "evaluation", "yolo_sam_v1", "metrics_yolo_v1", get_metrics_experiment(cfg))
+    viz_dir        = os.path.join(eval_dir, "match_viz")
+    hist_dir       = os.path.join(eval_dir, "TP_IoU_histograms")
+    heatmap_fp_dir = os.path.join(eval_dir, "heatmaps_FP")
+    heatmap_fn_dir = os.path.join(eval_dir, "heatmaps_FN")
+    pr_curve_dir   = os.path.join(eval_dir, "pr_curves")
+
+    save_metrics_config(cfg, eval_dir)
 
     print(f"\n{'=' * 58}")
     print(f" YOLO EVALUATION vs MANUAL LABELS")
     print(f"{'=' * 58}")
-    print(f" Input dir:             {INPUT_DIR}")
-    print(f" Conf threshold (good): {CONF_THRESHOLD_DETECTION}  (CONF_THRESHOLD_DETECTION — used for precision/recall/F1)")
-    print(f" Conf threshold (NMS floor): {CONF_THRESHOLD_NMS_FLOOR}  (CONF_THRESHOLD_NMS_FLOOR — floor for AP curve)")
-    print(f" Matching IoU thr:      {iou_threshold}  (MATCHING_IOU_THRESHOLD)")
-    print(f" YOLO NMS IoU thr:      {IOU_THRESHOLD_NMS}  (IOU_THRESHOLD_NMS — used during YOLO inference, not here)")
+    print(f" Input dir:             {cfg.dataset.input_dir}")
+    print(f" Conf threshold (good): {cfg.method.conf_threshold_detection}  (conf_threshold_detection — used for precision/recall/F1)")
+    print(f" Conf threshold (NMS floor): {cfg.method.conf_threshold_nms_floor}  (conf_threshold_nms_floor — floor for AP curve)")
+    print(f" Matching IoU thr:      {iou_threshold}  (matching_iou_threshold)")
+    print(f" YOLO NMS IoU thr:      {cfg.method.iou_threshold_nms}  (iou_threshold_nms — used during YOLO inference, not here)")
     print(f"{'=' * 58}\n")
 
     # wipe and recreate output folders so they only contain images from this run
-    for folder in [VIZ_DIR, HIST_DIR, HEATMAP_FP_DIR, HEATMAP_FN_DIR, PR_CURVE_DIR]:
+    for folder in [viz_dir, hist_dir, heatmap_fp_dir, heatmap_fn_dir, pr_curve_dir]:
         if os.path.exists(folder):
             shutil.rmtree(folder)
         os.makedirs(folder)
 
-    labeled_plots = find_labeled_plots(INPUT_DIR)
+    labeled_plots = find_labeled_plots(cfg)
     if not labeled_plots:
         print("No labeled plots found. Expected: input_plots/<camera>/<plot>/manual_label/<name>.txt")
         return
@@ -854,7 +826,7 @@ def evaluate_all_plots(iou_threshold=None):
 
         image_path   = os.path.join(input_plot_dir, 'images', stem + '.png')    # images stay in input_plots/
         pred_pt_path = os.path.join(result_plot_dir, 'bboxes', stem + '.pt')    # bboxes now in results/
-        viz_out_path = os.path.join(VIZ_DIR, f"{plot_name}_{stem}_matches.jpg")
+        viz_out_path = os.path.join(viz_dir, f"{plot_name}_{stem}_matches.jpg")
 
         result = evaluate_single_image(pred_pt_path, gt_label_path, image_path, iou_threshold, viz_out_path)
         if result is None:
@@ -871,7 +843,7 @@ def evaluate_all_plots(iou_threshold=None):
         result['_image_path'] = image_path
 
         # per-image TP IoU histogram
-        hist_path = os.path.join(HIST_DIR, f"{plot_name}_{stem}_iou_hist.png")
+        hist_path = os.path.join(hist_dir, f"{plot_name}_{stem}_iou_hist.png")
         save_iou_histogram(result['tp_ious'], f"TP IoU — {plot_name} / {stem}", hist_path, iou_threshold,
                            show_total=True, fp_best_ious=result['fp_best_ious'], fn_best_ious=result['fn_best_ious'])
         print()
@@ -884,8 +856,8 @@ def evaluate_all_plots(iou_threshold=None):
     print("Saving heatmaps...")
     for r in per_plot_results:
         plot_name, stem = r['plot_name'], r['image_stem']
-        heatmap_fp_path = os.path.join(HEATMAP_FP_DIR, f"{plot_name}_{stem}_heatmap_FP.jpg")
-        heatmap_fn_path = os.path.join(HEATMAP_FN_DIR, f"{plot_name}_{stem}_heatmap_FN.jpg")
+        heatmap_fp_path = os.path.join(heatmap_fp_dir, f"{plot_name}_{stem}_heatmap_FP.jpg")
+        heatmap_fn_path = os.path.join(heatmap_fn_dir, f"{plot_name}_{stem}_heatmap_FN.jpg")
         save_fp_fn_heatmap(r['_image_path'], r['fp_boxes'], r['fn_boxes'],
                            r['img_w'], r['img_h'], heatmap_fp_path, heatmap_fn_path)
 
@@ -896,7 +868,7 @@ def evaluate_all_plots(iou_threshold=None):
         [r['img_h'] for r in per_plot_results],
         label='FP density (all plots)',
         title=f'FP aggregated heatmap — {sum(r["fp"] for r in per_plot_results)} total false positives',
-        out_path=os.path.join(HEATMAP_FP_DIR, 'aggregated_FP_heatmap.jpg'))
+        out_path=os.path.join(heatmap_fp_dir, 'aggregated_FP_heatmap.jpg'))
 
     save_aggregated_heatmap(
         [r['fn_boxes'] for r in per_plot_results],
@@ -904,7 +876,7 @@ def evaluate_all_plots(iou_threshold=None):
         [r['img_h'] for r in per_plot_results],
         label='FN density (all plots)',
         title=f'FN aggregated heatmap — {sum(r["fn"] for r in per_plot_results)} total false negatives',
-        out_path=os.path.join(HEATMAP_FN_DIR, 'aggregated_FN_heatmap.jpg'))
+        out_path=os.path.join(heatmap_fn_dir, 'aggregated_FN_heatmap.jpg'))
     print()
 
     print(f"\n{'=' * 58}")
@@ -917,7 +889,7 @@ def evaluate_all_plots(iou_threshold=None):
     all_fp_ious = [iou for r in per_plot_results for iou in r['fp_best_ious']]
     all_fn_ious = [iou for r in per_plot_results for iou in r['fn_best_ious']]
     save_iou_histogram(all_tp_ious, f"IoU distribution — all plots aggregated",
-                       os.path.join(HIST_DIR, "aggregated_iou_hist.png"), iou_threshold,
+                       os.path.join(hist_dir, "aggregated_iou_hist.png"), iou_threshold,
                        fp_best_ious=all_fp_ious, fn_best_ious=all_fn_ious)
 
     # AP computation — requires bboxes_with_conf/ folder from yolo_v1.py
@@ -947,15 +919,16 @@ def evaluate_all_plots(iou_threshold=None):
         total_fp = sum(r['fp'] for r in per_plot_results)
         total_fn = sum(r['fn'] for r in per_plot_results)
         print(f"  AP@IoU{iou_threshold:.2f} = {ap:.4f}  "
-              f"(NMS floor: {CONF_THRESHOLD_NMS_FLOOR}, {len(all_pred_entries)} total preds, "
+              f"(NMS floor: {cfg.method.conf_threshold_nms_floor}, {len(all_pred_entries)} total preds, "
               f"{sum(len(g) for g in all_gt_boxes_for_ap)} GT boxes)")
-        pr_out = os.path.join(PR_CURVE_DIR, 'pr_curve_aggregated.png')
+        pr_out = os.path.join(pr_curve_dir, 'pr_curve_aggregated.png')
         save_pr_curve(precisions, recalls, confs, ap, iou_threshold,
                       f'PR Curve — all plots aggregated ({len(per_plot_results)} image(s))', pr_out,
+                      conf_threshold_detection=cfg.method.conf_threshold_detection,
                       total_preds=len(all_pred_entries), tp=total_tp, fp=total_fp, fn=total_fn)
     print()
 
-    save_results_json(per_plot_results, iou_threshold, CONF_THRESHOLD_DETECTION, ap=ap)
+    save_results_json(per_plot_results, iou_threshold, cfg, eval_dir, ap=ap)
 
     return per_plot_results
 
@@ -964,7 +937,12 @@ def evaluate_all_plots(iou_threshold=None):
 # Entry Point
 # =====================================================================
 
+@hydra.main(version_base=None, config_path="../../../configs", config_name="mask_generation/metrics_eval")
+def main(cfg: DictConfig):
+    evaluate_all_plots(cfg)
+
+
 if __name__ == "__main__":
-    evaluate_all_plots()
+    main()
 
 

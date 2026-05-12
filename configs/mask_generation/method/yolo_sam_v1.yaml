@@ -1,35 +1,67 @@
 # method params for yolo_sam_v1
 
-# model files (inside src/mask_generation/weights/)
-wheat_yolo_model: "wheat_head_detection_model.pt"
-sam_checkpoint: "sam_vit_h_4b8939.pth"
+# model weight files (must be placed in src/mask_generation/weights/)
+wheat_yolo_model: "wheat_head_detection_model.pt"  # YOLO model trained on wheat head detection
+sam_checkpoint: "sam_vit_h_4b8939.pth"             # SAM ViT-H checkpoint (~2.4 GB)
 
-# detection thresholds
+# floor confidence applied during NMS — all boxes above this survive NMS and are passed to SAM
+# set low (0.01) for metrics to capture the full confidence range for AP/PR curve
 conf_threshold_nms_floor: 0.2
-conf_threshold_detection: 0.35
-iou_threshold_nms: 0.45
-classes_to_detect: [0]        # YOLO class filter — 0 = wheat head
 
-# image processing
-resize_method: "LANCZOS"      # options: LANCZOS, BICUBIC, BILINEAR, NEAREST
+# boxes below this confidence are rejected after NMS (shown as red boxes in yolo_vis/)
+conf_threshold_detection: 0.35
+
+# NMS IoU threshold — boxes overlapping more than this with a higher-confidence box are suppressed
+iou_threshold_nms: 0.45
+
+# YOLO class IDs to keep — 0 = wheat head (only class in this model)
+classes_to_detect: [0]
+
+# resize algorithm for letterboxing images to target_image_size before YOLO inference
+# options: LANCZOS (best quality), BICUBIC, BILINEAR, NEAREST (fastest)
+resize_method: "LANCZOS"
+
+# images are letterboxed to this size before YOLO inference
 target_image_size: 1280
+
+# number of images per GPU batch — lower if GPU OOM
 batch_size_yolo: 25
+
+# images loaded into RAM at once before batching — lower if RAM is limited
 ram_chunk_size_yolo: 100
+
+# number of bounding boxes per SAM forward pass (1 = one mask at a time)
 batch_size_sam_box: 1
+
+# max CPU threads for parallel image loading and saving
 max_threads: 10
 
-# visualization
+# show confidence score text next to each drawn box in yolo_vis/
 show_labels: true
+
+# draw boxes below conf_threshold_detection in red in yolo_vis/ (rejected boxes)
 show_rejected_boxes: true
+
+# draw boxes above conf_threshold_detection in blue in yolo_vis/ (accepted boxes)
 show_detected_boxes: true
+
+# line thickness in pixels for drawn boxes
 box_thickness: 2
+
+# font size multiplier for confidence score labels
 label_font_scale: 1
 
-# debug / timing
+# save a DEBUG_RESIZED.jpg to verify letterbox output looks correct (first image only)
 debug_yolo_resize: false
+
+# print per-plot timing report after YOLO phase completes
 show_time_yolo: true
+
+# print per-image timing during SAM phase
 show_time_sam: true
+
+# print full pipeline summary at the end
 show_time_total: true
 
-# run controls
+# true = skip SAM entirely, only run YOLO detection (used for metrics — SAM not needed there)
 only_yolo: false
