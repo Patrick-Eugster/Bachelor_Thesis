@@ -153,7 +153,8 @@ def _run_pipeline(cfg):
     seg_dir_flag      = ["--seg_dir", seg_source]
     timings           = {}
 
-    _check_overwrite(model_path, cfg)
+    if cfg.run_train:
+        _check_overwrite(model_path, cfg)
     _save_config(model_path, cfg)
 
     # Step 1: Vanilla 3DGS Training
