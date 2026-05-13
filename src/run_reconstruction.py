@@ -262,6 +262,7 @@ def _run_pipeline(cfg):
                 "--colmap_path", os.path.join(abs_dataset_path, "sparse", "0"),
                 "--images_path", os.path.join(abs_dataset_path, "images"),
                 "--port", str(cfg.viewer_port),
+                "--sh_degree", str(cfg.reconstruction.sh_degree),
             ] + fast_viewer_flag
         else:
             viewer_cmd = [

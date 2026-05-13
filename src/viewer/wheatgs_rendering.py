@@ -31,7 +31,7 @@ from argparse import ArgumentParser
 from gaussians.arguments import PipelineParams, ModelParams
 from gaussians.scene import GaussianModel
 from gaussians.scene.cameras import Camera
-from gaussians.gaussian_renderer.render_helper import eval_obj_labels
+from gaussians.utils.wheatgs_helper import eval_obj_labels
 from gaussians.utils.image_helper import id2rgb, visualize_obj, overlay_image
 
 parser = argparse.ArgumentParser()
@@ -59,15 +59,25 @@ assert args.scene_grid % 2 == 1, "scene_grid must be odd"
 pipe = pp.extract(args)
 pipe.convert_SHs_python = True
 dataset = lp.extract(args)
-dataset.sh_degree = 0
+# sh_degree comes from ModelParams (--sh_degree arg), default 3 — must match the PLY file
 gaussians = GaussianModel(dataset.sh_degree)
-gaussians.load_ply(args.input_ply, remove_features_rest = True)
+gaussians.load_ply(args.input_ply)
+gaussians.active_sh_degree = 0  # use only DC component for faster viewer renders — colors are baked anyway
 print(f"Num of Gaussians loaded from {args.input_ply}: {len(gaussians.get_xyz)}")
 # print(gaussians.get_which_object)  # CHANGED: commented out — prints a huge tensor, not useful
 torch.manual_seed(42)
 device = "cuda"
 
-all_obj_labels = torch.load(args.labels_path).cuda()
+if os.path.exists(args.labels_path):
+    all_obj_labels = torch.load(args.labels_path).cuda()
+else:
+    # fallback: derive labels from _which_object stored in gaussians.ply
+    print(f"Labels file not found, deriving from gaussians._which_object...")
+    which_obj = gaussians.get_which_object.squeeze().cpu()
+    n_heads_derived = int(which_obj.max().item())
+    all_obj_labels = torch.zeros(n_heads_derived + 1, len(which_obj), dtype=torch.bool).cuda()
+    for i in range(n_heads_derived + 1):
+        all_obj_labels[i] = (which_obj == i)
 
 # CHANGED: fast_render path — pre-bake HSV palette into _features_dc once at startup.
 # Same approach as render_360_fast in wheatgs_helper.py.
@@ -95,32 +105,42 @@ if args.fast_render:
 
 # Define gaussians and pipe
 
+VIEWER_MIN_RES = 2560  # minimum resolution on the longest side
+
 @torch.no_grad()
-def viewer_render_fn(camera_state: nerfview.CameraState,
-    img_wh: Tuple[int, int],  # CHANGED: reverted back to old nerfview API — new API (render_state) broke zoom
-) -> np.ndarray:  # Expected shape: (H, W, 3) with dtype uint8
+def viewer_render_fn(camera_state: nerfview.CameraState, render_state) -> np.ndarray:
+    """Render a single frame for the viser viewer. render_state is nerfview's RenderTabState."""
     with torch.no_grad():
-        W, H = img_wh
+        W = render_state.viewer_width
+        H = render_state.viewer_height
+        # scale up to at least VIEWER_MIN_RES on the longest side, preserving aspect ratio
+        if max(W, H) < VIEWER_MIN_RES:
+            scale = VIEWER_MIN_RES / max(W, H)
+            W = int(W * scale)
+            H = int(H * scale)
+        img_wh = (W, H)
         K = camera_state.get_K(img_wh)
         W2C = np.linalg.inv(camera_state.c2w)
         R = W2C[:3, :3].transpose()
-        T = W2C[:3, 3]        
+        T = W2C[:3, 3]
         fx = K[0, 0]
         fy = K[1, 1]
         FoVx = 2 * np.arctan(W / (2 * fx))
         FoVy = 2 * np.arctan(H / (2 * fy))
+        dummy_image = torch.zeros(3, H, W, dtype=torch.float32)
         camera = Camera(
             colmap_id=-1,
             R=R, T=T,
             FoVx=FoVx, FoVy=FoVy,
-            image=None,
+            image=dummy_image,
+            gt_alpha_mask=None,
             image_name="render_view",
             uid=0,
+            bbox_path=None,
+            mask_paths=None,
             resolution=(W, H),
+            resolution_scale=1.0,
             data_device="cuda",
-            # cx=K[0, 2], cy=K[1, 2],
-            # fl_x=fx, fl_y=fy,
-            # meta_only=True
         )
         background = torch.zeros(3, dtype=torch.float32, device="cuda") # to change background color
         background = torch.ones(3, dtype=torch.float32, device="cuda")
@@ -278,7 +298,8 @@ _viewer = nerfview.Viewer(
 )
 # CHANGED: force viewer_res to max (2048) at startup — nerfview defaults to 2048 but the sidebar
 # slider is capped at 2048 so this is already the max without modifying nerfview's source
-_viewer.render_tab_state.viewer_res = 2048
+_viewer.render_tab_state.viewer_res = 3840  # 4K — higher than nerfview's slider max of 2048
+_viewer.render_tab_state.num_view_rays_per_sec = 1920 * 1080 * 30  # force high res in low_static state too
 camera_handles, frames = set_camera_frustums(server)
 print("Viewer running... Ctrl+C to exit.")
 time.sleep(100000)

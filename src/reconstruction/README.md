@@ -62,7 +62,7 @@ All steps are independent toggles. Run them in order, but you can re-run any ind
 | 4b | auto after 4 | `segmentation_3d/export_colored_ply.py` | Bake per-head HSV colors into `gaussians_colored.ply` |
 | 5 | `run_render_360` | `viewer/render_360.py` | Render 360° flyaround video → `wheat_field_360.mp4` |
 | 6 | `run_eval` | `segmentation_3d/eval_wheatgs.py` | Evaluate 3D segmentation quality vs SAM masks |
-| 7 | `run_viewer` | `viewer/wheatgs_rendering.py` | Open interactive viser viewer at `http://localhost:8080` |
+| 7 | `run_viewer` | `viewer/wheatgs_rendering.py` | Open interactive viser viewer at `http://localhost:8080` — in the GUI set render res to `2560 × 1920` for good quality |
 
 ### Input / Output per step
 
