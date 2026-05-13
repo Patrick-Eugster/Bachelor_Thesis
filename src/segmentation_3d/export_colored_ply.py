@@ -28,8 +28,17 @@ def main():
     gs.load_ply(args.gaussians_ply)
     print(f"Loaded {len(gs.get_xyz)} Gaussians")
 
-    print(f"Loading labels from {args.labels_path}...")
-    all_obj_labels = torch.load(args.labels_path)
+    if os.path.exists(args.labels_path):
+        print(f"Loading labels from {args.labels_path}...")
+        all_obj_labels = torch.load(args.labels_path)
+    else:
+        # fallback: derive labels from _which_object stored in gaussians.ply
+        print(f"Labels file not found, deriving from gaussians._which_object...")
+        which_obj = gs.get_which_object.squeeze().cpu()
+        n_heads_derived = int(which_obj.max().item())
+        all_obj_labels = torch.zeros(n_heads_derived + 1, len(which_obj), dtype=torch.bool)
+        for i in range(n_heads_derived + 1):
+            all_obj_labels[i] = (which_obj == i)
     n_heads = all_obj_labels.shape[0] - 1  # index 0 is background
     print(f"Baking colors for {n_heads} heads...")
 

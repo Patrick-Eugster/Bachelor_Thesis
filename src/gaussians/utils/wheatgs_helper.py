@@ -243,7 +243,7 @@ def get_camera_path_fixed_elevation(n_frames, n_circles=1, camera_distance=2, ca
 #### End of 360-degree camera trajectory copied from gsgen ####
 
 def eval_obj_labels(all_obj_labels, viewpoint_cam, gaussians, pipe, background):
-    from gaussian_renderer import flashsplat_render
+    from gaussians.gaussian_renderer import flashsplat_render
     render_num = all_obj_labels.size(0)
     pred_mask = None
     max_alpha = None
@@ -271,7 +271,7 @@ def eval_obj_labels(all_obj_labels, viewpoint_cam, gaussians, pipe, background):
     return pred_mask
 
 def render_360(og_view, scene_radius, render_path, n_frames, framerate, gaussians, pipeline, background, elevation=45, all_obj_labels=None, all_counts=None):
-    from gaussian_renderer import render
+    from gaussians.gaussian_renderer import render
     os.makedirs(render_path, exist_ok=True)
     gs_centroid = torch.mean(gaussians.get_xyz.detach(), dim=0).cpu().tolist()
     width, height = math.floor(og_view.image_width / 2), math.floor(og_view.image_height / 2)
@@ -349,7 +349,7 @@ def render_360_fast(og_view, scene_radius, render_path, n_frames, framerate, gau
     all_counts is accepted but ignored.
     """
     import colorsys
-    from gaussian_renderer import render
+    from gaussians.gaussian_renderer import render
     os.makedirs(render_path, exist_ok=True)
     gs_centroid = torch.mean(gaussians.get_xyz.detach(), dim=0).cpu().tolist()
     width, height = math.floor(og_view.image_width / 2), math.floor(og_view.image_height / 2)

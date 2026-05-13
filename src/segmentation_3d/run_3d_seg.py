@@ -443,6 +443,16 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
         # print("-" * 50)
         
     gaussians.save_ply(f"{out_dir}/gaussians.ply")
+
+    # build and save all_obj_labels.pth — needed by export_colored_ply.py and the viewer
+    # shape: (num_wheat_head+1, n_gaussians) — row 0 is background, row i is wheat head i
+    which_obj = gaussians.get_which_object.squeeze().cpu()
+    n_gs = which_obj.shape[0]
+    all_obj_labels = torch.zeros(num_wheat_head + 1, n_gs, dtype=torch.bool)
+    for i in range(num_wheat_head + 1):
+        all_obj_labels[i] = (which_obj == i)
+    torch.save(all_obj_labels, f"{out_dir}/all_obj_labels.pth")
+
     results.close()
 
     # wait for all async PLY saves to finish before saving final state

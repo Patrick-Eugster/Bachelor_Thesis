@@ -55,14 +55,27 @@ All steps are independent toggles. Run them in order, but you can re-run any ind
 
 | Step | Toggle | Script | What it does |
 |------|--------|--------|--------------|
-| 1 | `run_train` | `vanilla_3dgs/train_vanilla_3dgs.py` | Train 3DGS model — 15000 iterations, L1 + SSIM loss |
-| 2 | `run_render` | `render.py` | Render from training + test camera positions for visual quality check |
+| 1 | `run_train` | `vanilla_3dgs/train_vanilla_3dgs.py` | Train 3DGS model — L1 + SSIM loss |
+| 2 | `run_render` | `render.py` | Render from training + test camera positions |
 | 3 | `run_metrics` | `metrics.py` | Compute PSNR / SSIM / LPIPS on test views → `results.json` |
-| 4 | `run_seg` | `segmentation_3d/run_3d_seg.py` | Assign 3D wheat head IDs to Gaussians (see segmentation README) |
+| 4 | `run_seg` | `segmentation_3d/run_3d_seg.py` | Assign 3D wheat head IDs to Gaussians |
 | 4b | auto after 4 | `segmentation_3d/export_colored_ply.py` | Bake per-head HSV colors into `gaussians_colored.ply` |
 | 5 | `run_render_360` | `viewer/render_360.py` | Render 360° flyaround video → `wheat_field_360.mp4` |
 | 6 | `run_eval` | `segmentation_3d/eval_wheatgs.py` | Evaluate 3D segmentation quality vs SAM masks |
 | 7 | `run_viewer` | `viewer/wheatgs_rendering.py` | Open interactive viser viewer at `http://localhost:8080` |
+
+### Input / Output per step
+
+| Step | Input | Output |
+|------|-------|--------|
+| 1 | `images/` + `sparse/` + `bboxes/` | `point_cloud/iteration_{N}/point_cloud.ply` |
+| 2 | `point_cloud/iteration_{N}/point_cloud.ply` | `train/` + `test/ours_{N}/` |
+| 3 | `test/ours_{N}/` + `images/` | `results.json` |
+| 4 | `point_cloud/iteration_{N}/point_cloud.ply` + `masks/` | `segmentation_3d/{exp_name}/gaussians.ply` + `2DSeg/` + `ply/` |
+| 4b | `segmentation_3d/{exp_name}/gaussians.ply` | `segmentation_3d/{exp_name}/gaussians_colored.ply` |
+| 5 | `segmentation_3d/{exp_name}/gaussians.ply` | `segmentation_3d/{exp_name}/3DSeg/wheat_field_360.mp4` |
+| 6 | `segmentation_3d/{exp_name}/2DSeg/` + `gaussians.ply` | `train/overlay/` + `train/segmentation/` + `test/overlay/` + `test/segmentation/` |
+| 7 | `segmentation_3d/{exp_name}/gaussians.ply` + `sparse/` + `images/` | — (interactive) |
 
 ---
 
