@@ -75,8 +75,8 @@ def main(cfg: DictConfig):
     print(f"-> Using Dataset: {cfg.dataset.name.upper()}")
     print(f"--- Starting Segmentation ---")
 
-    # 1. Find image folders: input_plots/fip/plot_XXX/images/
-    image_folders = sorted(glob.glob(os.path.join(cfg.dataset.input_dir, '*', 'images')))
+    # 1. Find image folders — depth depends on dataset: fip=plot_461/images, phone=field_A/20250618/images
+    image_folders = sorted(glob.glob(os.path.join(cfg.dataset.input_dir, cfg.dataset.plot_glob, 'images')))
     if cfg.limit_plots > 0:
         image_folders = image_folders[:cfg.limit_plots]
 
@@ -87,7 +87,8 @@ def main(cfg: DictConfig):
 
     # Save config.yaml into each plot's result folder
     for folder in image_folders:
-        plot_name = os.path.basename(os.path.dirname(folder))
+        # relpath gives "plot_461" for FIP, "field_A/20250618" for phone
+        plot_name = os.path.relpath(os.path.dirname(folder), cfg.dataset.input_dir)
         save_config(get_mask_generation_result_path(cfg, plot_name), cfg)
 
     # 2. Run YOLO

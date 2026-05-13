@@ -31,7 +31,9 @@ except ImportError:
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, wandb_enabled=False):
 
-    plot_name = os.path.basename(dataset.source_path)
+    # take last two path components: "plot_461" for FIP → "fip/plot_461", "field_A/20250618" for phone
+    _parts = os.path.normpath(dataset.source_path).split(os.sep)
+    plot_name = os.path.join(*_parts[-2:]) if len(_parts) >= 2 else _parts[-1]
     if wandb_enabled:
         wandb.init(project="wheat3dgs-train", name=plot_name)
 

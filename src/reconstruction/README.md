@@ -21,7 +21,7 @@ All pipeline steps are **off by default** — enable the ones you want in `confi
 ```bash
 python src/run_reconstruction.py run_train=true
 python src/run_reconstruction.py run_train=true run_render=true run_metrics=true
-python src/run_reconstruction.py dataset=phone plot=phone01 run_train=true experiment_name=phone_test
+python src/run_reconstruction.py dataset=phone plot=field_A date=20250618 run_train=true experiment_name=phone_test
 ```
 
 ---
@@ -115,12 +115,14 @@ results/reconstruction/fip/{plot}/vanilla_3dgs/{experiment_name}/
 
 ## Phone Data
 
+Phone data uses a two-level folder structure: `input_plots/phone/{field}/{date}/`.
+
 Phone images need COLMAP processing first:
 ```bash
-# Place images in input_plots/phone/phone01/input/ first
-python src/reconstruction/convert.py -s input_plots/phone/phone01 --camera OPENCV
+# Place images in input_plots/phone/field_A/20250618/input/ first
+python src/reconstruction/convert.py -s input_plots/phone/field_A/20250618 --camera OPENCV
 ```
-Then run normally with `dataset=phone plot=phone01`.
+Then run normally with `dataset=phone plot=field_A date=20250618`.
 
 ---
 

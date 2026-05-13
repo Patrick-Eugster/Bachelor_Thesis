@@ -46,6 +46,7 @@ TABLE OF CONTENTS  (in file order)
 
 from PIL import Image, ImageDraw, ImageFont
 import matplotlib.pyplot as plt
+import glob
 import os
 import sys
 import json
@@ -738,10 +739,16 @@ def evaluate_single_image(pred_pt_path, gt_label_path, image_path, iou_threshold
 # =====================================================================
 
 def find_labeled_plots(cfg):
-    """Collect all GT files and return as list of (input_plot_dir, result_plot_dir, gt_label_path, image_stem)."""
+    """Collect all GT files and return as list of (input_plot_dir, result_plot_dir, gt_label_path, image_stem).
+
+    Uses plot_glob from the dataset config so it works for both FIP (one level: plot_461/)
+    and phone (two levels: field_A/20250618/).
+    """
     labeled = []
-    for plot_name in sorted(os.listdir(cfg.dataset.input_dir)):
-        input_plot_dir  = os.path.join(cfg.dataset.input_dir, plot_name)
+    plot_dirs = sorted(glob.glob(os.path.join(cfg.dataset.input_dir, cfg.dataset.plot_glob)))
+    for input_plot_dir in plot_dirs:
+        # relpath gives "plot_461" for FIP, "field_A/20250618" for phone
+        plot_name = os.path.relpath(input_plot_dir, cfg.dataset.input_dir)
         result_plot_dir = os.path.join(cfg.dataset.result_dir_masks, plot_name, "yolo_sam_v1", cfg.detection_experiment)
         label_dir = os.path.join(input_plot_dir, 'manual_label')
         if not os.path.isdir(label_dir):
@@ -821,18 +828,21 @@ def evaluate_all_plots(cfg):
     ap_data_available = True
 
     for input_plot_dir, result_plot_dir, gt_label_path, stem in labeled_plots:
-        plot_name = os.path.basename(input_plot_dir)
+        # relpath gives "plot_461" for FIP, "field_A/20250618" for phone
+        plot_name = os.path.relpath(input_plot_dir, cfg.dataset.input_dir)
+        # safe version for filenames — replaces path separator with _: "field_A_20250618"
+        plot_name_safe = plot_name.replace(os.sep, '_')
         print(f"--- Plot: {plot_name}  |  Image: {stem} ---")
 
         image_path   = os.path.join(input_plot_dir, 'images', stem + '.png')    # images stay in input_plots/
         pred_pt_path = os.path.join(result_plot_dir, 'bboxes', stem + '.pt')    # bboxes now in results/
-        viz_out_path = os.path.join(viz_dir, f"{plot_name}_{stem}_matches.jpg")
+        viz_out_path = os.path.join(viz_dir, f"{plot_name_safe}_{stem}_matches.jpg")
 
         result = evaluate_single_image(pred_pt_path, gt_label_path, image_path, iou_threshold, viz_out_path)
         if result is None:
             continue
 
-        result['plot_name'] = plot_name
+        result['plot_name'] = plot_name_safe
         result['image_stem'] = stem
         result['_input_plot_dir']  = input_plot_dir   # for reading images + manual_label
         result['_result_plot_dir'] = result_plot_dir  # for reading bboxes_with_conf
@@ -843,7 +853,7 @@ def evaluate_all_plots(cfg):
         result['_image_path'] = image_path
 
         # per-image TP IoU histogram
-        hist_path = os.path.join(hist_dir, f"{plot_name}_{stem}_iou_hist.png")
+        hist_path = os.path.join(hist_dir, f"{plot_name_safe}_{stem}_iou_hist.png")
         save_iou_histogram(result['tp_ious'], f"TP IoU — {plot_name} / {stem}", hist_path, iou_threshold,
                            show_total=True, fp_best_ious=result['fp_best_ious'], fn_best_ious=result['fn_best_ious'])
         print()

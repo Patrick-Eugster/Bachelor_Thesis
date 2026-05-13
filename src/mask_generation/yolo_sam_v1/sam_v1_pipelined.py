@@ -185,7 +185,8 @@ def run_sam_phase(image_folders, cfg):
     total_sam_images = 0
 
     for folder in image_folders:
-        plot_name = folder.split(os.sep)[-2]  # Get parent folder name (e.g. plot_461)
+        # relpath gives "plot_461" for FIP, "field_A/20250618" for phone
+        plot_name = os.path.relpath(os.path.dirname(folder), cfg.dataset.input_dir)
         print(f"\n[SAM Phase] Processing Plot: {plot_name}")
 
         base_result_path = get_mask_generation_result_path(cfg, plot_name)

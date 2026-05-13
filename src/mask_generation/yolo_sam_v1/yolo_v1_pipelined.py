@@ -245,11 +245,12 @@ def run_yolo_phase(image_folders, cfg):
     total_run_boxes = 0
 
     for folder in image_folders:
-        plot_name = folder.split(os.sep)[-2]  # Get parent folder name (ex: plot_461)
+        # relpath gives "plot_461" for FIP, "field_A/20250618" for phone
+        plot_name = os.path.relpath(os.path.dirname(folder), cfg.dataset.input_dir)
         print(f"\n[YOLO Phase] Processing Plot: {plot_name}")
 
         # Setup Output Directories
-        base_plot_path   = os.path.dirname(folder)                      # input_plots/fip/plot_461/
+        base_plot_path   = os.path.dirname(folder)                      # input_plots/{dataset}/{plot_name}/
         base_result_path = get_mask_generation_result_path(cfg, plot_name)  # results/mask_generation/...
         yolo_vis_folder  = os.path.join(base_result_path, "yolo_vis")
         bbox_folder      = os.path.join(base_result_path, "bboxes")

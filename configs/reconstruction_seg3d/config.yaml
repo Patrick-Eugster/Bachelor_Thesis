@@ -8,6 +8,10 @@ defaults:
 # which plot folder to process (must exist inside dataset.input_dir)
 plot: "plot_461"
 
+# date subfolder for phone data — leave empty for FIP (no date subfolder)
+# phone CLI: dataset=phone plot=field_A date=20250618
+date: ""
+
 # name for the 3DGS training output folder — "initial" is a safe scratch name (no overwrite warning)
 # leave empty ("") for an auto timestamp: "2025-04-28_1430"
 experiment_name: "initial"
