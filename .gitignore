@@ -132,5 +132,8 @@ phase2_3_packages.txt
 
 CHANGES.md
 
+# --- Papers / PDFs ---
+*.pdf
+
 # --- Hydra logs ---
 logs/*.log

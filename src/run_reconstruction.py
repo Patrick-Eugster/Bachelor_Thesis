@@ -243,6 +243,16 @@ def _run_pipeline(cfg):
             "--skip_train"
         ] + seg_dir_flag + data_device_flag, timings, log_file)
 
+    # Step 6b: Pixel-level 2D metrics vs manual GT masks — requires run_eval output (test/segmentation/)
+    if cfg.run_eval_2d:
+        run_step("6b. Eval2D", [
+            "python", "src/segmentation_3d/eval_seg_2d.py",
+            "-s", dataset_path,
+            "-m", model_path,
+            "--resolution", resolution_str,
+            "--exp_name", cfg.segmentation_3d.exp_name,
+        ] + data_device_flag, timings, log_file)
+
     # Step 7: Interactive viser viewer — open http://localhost:VIEWER_PORT in browser, Ctrl+C to stop
     if cfg.run_viewer:
         viewer_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer")

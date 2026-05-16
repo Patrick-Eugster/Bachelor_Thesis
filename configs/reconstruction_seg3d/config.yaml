@@ -28,7 +28,8 @@ run_render: false      # step 2: render from training/test cameras (visual quali
 run_metrics: false     # step 3: compute PSNR/SSIM/LPIPS on test views → results.json
 run_seg: false         # step 4: assign 3D wheat head IDs to Gaussians (FlashSplat)
 run_render_360: false  # step 5: render 360° flyaround video
-run_eval: false        # step 6: evaluate 3D segmentation quality vs SAM masks
+run_eval: false        # step 6: evaluate 3D segmentation quality vs SAM masks (renders overlay PNGs)
+run_eval_2d: false     # step 6b: pixel-level 2D metrics (IoU/P/R/F1) vs manual GT masks → eval_2d/metrics_2d.json
 run_viewer: false      # step 7: open interactive viser viewer in browser
 
 # render 360 settings

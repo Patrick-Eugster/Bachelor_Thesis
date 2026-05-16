@@ -122,8 +122,10 @@ def load_pred_boxes_with_conf(bboxes_with_conf_path):
 
 def print_single_result(result, iou_threshold):
     diff = result['pred_count'] - result['gt_count']
+    cer  = result['count_error_ratio']
+    cer_str = f"{cer*100:+.1f}%" if cer is not None else "n/a"
     print(f"  GT count:        {result['gt_count']}")
-    print(f"  Pred count:      {result['pred_count']}  (diff vs GT: {diff:+d})")
+    print(f"  Pred count:      {result['pred_count']}  (diff: {diff:+d}  count error: {cer_str})")
     print(f"  TP / FP / FN:    {result['tp']} / {result['fp']} / {result['fn']}")
     print(f"  Precision:       {result['precision']:.4f}")
     print(f"  Recall:          {result['recall']:.4f}")
@@ -150,6 +152,9 @@ def print_aggregated_results(per_plot_results):
     for key, label in scalar_metrics:
         vals = [r[key] for r in per_plot_results]
         print(f"  {label:<22}  {np.mean(vals):.4f} ± {np.std(vals):.4f}")
+    cer_vals = [r['count_error_ratio'] for r in per_plot_results if r['count_error_ratio'] is not None]
+    if cer_vals:
+        print(f"  {'Count error ratio':<22}  {np.mean(cer_vals)*100:+.2f}% ± {np.std(cer_vals)*100:.2f}%")
 
     iou_means = [r['iou_stats']['mean'] for r in per_plot_results if r['iou_stats']]
     if iou_means:
@@ -168,6 +173,9 @@ def save_results_json(per_plot_results, iou_threshold, cfg, eval_dir, ap=None):
     for key in ['pred_count', 'gt_count', 'precision', 'recall', 'f1']:
         vals = [r[key] for r in per_plot_results]
         aggregated[key] = {'mean': float(np.mean(vals)), 'std': float(np.std(vals))}
+    cer_vals = [r['count_error_ratio'] for r in per_plot_results if r['count_error_ratio'] is not None]
+    if cer_vals:
+        aggregated['count_error_ratio'] = {'mean': float(np.mean(cer_vals)), 'std': float(np.std(cer_vals))}
 
     iou_means = [r['iou_stats']['mean'] for r in per_plot_results if r['iou_stats']]
     if iou_means:
@@ -709,9 +717,14 @@ def evaluate_single_image(pred_pt_path, gt_label_path, image_path, iou_threshold
     if viz_out_path is not None:
         save_match_visualization(image_path, pred_boxes, gt_boxes, tp_matches, fp_idxs, fn_idxs, viz_out_path, iou_mat)
 
+    gt_count   = len(gt_boxes)
+    pred_count = len(pred_boxes)
+    count_error_ratio = (pred_count - gt_count) / gt_count if gt_count > 0 else None
+
     return {
-        'pred_count': len(pred_boxes),
-        'gt_count': len(gt_boxes),
+        'pred_count': pred_count,
+        'gt_count': gt_count,
+        'count_error_ratio': count_error_ratio,
         'tp': tp, 'fp': fp, 'fn': fn,
         'precision': precision,
         'recall': recall,

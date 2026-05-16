@@ -63,12 +63,25 @@ Results are saved to `results/mask_generation/fip/evaluation/yolo_sam_v1/metrics
 | Folder / File | Description |
 |---|---|
 | `config.yaml` | Parameters used for this run |
-| `metrics_yolo_v1.json` | Aggregated and per-plot precision, recall, F1, AP, TP/FP/FN counts |
+| `metrics_yolo_v1.json` | Aggregated and per-plot precision, recall, F1, AP, TP/FP/FN counts, count error ratio |
 | `match_viz/` | Image with colored boxes: **blue = TP**, **orange = FP** (false alarm), **red = FN** (missed head) — good for visually diagnosing what YOLO gets wrong |
 | `TP_IoU_histograms/` | Histogram of IoU values for TP matches — a peak near 1.0 means tight boxes, spread toward 0.35 means loose |
 | `heatmaps_FP/` | Spatial heatmap of FP box centers — shows where false positives cluster (e.g. near poles or field edges) |
 | `heatmaps_FN/` | Spatial heatmap of FN box centers — shows where missed detections cluster (e.g. dense or occluded regions) |
 | `pr_curves/` | Precision-recall curve across all confidence thresholds — curve pushed to top-right is better, area under it is AP |
+
+## Metrics
+
+| Metric | Meaning |
+|--------|---------|
+| Precision | of all predicted boxes, fraction that match a GT box |
+| Recall | of all GT boxes, fraction that were matched by a prediction |
+| F1 | harmonic mean of precision and recall |
+| AP | area under the PR curve across all confidence thresholds (COCO 101-point) |
+| TP IoU | IoU of matched pred/GT pairs — peak near 1.0 means tight boxes, spread toward threshold means loose |
+| Count error ratio | `(pred − GT) / GT` — negative = under-detection, positive = over-detection; e.g. −0.12 = detected 12% fewer heads than annotated. Stored as raw ratio in JSON, displayed as % in terminal |
+
+All metrics are **box-level**, not pixel-level. Note: TN is undefined for object detection (no concept of "correctly not predicting a box"), so metrics requiring TN (MCC, Balanced Accuracy, FPR) cannot be computed here.
 
 ## AP Implementation
 
