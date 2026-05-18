@@ -7,6 +7,7 @@ Setup guides and reference docs for the Wheat3DGS project.
 | File | Tracked by git | Purpose |
 |---|---|---|
 | [`INSTALL_COLMAP_CUDA.md`](INSTALL_COLMAP_CUDA.md) | ✅ yes | Step-by-step guide for building COLMAP from source with CUDA support. Use when setting up a new Docker container or machine. Covers all dependencies, the cmake config, GPU compute-capability reference, and troubleshooting for every error we hit during the build. |
+| [`SFM_PIPELINE_COMPARISON.md`](SFM_PIPELINE_COMPARISON.md) | ✅ yes | Side-by-side comparison of our COLMAP-based preprocessing vs the supervisor's Agisoft Metashape pipeline (scripts 6/7/10). Explains the two functional gaps (metric scale, marker GCPs), what each supervisor script does, and when to use which `sparse/`. |
 | `euler_setup.md` | ❌ gitignored | Personal notes on running this codebase on the ETH Euler HPC cluster (code transfer, CUDA submodule compilation, SLURM job script, rsync workflow). Author-specific — not committed. |
 | `CHANGES.md` | ❌ gitignored | Personal per-file change log (what was changed and why) — author's dev notes, not project history. |
 
