@@ -123,14 +123,14 @@ cmake-build-release/
 out/
 
 CLAUDE.md
-euler_setup*.md
+docs/euler_setup*.md
 refactor_plan.md
 refactor2.md
 config_restructure.md
 phase1_packages.txt
 phase2_3_packages.txt
 
-CHANGES.md
+docs/CHANGES.md
 
 # --- Papers / PDFs ---
 *.pdf

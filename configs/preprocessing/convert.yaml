@@ -1,0 +1,66 @@
+# @package _global_
+# Config for src/preprocessing/convert.py — runs COLMAP SfM on phone images.
+# Typical usage:   python src/preprocessing/convert.py plot=colmap_test_clean
+
+defaults:
+  - /dataset: phone           # phone-only workflow; pulls input_dir from configs/dataset/phone.yaml
+  - _self_
+
+# field subfolder under {dataset.input_dir}/  (e.g. field_A, field_B, ...)
+field: field_A
+
+# plot name — the leaf folder under {dataset.input_dir}/{field}/. REQUIRED. Override on CLI: plot=...
+plot: ???
+
+# full path COLMAP reads from / writes to (auto-derived)
+source_path: ${dataset.input_dir}/${field}/${plot}
+
+# name of the subfolder inside source_path that contains the images COLMAP should read.
+# Default "input_uniform" matches the typical phone workflow: run preprocess_uniform_size.py first,
+# which produces input_uniform/ next to your original input/. Override to "input" for already-uniform data.
+image_subdir: input_uniform
+
+# force COLMAP to treat all images as one shared camera (one set of intrinsics for everything).
+# Only valid when all images have identical dimensions — run preprocess_uniform_size.py first.
+# Helps prevent the mapper splitting the reconstruction by intrinsic group on phone data.
+# Set false if your images really come from different cameras (mixed phones / lenses).
+single_camera: true
+
+# COLMAP camera model
+# SIMPLE_PINHOLE — best for repetitive vegetation (wheat) — single focal length, no distortion (default)
+# PINHOLE        — two focal lengths (fx, fy), no distortion
+# SIMPLE_RADIAL  — adds 1 radial distortion param
+# OPENCV         — full radial + tangential (good for buildings, fails on wheat)
+camera: SIMPLE_PINHOLE
+
+# feature matcher: "exhaustive" (any order, all-pairs) or "sequential" (ordered walk/video, low RAM)
+# Default exhaustive: with GPU SIFT it's only ~10s slower than sequential for 100 images and bridges
+# walks/loops that sequential might split. Switch to sequential only for very large datasets (500+).
+matcher: exhaustive
+
+# sequential only — how many next images each image is matched against (also matches symmetrically backwards)
+sequential_overlap: 25
+
+# threads for SIFT extraction + matching. Lower = less RAM (default 8, set -1 for all cores)
+num_threads: 8
+
+# force CPU SIFT (only set true if your COLMAP install lacks CUDA — we built ours with CUDA support)
+no_gpu: false
+
+# skip steps 1-3 (feature extraction, matching, mapper) — only run image_undistorter on existing distorted/sparse/0
+skip_matching: false
+
+# also create downscaled images_2/, images_4/, images_8/ for multi-resolution training (needs ImageMagick)
+resize: false
+
+# explicit COLMAP binary path (leave empty to use `colmap` on PATH)
+colmap_executable: ""
+
+# explicit ImageMagick binary path (leave empty to use `magick` on PATH) — only used when resize=true
+magick_executable: ""
+
+# hydra: don't create outputs/ folder — we save our own log + config snapshot under {source_path}/logs/
+hydra:
+  output_subdir: null
+  run:
+    dir: .

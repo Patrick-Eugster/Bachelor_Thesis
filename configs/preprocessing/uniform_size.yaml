@@ -1,0 +1,24 @@
+# @package _global_
+# Config for src/preprocessing/preprocess_uniform_size.py — center-crops phone images so they all
+# share the same resolution. Fixes the HDR-mode size mismatch that splits COLMAP into sub-models.
+# Typical usage:   python src/preprocessing/preprocess_uniform_size.py plot=colmap_test_clean
+
+defaults:
+  - /dataset: phone
+  - _self_
+
+# field subfolder (e.g. field_A) and plot leaf folder — same convention as convert.yaml
+field: field_A
+plot: ???
+
+# folder containing the mixed-size .jpg images (default: input/ inside the plot folder)
+source: ${dataset.input_dir}/${field}/${plot}/input
+
+# output folder. Default "" → script auto-derives to <source>_uniform/ (so input/ → input_uniform/)
+output: ""
+
+# hydra: don't create outputs/ folder
+hydra:
+  output_subdir: null
+  run:
+    dir: .

@@ -1,6 +1,7 @@
 # dataset paths for phone camera data
-# note: run COLMAP first before any pipeline steps:
-# python src/reconstruction/convert.py -s input_plots/phone/{field}/{date} --camera OPENCV
+# note: run two preprocessing steps first (see src/preprocessing/README.md):
+#   python src/preprocessing/preprocess_uniform_size.py plot={date}
+#   python src/preprocessing/convert.py plot={date}
 
 # short identifier used in config saving and wandb logging
 name: phone

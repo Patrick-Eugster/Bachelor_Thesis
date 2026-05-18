@@ -113,129 +113,22 @@ results/reconstruction/fip/{plot}/vanilla_3dgs/{experiment_name}/
 
 ---
 
-## Phone Data — COLMAP via `convert.py`
+## Phone Data — Preprocessing
 
-Phone data uses a two-level folder structure: `input_plots/phone/{field}/{date}/`.
+Phone data needs two preprocessing steps before reconstruction (uniform-size cropping + COLMAP SfM). These have been moved to their own folder — see [`src/preprocessing/README.md`](../preprocessing/README.md) for full documentation.
 
-FIP plots come with COLMAP-format camera calibration already done (via Agisoft Metashape in the original paper). Phone images do NOT — they're just JPGs with no camera poses. **COLMAP must be run first** to recover camera positions and produce the sparse 3D structure that 3DGS needs as input.
-
-### What `convert.py` does
-
-It wraps four COLMAP commands into one Python script:
-
-| Step | COLMAP command | What it does |
-|------|----------------|--------------|
-| 1 | `feature_extractor` | Detects SIFT features in every image |
-| 2 | `sequential_matcher` or `exhaustive_matcher` | Finds matching features across image pairs |
-| 3 | `mapper` | Runs Structure-from-Motion (SfM) — recovers camera positions + sparse 3D points |
-| 4 | `image_undistorter` | Removes lens distortion → final `images/` + `sparse/0/` ready for 3DGS |
-
-Output is laid out exactly as 3DGS expects:
-```
-{source_path}/
-├── input/                    ← your raw images (placed here before running)
-├── images/                   ← undistorted images, used by 3DGS training
-├── sparse/0/                 ← camera poses + 3D points (cameras.bin, images.bin, points3D.bin)
-├── distorted/                ← intermediate working files (can be deleted after)
-├── stereo/                   ← created by undistorter, not used by our pipeline
-└── logs/colmap.log           ← full COLMAP output, saved automatically
-```
-
-### How to run
-
-Place images in `input_plots/phone/field_A/20250618/input/` first, then:
-
+Quick reference (run before any reconstruction step on phone data):
 ```bash
-python src/reconstruction/convert.py -s input_plots/phone/field_A/20250618
+# 1. center-crop all images to the majority resolution (fixes HDR-mode size mismatch)
+python src/preprocessing/preprocess_uniform_size.py plot=20250618
+
+# 2. run COLMAP Structure-from-Motion (auto-reads from input_uniform/)
+python src/preprocessing/convert.py plot=20250618
 ```
 
-After it finishes, the data is ready for 3DGS:
-```bash
-python src/run_reconstruction.py dataset=phone plot=field_A date=20250618 run_train=true
-```
+Both scripts default to `dataset=phone` and `field=field_A`. Override on CLI if needed (`field=field_B`, etc).
 
-### CLI options
-
-All options have defaults so you can usually run with just `-s`:
-
-| Flag | Default | Meaning |
-|------|---------|---------|
-| `-s` / `--source_path` | required | Folder containing `input/` with your raw images |
-| `--camera` | `SIMPLE_PINHOLE` | Camera model — see table + test results below. Default chosen empirically: only model that worked on phone wheat data |
-| `--matcher` | `sequential` | `sequential` (low RAM, ordered images) or `exhaustive` (any order, high RAM) |
-| `--sequential_overlap` | `25` | Sequential only: how many next images each image matches against |
-| `--num_threads` | `8` | Threads for SIFT extraction + matching — **lower = less RAM**. See RAM table below. Set `-1` for all cores |
-| `--no_gpu` | `True` | Use CPU for SIFT (your COLMAP install is CPU-only anyway) |
-| `--skip_matching` | `False` | Skip steps 1–3 if you already have a working `distorted/sparse/0/` |
-| `--resize` | `False` | Also create downscaled `images_2/`, `images_4/`, `images_8/` folders |
-
-### RAM usage and `--num_threads`
-
-COLMAP's CPU SIFT extracts features in parallel — each thread loads a different image at full resolution and builds its own scale-space pyramid. So **RAM scales linearly with thread count**. With 11 MP phone images and ~2 GB working set per thread (image + pyramid + feature buffers), the rough budget is:
-
-| `--num_threads` | Approx RAM (feature extraction step) | Speed |
-|---|---|---|
-| `-1` (all 12 cores) | ~25-29 GB ❌ fills 35 GB WSL2 | Fastest |
-| `8` (default) | ~16-20 GB ⚠️ | ~1.5× slower |
-| `6` | ~12-15 GB ✅ | ~2× slower |
-| `4` | ~8-10 GB ✅✅ | ~3× slower |
-| `2` | ~4-5 GB ✅✅✅ | ~6× slower |
-
-Feature extraction is typically 1-2 min of the total ~8 min runtime, so even 4 threads only adds 3-4 min to the total. **Pick the highest thread count your RAM tolerates.**
-
-### Camera models
-
-| Model | Params | When to use |
-|-------|--------|-------------|
-| `SIMPLE_PINHOLE` | f, cx, cy | **Best for wheat / phone — see test results below.** Single focal length, no distortion |
-| `PINHOLE` | fx, fy, cx, cy | Two focal lengths, no distortion. Works for richer scenes |
-| `SIMPLE_RADIAL` | f, cx, cy, k1 | Single radial distortion param — middle ground |
-| `OPENCV` | fx, fy, cx, cy + k1, k2, p1, p2 | Full radial + tangential distortion — works for buildings / varied geometry, **fails for repetitive vegetation** |
-| `OPENCV_FISHEYE` | fx, fy, cx, cy, k1–k4 | Fisheye / ultra-wide lenses only |
-| `FULL_OPENCV` | 12 params | Overkill, rarely useful |
-
-Higher-parameter models try to fit more lens distortion but need many well-distributed feature matches to converge. Wheat fields are mostly repetitive vegetation → weak feature constraints → the optimizer can't uniquely solve the extra distortion params → reconstruction fails. Less is more here.
-
-### Empirical test — phone data on plot `colmap_test` (93 images, exhaustive matching, 8 threads)
-
-| Model | Registered | Notes |
-|-------|------------|-------|
-| `SIMPLE_PINHOLE` | **63/93** ✅ | Only model that produced a usable reconstruction |
-| `PINHOLE` | 2/93 ❌ | Adding even just `fy` as a separate parameter breaks it |
-| `OPENCV` | 2/93 ❌ | Distortion params can't be constrained on repetitive vegetation |
-
-**Conclusion:** for phone images of wheat fields, **always use `SIMPLE_PINHOLE`**. The original phone dataset shipped with this codebase also uses it — the result was reproduced empirically, not just inherited.
-
-For datasets with more geometric variety (buildings, structured scenes, non-vegetation outdoor), try OPENCV first — it gives better reconstruction quality when it converges.
-
-### Sequential vs exhaustive matcher
-
-- **`sequential`** (default) — matches each image only against the next `sequential_overlap` images. **Use this for walk-through / video sequences** (phone images taken while walking). Low RAM, fast. Default overlap of 25 means each image is matched against the next 25 in sequence.
-- **`exhaustive`** — matches every image against every other image. O(N²) pairs — RAM-intensive for 100+ images. Only use for **unordered** image sets where you don't know which images are nearby.
-
-For 100+ phone images, **exhaustive matching can fill 30+ GB of RAM**. Always use sequential for phone walk-throughs.
-
-### Logging and timing
-
-The script prints each step with timing and saves the full COLMAP output to `{source_path}/logs/colmap.log`:
-
-```
-Step 1/3: Feature extraction...
-  Feature extraction done in 142.3s
-Step 2/3: Feature matching (sequential)...
-  Feature matching done in 87.1s
-Step 3/3: Mapping (SfM + bundle adjustment)...
-  Mapper done in 218.4s
-Undistorting images...
-  Undistortion done in 23.7s
-Done. Total time: 7.9 min (471s)
-```
-
-### Common issues
-
-- **"Single camera specified, but images have different dimensions"** — some phone images have slightly different resolutions (e.g. HDR vs non-HDR). The script no longer passes `--single_camera 1`, so COLMAP creates one camera per dimension group. No action needed.
-- **Only some images end up in `images/`** — COLMAP couldn't link all images into one connected reconstruction and only the largest sub-model was undistorted. Check `distorted/sparse/` — if there are folders `0/`, `1/`, `2/` etc., your images don't have enough overlap. Try a higher `--sequential_overlap` or take photos with more overlap.
-- **"Finding good initial image pair" appears multiple times in the log** — same as above, indicates disconnected sub-reconstructions.
+FIP plots are pre-calibrated and skip both steps.
 
 ---
 
