@@ -1,6 +1,6 @@
 # @package _global_
-# Config for src/preprocessing/convert.py — runs COLMAP SfM on phone images.
-# Typical usage:   python src/preprocessing/convert.py plot=colmap_test_clean
+# Config for src/preprocessing/run_colmap.py — runs COLMAP SfM on phone images.
+# Typical usage:   python src/preprocessing/run_colmap.py plot=colmap_test_clean
 
 defaults:
   - /dataset: phone           # phone-only workflow; pulls input_dir from configs/dataset/phone.yaml
@@ -52,6 +52,10 @@ skip_matching: false
 
 # also create downscaled images_2/, images_4/, images_8/ for multi-resolution training (needs ImageMagick)
 resize: false
+
+# also write sparse/0/{cameras,images,points3D}.txt alongside the .bin files (human-readable,
+# useful for diffing vs Agisoft's text export). The .bin files stay the canonical input for 3DGS.
+export_text: true
 
 # explicit COLMAP binary path (leave empty to use `colmap` on PATH)
 colmap_executable: ""

@@ -1,0 +1,31 @@
+# @package _global_
+# Config for src/preprocessing/compare_to_agisoft.py — benchmarks our COLMAP sparse/
+# against the supervisor's Agisoft-produced agisoft/sparse/ for the same plot.
+# Typical usage:  python src/preprocessing/compare_to_agisoft.py field=field_D plot=20250523
+
+defaults:
+  - /dataset: phone
+  - _self_
+
+field: field_A
+plot: ???                                  # REQUIRED — e.g. 20250523
+
+source_path: ${dataset.input_dir}/${field}/${plot}
+
+# our COLMAP output (relative to source_path) — written by convert.py
+ours_sparse_dir: sparse/0
+
+# Agisoft reference sparse (relative to source_path) — the ground truth
+ref_sparse_dir: agisoft/sparse/0
+
+# where the JSON report goes (relative to source_path)
+output_file: logs/compare_to_agisoft.json
+
+# include rotation comparison? (computes per-camera rotation error in degrees)
+include_rotation: true
+
+# hydra: don't create outputs/, save our own log under {source_path}/logs/
+hydra:
+  output_subdir: null
+  run:
+    dir: .

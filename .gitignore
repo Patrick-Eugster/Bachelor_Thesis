@@ -51,6 +51,13 @@ src/mask_generation/weights/
 # --- Data and results (managed separately) ---
 input_plots/
 results/
+demoanlage2025_v0/
+
+# --- Supervisor reference scripts/files at repo root (kept locally, not committed) ---
+/6-agisoft_preprocessing_demoanlage_2025.py
+/7-agisoft_compute_marker_errors.py
+/10_agisoft_calibration_quality_analysis.ipynb
+/Coded_12bit_15cm-square_13cm-outer-circle_.pdf
 
 # --- Weight/model files (keep yolov5 configs) ---
 **/*.pt

@@ -35,7 +35,6 @@ def main(cfg: DictConfig):
 
     src = os.path.abspath(cfg.source)
     dst = cfg.output if cfg.output else src.rstrip("/") + "_uniform"
-    os.makedirs(dst, exist_ok=True)
 
     # 1. scan source folder to find the majority dimension (most common = target)
     sizes = Counter()
@@ -44,8 +43,28 @@ def main(cfg: DictConfig):
         sizes.update([Image.open(os.path.join(src, f)).size])
 
     if len(sizes) == 1:
-        print(f"All {len(files)} images already have the same dimensions {list(sizes)[0]}. Nothing to do.")
+        # all images already uniform — point dst at src via symlink (zero disk cost) so convert.py's
+        # default image_subdir=input_uniform just works without forcing the user to override.
+        if os.path.islink(dst):
+            print(f"All {len(files)} images already uniform ({list(sizes)[0]}). Symlink already exists: {dst}")
+            return
+        if os.path.exists(dst):
+            print(f"All {len(files)} images already uniform ({list(sizes)[0]}). {dst} exists as a real folder — leaving it as-is.")
+            return
+        src_parent = os.path.dirname(src)
+        dst_parent = os.path.dirname(os.path.abspath(dst))
+        # relative symlink if same parent (more portable), absolute path otherwise
+        link_target = os.path.basename(src) if src_parent == dst_parent else src
+        os.symlink(link_target, dst)
+        print(f"All {len(files)} images already uniform ({list(sizes)[0]}). Created symlink: {dst} → {link_target}")
         return
+
+    # if a stale symlink exists from a previous "all uniform" run, remove it before writing real files —
+    # otherwise we'd overwrite the source through the link.
+    if os.path.islink(dst):
+        print(f"Removing stale symlink at {dst} before writing cropped images.")
+        os.unlink(dst)
+    os.makedirs(dst, exist_ok=True)
 
     target_w, target_h = sizes.most_common(1)[0][0]
     print(f"Found {len(sizes)} different sizes: {dict(sizes)}")

@@ -2,14 +2,33 @@
 
 ## Overview
 
-Phone images need two cleanup steps before they can be used by the 3DGS pipeline:
+Phone images need a few cleanup steps before they can be used by the 3DGS pipeline:
 
-1. **`preprocess_uniform_size.py`** — center-crops all images to a single resolution. Fixes the HDR-mode size mismatch that splits COLMAP's reconstruction into disconnected sub-models. **Run this first.**
-2. **`convert.py`** — runs COLMAP Structure-from-Motion: feature extraction → matching → SfM mapper → image undistortion. Produces `images/` + `sparse/0/` ready for 3DGS training.
+1. **`preprocess_uniform_size.py`** — center-crops all images to a single resolution. Fixes the HDR-mode size mismatch that splits COLMAP's reconstruction into disconnected sub-models. **Run this first.** If all images are already uniform, creates `input_uniform` as a symlink to `input/` (zero disk cost) so step 2 still works without overrides.
+2. **`run_colmap.py`** (formerly `convert.py`) — runs COLMAP Structure-from-Motion: feature extraction → matching → SfM mapper → image undistortion. Produces `images/` + `sparse/0/` ready for 3DGS training.
+3. **`compare_to_agisoft.py`** — *optional*: benchmarks our `sparse/0/` against supervisor's `agisoft/sparse/0/` via Umeyama alignment. Run only when the Agisoft reference is present in the plot folder.
 
-FIP plots come pre-calibrated (Agisoft Metashape, stored in COLMAP format) so neither step is needed there. Phone data goes through both.
+These three are wrapped by **`run_preprocessing.py`**, an orchestrator with step toggles (same pattern as `src/run_reconstruction.py`). Use it for any normal session; fall back to running each script individually only when debugging one stage.
 
-Both scripts are configured via Hydra. Configs live in `configs/preprocessing/`.
+FIP plots come pre-calibrated (Agisoft Metashape, stored in COLMAP format) so none of these steps are needed there. Phone data goes through them.
+
+All scripts are configured via Hydra. Configs live in `configs/preprocessing/`.
+
+## Quick start (orchestrator)
+
+```bash
+# default: uniform-size + COLMAP, compare disabled
+python src/preprocessing/run_preprocessing.py field=field_D plot=20250523
+
+# all three steps (use when agisoft/sparse/0/ is present in the plot folder)
+python src/preprocessing/run_preprocessing.py field=field_A plot=20250618 run_compare=true
+
+# skip individual steps
+python src/preprocessing/run_preprocessing.py field=field_D plot=20250523 run_uniform=false
+python src/preprocessing/run_preprocessing.py field=field_A plot=20250618 run_colmap=false run_compare=true
+```
+
+The orchestrator simply forwards `field=` and `plot=` to each step's own Hydra config. Defaults in [`configs/preprocessing/config.yaml`](../../configs/preprocessing/config.yaml).
 
 ---
 
@@ -73,6 +92,8 @@ python src/preprocessing/preprocess_uniform_size.py plot=20250618
 
 Default paths assume `dataset=phone` and `field=field_A` — the script reads from `input_plots/phone/field_A/${plot}/input/` and writes the cropped output to `input_plots/phone/field_A/${plot}/input_uniform/` (the originals stay untouched).
 
+**Symlink fallback when no cropping is needed:** if all input images already share the same dimensions, the script creates `input_uniform` as a **symlink** to `input/` instead of copying files. Costs zero disk space, takes <1 second, and `run_colmap.py`'s default `image_subdir=input_uniform` keeps working unchanged. If a later capture mixes sizes and cropping is actually needed, the stale symlink is removed first so no real files are written through it. This means **you can safely run `preprocess_uniform_size.py` on every session**, uniform or not, without thinking about overrides.
+
 ### CLI options (override on command line)
 
 | Key | Default | Meaning |
@@ -87,7 +108,7 @@ Defaults are stored in [`configs/preprocessing/uniform_size.yaml`](../../configs
 
 ---
 
-## Step 2 — `convert.py` (COLMAP Structure-from-Motion)
+## Step 2 — `run_colmap.py` (COLMAP Structure-from-Motion)
 
 ### What it does
 
@@ -110,7 +131,7 @@ Output layout matches what 3DGS expects:
 ├── stereo/                   ← created by undistorter, not used by our pipeline
 └── logs/
     ├── colmap.log            ← full COLMAP output, saved automatically
-    └── convert_config.yaml   ← snapshot of the config used for this run
+    └── colmap_config.yaml    ← snapshot of the config used for this run
 ```
 
 ### How to run
@@ -118,7 +139,7 @@ Output layout matches what 3DGS expects:
 After running `preprocess_uniform_size.py` (step 1), just:
 
 ```bash
-python src/preprocessing/convert.py plot=20250618
+python src/preprocessing/run_colmap.py plot=20250618
 ```
 
 Default paths assume `dataset=phone` and `field=field_A`. `source_path` is auto-derived as `input_plots/phone/field_A/${plot}` and COLMAP reads images from `${source_path}/input_uniform/` (the output of step 1). Originals in `input/` stay untouched.
@@ -130,7 +151,7 @@ python src/run_reconstruction.py dataset=phone plot=field_A date=20250618 run_tr
 
 ### CLI options (override on command line)
 
-All options have defaults so you can usually run with just `plot=...`. Defaults live in [`configs/preprocessing/convert.yaml`](../../configs/preprocessing/convert.yaml).
+All options have defaults so you can usually run with just `plot=...`. Defaults live in [`configs/preprocessing/colmap.yaml`](../../configs/preprocessing/colmap.yaml).
 
 | Key | Default | Meaning |
 |-----|---------|---------|
@@ -152,12 +173,12 @@ All options have defaults so you can usually run with just `plot=...`. Defaults 
 
 Example overrides:
 ```bash
-python src/preprocessing/convert.py plot=20250618 camera=PINHOLE                          # different camera model
-python src/preprocessing/convert.py plot=20250618 num_threads=4 no_gpu=true               # CPU fallback
-python src/preprocessing/convert.py plot=20250618 image_subdir=input                      # use original input/ folder
-python src/preprocessing/convert.py plot=20250618 field=field_B                           # different field
-python src/preprocessing/convert.py plot=big_dataset matcher=sequential sequential_overlap=40  # large dataset
-python src/preprocessing/convert.py plot=mixed_cams single_camera=false                   # mixed phones/lenses
+python src/preprocessing/run_colmap.py plot=20250618 camera=PINHOLE                          # different camera model
+python src/preprocessing/run_colmap.py plot=20250618 num_threads=4 no_gpu=true               # CPU fallback
+python src/preprocessing/run_colmap.py plot=20250618 image_subdir=input                      # use original input/ folder
+python src/preprocessing/run_colmap.py plot=20250618 field=field_B                           # different field
+python src/preprocessing/run_colmap.py plot=big_dataset matcher=sequential sequential_overlap=40  # large dataset
+python src/preprocessing/run_colmap.py plot=mixed_cams single_camera=false                   # mixed phones/lenses
 ```
 
 ---
@@ -283,6 +304,34 @@ OpenCV's rational radial distortion model — six radial terms (`k1` through `k6
 
 For empirical comparison of camera models on real phone data, see the "Full empirical test log" section below.
 
+### Phone-image specific guidance
+
+Phones are a constrained case worth calling out separately, because phone sensors have a specific property: **square pixels** (pixel pitch is identical in both x and y directions). This is hard-baked into modern phone sensor hardware — there's no manufacturing or optical reason to make pixels rectangular.
+
+A direct consequence: **`fx = fy` is physically true for every phone camera**. Any model that lets `fx` and `fy` float independently (PINHOLE, OPENCV, FULL_OPENCV) adds one redundant degree of freedom that doesn't model anything real — it just gives bundle adjustment one more knob to absorb feature-match noise into.
+
+That alone makes `PINHOLE`, `OPENCV`, and `FULL_OPENCV` **wrong choices for phone images** purely on theoretical grounds, before we even get to distortion. The `SIMPLE_*` variants (`SIMPLE_PINHOLE`, `SIMPLE_RADIAL`, `SIMPLE_RADIAL_FISHEYE`) all enforce `fx = fy` and are the appropriate family for phones.
+
+What about distortion?
+
+| Phone lens | Distortion | Recommended model |
+|---|---|---|
+| Main rear camera (≈24–28 mm equiv.) | small (<1% barrel) | `SIMPLE_PINHOLE` — residual distortion is tolerable |
+| Telephoto (≥50 mm equiv.) | very small | `SIMPLE_PINHOLE` |
+| Ultrawide (≈13 mm equiv.) | substantial (5–10% barrel) | `SIMPLE_RADIAL` (one extra k1 param) — falls back to `SIMPLE_PINHOLE` if BA fails to converge |
+
+**Three real-world scenarios in this thesis:**
+
+| Scenario | Best model | Why |
+|---|---|---|
+| Working with Agisoft-undistorted images (`agisoft/images/`) | `SIMPLE_PINHOLE` | Agisoft already removed distortion. Zero residual to model. (This is also what Agisoft itself exports — `0 SIMPLE_PINHOLE 3846 2924 ...`.) |
+| Running our COLMAP on raw phone images (`input/`, main rear camera) | `SIMPLE_PINHOLE` | Empirically tested 93/93 success on `colmap_test_clean`. Small residual distortion is acceptable. PINHOLE and OPENCV both got 2/93 — extra DOFs got starved by repetitive wheat features (see "Full empirical test log" below). |
+| Captures using the phone's ultrawide camera | `SIMPLE_RADIAL` | Strong barrel distortion at wide FOV genuinely needs a radial term. One extra parameter is small enough that BA can usually still solve it. Not yet tested on this project. |
+
+The current default in [configs/preprocessing/colmap.yaml](../../configs/preprocessing/colmap.yaml) is `camera=SIMPLE_PINHOLE`, which is correct for both Agisoft-undistorted images and raw main-camera captures — i.e. every plot currently in `input_plots/`. Override only if you have a specific reason (e.g. capturing with the ultrawide).
+
+**TL;DR for phones:** `PINHOLE`, `OPENCV`, `FULL_OPENCV` are wrong by hardware. `SIMPLE_PINHOLE` is right unless you have heavy lens distortion, in which case `SIMPLE_RADIAL` is the smallest justified upgrade.
+
 ---
 
 ## Full empirical test log
@@ -328,7 +377,7 @@ The extra distortion parameters in `PINHOLE` / `OPENCV` can't be constrained on 
 
 ## Logging and timing
 
-The script prints each step with timing and saves the full COLMAP output to `{source_path}/logs/colmap.log`. The config used is snapshotted alongside in `convert_config.yaml`:
+The script prints each step with timing and saves the full COLMAP output to `{source_path}/logs/colmap.log`. The config used is snapshotted alongside in `colmap_config.yaml`:
 
 ```
 Step 1/3: Feature extraction...
@@ -346,7 +395,236 @@ Done. Total time: 1.4 min (87s)
 
 ## Common issues
 
-- **`"Single camera specified, but images have different dimensions"`** — your phone produced mixed-resolution images (HDR vs non-HDR). **Run `preprocess_uniform_size.py` first**, then re-run `convert.py` on the uniform output.
+- **`"Single camera specified, but images have different dimensions"`** — your phone produced mixed-resolution images (HDR vs non-HDR). **Run `preprocess_uniform_size.py` first**, then re-run `run_colmap.py` on the uniform output.
 - **Only some images end up in `images/`** — COLMAP couldn't link all images into one connected reconstruction and only the largest sub-model was undistorted. Check `distorted/sparse/` — if there are folders `0/`, `1/`, `2/` etc., your images don't have enough overlap. Most common cause is mixed image dimensions (run `preprocess_uniform_size.py`). Other fixes: higher `sequential_overlap`, take photos with more overlap, or switch to `exhaustive` matching.
 - **`"Finding good initial image pair"` appears multiple times in the log** — same as above, indicates disconnected sub-reconstructions.
 - **CUDA-related errors** — the COLMAP we built supports CUDA 13.1 + RTX 5070 Ti (Blackwell, sm_120). If running on a different machine without CUDA, set `no_gpu=true` to fall back to CPU SIFT.
+
+---
+
+## Benchmarking workflow — when (and when not) to upgrade the pipeline
+
+Before considering either of the upgrade sections below, follow this concrete benchmarking sequence on the four supervisor-provided sessions (`field_D/20250523`, `field_D/20250530`, `field_A/20250609`, `field_A/20250618`). The goal is to *measure* whether our current SIFT-based COLMAP is good enough before investing implementation effort.
+
+### The four-step workflow
+
+1. **Run our current COLMAP on all four sessions.**
+   ```bash
+   # one orchestrator call per session — runs uniform-size + COLMAP back-to-back
+   python src/preprocessing/run_preprocessing.py field=field_D plot=20250523
+   python src/preprocessing/run_preprocessing.py field=field_D plot=20250530
+   python src/preprocessing/run_preprocessing.py field=field_A plot=20250609
+   python src/preprocessing/run_preprocessing.py field=field_A plot=20250618
+   ```
+   Sanity check first: did COLMAP register all images in one connected sub-model? If not, that's the immediate problem to fix before going further.
+
+2. **Measure camera-pose accuracy vs Agisoft.**
+   ```bash
+   python src/preprocessing/compare_to_agisoft.py field=field_D plot=20250523
+   ```
+   Reports per-camera translation error (mm) + rotation error (deg) after Umeyama alignment. Tells us how close our reconstruction is to Agisoft's geometrically. Repeat for all four sessions to check consistency across captures (see [`../../docs/SFM_PIPELINE_COMPARISON.md`](../../docs/SFM_PIPELINE_COMPARISON.md) for the rationale on why four data points matter).
+
+3. **Train 3DGS on both `sparse/` versions of the same session and compare quality.**
+   - Train once using our `sparse/0/` (our COLMAP output).
+   - Train once using `agisoft/sparse/0/` (Agisoft reference).
+   - Render the held-out test cameras from both trained models and compute PSNR / SSIM / LPIPS.
+
+   This is the final answer — render quality is what actually matters downstream for segmentation and visualization. The camera-pose comparison from step 2 is a proxy; this is the headline metric. Costs ~3–5 hours per session for the full pipeline, so do it on one session (best pick: `field_D/20250530` with its 8.4 mm Dist Err — cleanest reference).
+
+4. **Make the upgrade decision based on the PSNR delta.**
+
+   | Result | What it means | Action |
+   |---|---|---|
+   | Our PSNR within **~1 dB** of Agisoft's | SIFT-based pipeline is good enough; 3DGS absorbs the camera-pose looseness | **Don't bother with hloc.** Continue with the current pipeline |
+   | Our PSNR **3+ dB worse** than Agisoft's | Camera-pose looseness is hurting render quality measurably | **Install hloc and try SuperPoint + LightGlue** (next section). The 1-2 days of implementation is justified by the quality gap |
+   | Our PSNR **1–3 dB worse** | Borderline — could go either way | Check whether the gap is consistent across sessions. If it shows up on all four, lean toward hloc. If only on one or two, investigate those specific captures first |
+
+### Why this gating exists
+
+The two upgrade sections below (`hloc` and `ArUco markers`) each cost real engineering time (1–2 days for hloc, more for markers since they also require new field captures). Doing them preemptively would waste effort if our current pipeline turns out to be good enough.
+
+The benchmarking workflow above is the **evidence-based** way to decide. If our SIFT-based COLMAP gets to within ~1 dB PSNR of Agisoft on a high-quality session like `field_D/20250530`, that's an empirical demonstration that our open-source pipeline matches the commercial reference for thesis-relevant outputs — which is the headline thesis claim. No upgrade needed.
+
+If we're 3+ dB behind, the gap is real, and that's the point where hloc becomes the right next step.
+
+---
+
+## Possible future upgrade — SuperPoint + LightGlue via `hloc`
+
+Not implemented yet. Kept here as a forward-looking note so we remember to try it when (and only when) our COLMAP output is measurably worse than Agisoft's.
+
+### Why we'd consider it
+
+COLMAP uses **SIFT** (Scale-Invariant Feature Transform, hand-engineered from 1999) for feature extraction and a nearest-neighbor matcher. This is the standard COLMAP pipeline and works for most scenes. It struggles specifically on **repetitive / textureless scenes** like wheat, because:
+
+- Wheat heads all look like similar small gradient blobs → SIFT descriptors aren't discriminative enough between nearby points.
+- Vegetation has high self-similarity → many wrong nearest-neighbor matches.
+- Plants move slightly in wind between shots → SIFT can't track patches that change shape.
+
+These show up as **failed registrations** (e.g. the 63/93 sub-model split we hit before tuning) and **looser camera poses** even when registration succeeds. Agisoft is more robust because (a) its proprietary detector is somewhat tuned for harder scenes and (b) it uses the coded markers as anchor features that always match correctly.
+
+### What the open-source upgrade is
+
+Replace SIFT with **deep-learning feature detectors** trained on millions of image pairs. The current state-of-the-art open-source stack:
+
+| Component | What it is | Replaces |
+|---|---|---|
+| **SuperPoint** | CNN that jointly detects keypoints + 256-D learned descriptors (Magic Leap, 2018) | COLMAP's SIFT |
+| **LightGlue** | Graph-neural-network matcher with attention (ETH/CVG, 2023). Successor to SuperGlue, same quality, ~2× faster. | COLMAP's nearest-neighbor matcher |
+| **`hloc`** | Hierarchical Localization toolbox that bundles SuperPoint + LightGlue (and several alternatives) into a COLMAP-compatible pipeline. MIT license. | The whole `feature_extractor` + `exhaustive_matcher` block |
+
+Repo: [github.com/cvg/Hierarchical-Localization](https://github.com/cvg/Hierarchical-Localization)
+
+The reason this works: SuperPoint descriptors are *learned* from data, so they pick up on subtle differences between nearby wheat patches that SIFT's gradient histograms can't capture. LightGlue then uses attention to consider the geometric layout of all keypoints together, ruling out wrong matches that nearest-neighbor would accept.
+
+### How it would slot into our pipeline
+
+Our current `run_colmap.py` runs four COLMAP steps:
+
+```
+1. feature_extractor     ← SIFT
+2. exhaustive_matcher    ← nearest-neighbor
+3. mapper                ← bundle adjustment
+4. image_undistorter
+```
+
+`hloc` replaces steps 1 and 2:
+
+```
+1'. hloc extract_features.py --conf superpoint_aachen        ← deep features
+2'. hloc match_features.py --conf superpoint+lightglue       ← deep matching
+2''. hloc triangulation.py (writes COLMAP-format database)
+3. colmap mapper                                              ← unchanged
+4. colmap image_undistorter                                   ← unchanged
+```
+
+The output of step 2'' is the same `distorted/database.db` COLMAP would have produced — just with better features inside. The final `sparse/0/` looks identical in format.
+
+### Implementation outline (when we get to it)
+
+1. Install `hloc` in the Docker container — pulls in PyTorch + kornia + opencv. ~30 min if no CUDA conflicts with 3DGS.
+2. Add a config `configs/preprocessing/hloc.yaml` mirroring `colmap.yaml` but pointing at hloc commands.
+3. Add a script `src/preprocessing/run_hloc.py` mirroring `run_colmap.py` — runs hloc extract → hloc match → hloc triangulate → COLMAP mapper → COLMAP undistorter. Wire it into `run_preprocessing.py` via a `run_hloc` toggle alongside `run_colmap`.
+4. Smoke-test on `colmap_test_clean` to confirm we still get 93/93 (sanity check).
+5. Run `compare_to_agisoft.py` on the same session and see if pose errors drop vs SIFT.
+
+Total effort: **1–2 days** if dependencies cooperate.
+
+### When NOT to do this
+
+If our current SIFT-based COLMAP already produces camera poses within ~15 mm of Agisoft (measured by `compare_to_agisoft.py`), and 3DGS rendered quality (PSNR/SSIM/LPIPS) is within ~1 dB of Agisoft's, **don't bother**. SIFT is good enough on the data we have. Reserve the implementation effort for a session where SIFT actually fails.
+
+### Trigger conditions for actually doing it
+
+- `compare_to_agisoft.py` reports mean translation error > ~50 mm on multiple sessions.
+- 3DGS trained on our `sparse/` scores >3 dB PSNR worse than 3DGS trained on Agisoft's `sparse/`.
+- We attempt a new capture and COLMAP fails to register all images (e.g. sub-model splits despite uniform sizing + exhaustive + single_camera).
+
+Any one of these is a reason to invest the day. Until then, current pipeline stays.
+
+For a complementary upgrade that fixes a *different* gap (weak geometric anchors rather than weak features), see the next section on ArUco markers + COLMAP GCP.
+
+---
+
+## Possible future upgrade — ArUco markers + COLMAP GCP
+
+Also not implemented yet. Like the hloc upgrade above, this is a forward-looking note.
+
+### Why this is a separate gap from hloc
+
+hloc and markers fix **different things** and can be combined:
+
+| Approach | Fixes what | Doesn't fix |
+|---|---|---|
+| **hloc (SuperPoint + LightGlue)** | weak / non-distinctive natural features in repetitive scenes | absolute scale, lack of ground-truth anchors |
+| **ArUco markers + COLMAP GCP** | scale ambiguity, drift, lack of anchors → tight camera poses + metric units | feature matching itself (still uses whatever detector you pair it with) |
+
+So hloc gives you better feature matching; markers give you geometric constraints during bundle adjustment. Best results come from using both at once — same combo Agisoft uses internally (proprietary detector + their coded markers + GPS).
+
+### What ArUco markers are
+
+OpenCV's open-source equivalent to Agisoft's 12-bit coded targets:
+
+- Each marker is a printable black-and-white square with a unique binary ID encoded in its inner pattern.
+- Multiple dictionary sizes (e.g. `DICT_4X4_50`, `DICT_5X5_100`) — pick based on how many unique markers you need.
+- Detection via `cv2.aruco.detectMarkers()` returns marker IDs + four corner pixel positions per image, in milliseconds per image.
+- Free, MIT-licensed, part of `opencv-contrib-python`.
+- Generation: `cv2.aruco.generateImageMarker()` produces the PNG to print.
+
+So unlike Agisoft's proprietary 12-bit format (which we can't decode with open-source tools), ArUco markers are something **we control end-to-end** — generate, print, detect, feed to COLMAP, all with free libraries.
+
+### What COLMAP GCP support is
+
+COLMAP recently added **Ground Control Point** support directly in bundle adjustment — see [colmap/colmap#593](https://github.com/colmap/colmap/issues/593#issuecomment-3926658343). You provide a list of correspondences:
+
+```
+image_name, x_pixel, y_pixel, X_world, Y_world, Z_world
+```
+
+COLMAP uses each row as a soft constraint during BA, just like Agisoft does with its imported marker XYZ. Multiple observations of the same marker across images give the optimizer strong evidence about where that marker is in 3D, which in turn anchors the camera poses around it.
+
+### How it would slot into our pipeline
+
+Two new steps inserted before COLMAP mapper:
+
+```
+1. feature_extractor                          ← unchanged (SIFT or hloc)
+2. matcher                                    ← unchanged
+2a. detect_aruco_markers.py (NEW)            ← scan input/ images, find marker corners
+2b. build_gcp_file.py (NEW)                  ← combine corner detections + known world XYZ → GCP file
+3. colmap mapper --gcp_path ...               ← uses GCP constraints during BA
+4. image_undistorter                          ← unchanged
+```
+
+The result: the produced `sparse/0/` has metric scale, correctly georeferenced (if marker world XYZ is in real coords), and tighter camera poses than an unconstrained run — exactly what Agisoft outputs, just produced with free tooling.
+
+### Implementation outline
+
+1. **Print ArUco markers** at a known size (say 15 × 15 cm to match Agisoft's). Maybe 6–10 of them.
+2. **Measure their positions** in one of two ways (see "Two routes" below).
+3. **Place them in the field** before each capture, leave them in place across sessions (same as Agisoft setup).
+4. **Capture as usual** — markers will appear in many images naturally.
+5. **Write `src/preprocessing/detect_aruco_markers.py`** — runs `cv2.aruco.detectMarkers()` on every image in `input/`, outputs JSON with `{image_name: [{marker_id, corner_pixels}, ...]}`.
+6. **Write a converter** that joins the detection JSON with a known-world-XYZ CSV to produce COLMAP's GCP file format.
+7. **Pass the GCP file to COLMAP mapper** via the new flag from the linked PR.
+
+Steps 5 and 6 together are maybe a day of work. Step 4 is a one-time per-capture setup.
+
+### Two routes for "known XYZ"
+
+| Route | What you measure | What you get |
+|---|---|---|
+| **Real-world surveying (Agisoft's approach)** | each marker's GPS or RTK position in real coords | metric scale + absolute georef (e.g. Swiss CH1903+) |
+| **Ruler-only** | just marker-to-marker distances with a tape, no GPS | metric scale, no georef — reconstruction has correct sizes but arbitrary origin |
+
+For phenotyping, **ruler-only is enough**. You don't need to know where the field is on Earth; you need to know that a wheat head is 6.7 cm tall in real meters. Measuring 6 marker-pair distances with a tape is trivial.
+
+### When to do this
+
+**For new captures we make ourselves.** Doesn't help the existing demoanlage data — those use Agisoft's proprietary 12-bit markers which `cv2.aruco` cannot decode (different encoding format).
+
+So the trigger is: **we capture a new plot ourselves, want metric scale, and don't have Agisoft processing available** (which we don't). At that point printing a sheet of ArUco markers and writing the detection script is the path.
+
+### Why not do this for the demoanlage data?
+
+Two reasons:
+
+1. **The markers in those photos are Agisoft 12-bit**, not ArUco. Different format, can't be decoded with `cv2.aruco`. So we'd have to either implement a 12-bit decoder ourselves (significant work) or ignore the markers in those images.
+2. **We already have Agisoft's metric `sparse/` for fields A and D**. For benchmarking purposes that's enough — we compare our COLMAP against Agisoft's reference. The marker XYZ from the supervisor's CSV could in principle be reused if someone wrote a 12-bit detector, but it's not a priority while we're still benchmarking.
+
+For the thesis story: hloc + ArUco markers together would be the path to a **fully open-source pipeline that matches Agisoft's quality** on new captures — but neither is needed for the current data.
+
+### Combining with hloc
+
+If both are eventually implemented, the order is:
+
+```
+1. hloc extract_features   (SuperPoint)
+2. hloc match_features     (LightGlue)
+2a. detect_aruco_markers   (cv2.aruco)
+2b. build_gcp_file
+3. colmap mapper --gcp_path ...
+4. colmap image_undistorter
+```
+
+Each module is independent — they can be added separately. hloc first (helps even without markers), markers added later (need new captures anyway).

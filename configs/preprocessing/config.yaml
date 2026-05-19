@@ -1,0 +1,28 @@
+# @package _global_
+# Orchestrator config for src/preprocessing/run_preprocessing.py
+# Runs all preprocessing steps for a phone session: uniform-size + COLMAP + (optional) compare to Agisoft.
+# Typical usage:
+#   python src/preprocessing/run_preprocessing.py field=field_D plot=20250523
+#   python src/preprocessing/run_preprocessing.py field=field_A plot=20250618 run_compare=true
+#   python src/preprocessing/run_preprocessing.py field=field_D plot=20250523 run_uniform=false   # already uniform/symlinked
+
+defaults:
+  - /dataset: phone
+  - _self_
+
+# field subfolder under {dataset.input_dir}/ (e.g. field_A, field_D)
+field: field_A
+
+# plot leaf folder name — REQUIRED. Override on CLI: plot=...
+plot: ???
+
+# step toggles — flip on/off per session
+run_uniform: true   # step 1: center-crop to uniform size (creates symlink if already uniform)
+run_colmap:  true   # step 2: COLMAP SfM (feature extraction → matching → mapper → undistortion)
+run_compare: false  # step 3: compare our sparse/0/ to agisoft/sparse/0/ (only if Agisoft reference exists)
+
+# hydra: don't create outputs/ folder — individual steps save their own logs under {source_path}/logs/
+hydra:
+  output_subdir: null
+  run:
+    dir: .

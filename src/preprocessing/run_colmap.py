@@ -9,7 +9,9 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 # This Python script is based on the shell converter script provided in the MipNerF 360 repository.
-# Adapted to use Hydra for configuration. See configs/preprocessing/convert.yaml for parameters.
+# Adapted to use Hydra for configuration. See configs/preprocessing/colmap.yaml for parameters.
+# (Originally named convert.py — renamed to run_colmap.py since it runs the full COLMAP SfM pipeline,
+# not just a format conversion.)
 
 import os
 import subprocess
@@ -20,13 +22,13 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 
 
-@hydra.main(version_base=None, config_path="../../configs", config_name="preprocessing/convert")
+@hydra.main(version_base=None, config_path="../../configs", config_name="preprocessing/colmap")
 def main(cfg: DictConfig):
     """Run COLMAP SfM on phone images: feature_extractor -> matcher -> mapper -> image_undistorter.
     Produces images/ + sparse/0/ in source_path, ready for 3DGS training."""
-    print("--- COLMAP convert config ---")
+    print("--- COLMAP config ---")
     print(OmegaConf.to_yaml(cfg))
-    print("-----------------------------")
+    print("---------------------")
 
     colmap_command = f'"{cfg.colmap_executable}"' if len(cfg.colmap_executable) > 0 else "colmap"
     magick_command = f'"{cfg.magick_executable}"' if len(cfg.magick_executable) > 0 else "magick"
@@ -43,7 +45,7 @@ def main(cfg: DictConfig):
     print(f"Logging all output to {log_path}")
 
     # save the config snapshot next to the log so each run is self-documenting
-    with open(os.path.join(log_dir, "convert_config.yaml"), "w") as f:
+    with open(os.path.join(log_dir, "colmap_config.yaml"), "w") as f:
         f.write(OmegaConf.to_yaml(cfg))
 
     def run_cmd(cmd):
@@ -138,6 +140,17 @@ def main(cfg: DictConfig):
         source_file = os.path.join(source_path, "sparse", file)
         destination_file = os.path.join(source_path, "sparse", "0", file)
         shutil.move(source_file, destination_file)
+
+    # Also export sparse/0/ as text alongside the .bin files (human-readable, easier to diff vs Agisoft).
+    # COLMAP's model_converter writes cameras.txt, images.txt, points3D.txt next to the .bin files —
+    # both formats coexist; .bin stays the canonical input for 3DGS.
+    if cfg.export_text:
+        print("Exporting sparse/0/ as text (cameras.txt, images.txt, points3D.txt)...")
+        sparse0 = os.path.join(source_path, "sparse", "0")
+        export_cmd = f"{colmap_command} model_converter --input_path {sparse0} --output_path {sparse0} --output_type TXT"
+        exit_code = run_cmd(export_cmd)
+        if exit_code != 0:
+            print(f"WARNING: text export failed with code {exit_code} (continuing anyway — .bin still produced)")
 
     if cfg.resize:
         print("Copying and resizing...")

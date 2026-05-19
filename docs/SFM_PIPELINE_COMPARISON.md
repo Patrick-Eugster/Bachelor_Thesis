@@ -8,7 +8,7 @@ The thesis goal is therefore: **reproduce or beat Agisoft's reconstruction quali
 
 The two pipelines being compared:
 
-1. **Our pipeline (open-source, what we actually use):** `src/preprocessing/preprocess_uniform_size.py` + `src/preprocessing/convert.py`. Built around COLMAP, which we compiled from source with CUDA — see [`INSTALL_COLMAP_CUDA.md`](INSTALL_COLMAP_CUDA.md).
+1. **Our pipeline (open-source, what we actually use):** `src/preprocessing/preprocess_uniform_size.py` + `src/preprocessing/run_colmap.py` (formerly `convert.py`), wrapped by `src/preprocessing/run_preprocessing.py` as a one-command orchestrator. Built around COLMAP, which we compiled from source with CUDA — see [`INSTALL_COLMAP_CUDA.md`](INSTALL_COLMAP_CUDA.md).
 2. **Supervisor's pipeline (Agisoft, reference only):** `6-agisoft_preprocessing_demoanlage_2025.py` + `7-agisoft_compute_marker_errors.py` + `10_agisoft_calibration_quality_analysis.ipynb`. These three scripts were shared so we understand how the reference data was produced — they cannot be executed without a paid license.
 
 Both ultimately produce a COLMAP-format `sparse/0/` + undistorted `images/` folder. The differences are in *how* they get there and *what extra information* their output carries.
@@ -97,7 +97,7 @@ Both pipelines do the same conceptual steps (load images → find features → m
 
 ### Camera model in the final export
 
-**Our pipeline:** Step 1 of `convert.py` extracts features using `SIMPLE_PINHOLE`. Step 4 (`image_undistorter`) then rewrites images and intrinsics to ideal pinhole. Final `sparse/0/cameras.bin` contains a `PINHOLE` camera with no distortion params; `images/` contains undistorted JPEGs.
+**Our pipeline:** Step 1 of `run_colmap.py` extracts features using `SIMPLE_PINHOLE`. Step 4 (`image_undistorter`) then rewrites images and intrinsics to ideal pinhole. Final `sparse/0/cameras.bin` contains a `PINHOLE` camera with no distortion params; `images/` contains undistorted JPEGs.
 
 **Agisoft:** Internally estimates a much richer distortion model during alignment (typically full Brown-Conrady: radial k1/k2/k3 + tangential p1/p2). On export, `convert_to_pinhole=True` undistorts images and re-writes intrinsics as plain pinhole. Final output is also pinhole+undistorted.
 
@@ -175,9 +175,11 @@ Even without our own markers, we can build the same evaluation Agisoft has — *
 
 1. Take our COLMAP `sparse/` and the supervisor's Agisoft `sparse/` for the same capture.
 2. Align them with a 7-DOF similarity transform (Umeyama).
-3. Compute per-camera pose error (translation in meters, rotation in degrees) and per-point error.
+3. Compute per-camera pose error (translation in meters, rotation in degrees).
 
-This gives us a **per-capture benchmark** of "how close did COLMAP get to Agisoft." We can use it to validate any future improvements (e.g. switching to SuperPoint+SuperGlue should reduce these errors). This is something we could write — a few hundred lines using `pycolmap`.
+This gives us a **per-capture benchmark** of "how close did COLMAP get to Agisoft." We can use it to validate any future improvements (e.g. switching to SuperPoint+SuperGlue should reduce these errors).
+
+**Status: implemented.** See [`../src/preprocessing/compare_to_agisoft.py`](../src/preprocessing/compare_to_agisoft.py) — runs Umeyama alignment, reports mean/median/max translation (mm) + rotation (deg), and writes a per-camera JSON. For interpreting the supervisor's own quality CSV (`marker_errors_summary.csv`) when picking which sessions to benchmark against, see [`AGISOFT_QUALITY_METRICS.md`](AGISOFT_QUALITY_METRICS.md).
 
 ---
 
