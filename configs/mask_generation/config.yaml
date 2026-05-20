@@ -2,6 +2,8 @@
 defaults:
   - /dataset: fip              # override on CLI: dataset=phone
   - method: yolo_sam_v1        # override on CLI: method=yolo_sam_v2
+  - override /hydra/job_logging: disabled    # don't create a .log file in CWD — we print()
+  - override /hydra/hydra_logging: disabled
   - _self_
 
 # name for the detection output folder — "initial" is a safe scratch name (no overwrite warning)
@@ -23,12 +25,8 @@ only_labeled_images: false
 # log SAM progress to wandb.ai dashboard (requires wandb login first)
 wandb_enabled: false
 
-# hydra: don't create outputs/ folder, write log to logs/ instead
+# hydra: don't create outputs/ folder
 hydra:
   output_subdir: null
   run:
     dir: .
-  job_logging:
-    handlers:
-      file:
-        filename: logs/main_v1.log

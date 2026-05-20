@@ -8,6 +8,8 @@
 
 defaults:
   - /dataset: phone
+  - override /hydra/job_logging: disabled    # don't create a .log file in CWD — we print()
+  - override /hydra/hydra_logging: disabled
   - _self_
 
 # field subfolder under {dataset.input_dir}/ (e.g. field_A, field_D)

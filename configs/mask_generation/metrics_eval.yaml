@@ -2,6 +2,8 @@
 defaults:
   - /dataset: fip              # override on CLI: dataset=phone
   - method: yolo_sam_v1        # which detection method's thresholds to use for evaluation
+  - override /hydra/job_logging: disabled    # don't create a .log file in CWD — we print()
+  - override /hydra/hydra_logging: disabled
   - _self_
 
 # which yolo_sam detection run to evaluate

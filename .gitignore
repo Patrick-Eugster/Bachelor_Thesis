@@ -53,12 +53,6 @@ input_plots/
 results/
 demoanlage2025_v0/
 
-# --- Supervisor reference scripts/files at repo root (kept locally, not committed) ---
-/6-agisoft_preprocessing_demoanlage_2025.py
-/7-agisoft_compute_marker_errors.py
-/10_agisoft_calibration_quality_analysis.ipynb
-/Coded_12bit_15cm-square_13cm-outer-circle_.pdf
-
 # --- Weight/model files (keep yolov5 configs) ---
 **/*.pt
 **/*.pth
@@ -141,6 +135,9 @@ docs/CHANGES.md
 
 # --- Papers / PDFs ---
 *.pdf
+# but track the supervisor's coded-marker spec sheet — it's small and referenced from reference/agisoft/README.md
+!reference/agisoft/Coded_12bit_15cm-square_13cm-outer-circle_.pdf
 
-# --- Hydra logs ---
-logs/*.log
+# --- Hydra logs (now disabled via `override /hydra/job_logging: disabled` in each config — this is the safety net) ---
+# *.log already covered by **/*.log at top
+logs/

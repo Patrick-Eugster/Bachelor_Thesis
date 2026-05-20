@@ -10,6 +10,8 @@
 
 defaults:
   - /dataset: phone
+  - override /hydra/job_logging: disabled    # don't create a .log file in CWD — we print()
+  - override /hydra/hydra_logging: disabled
   - _self_
 
 # field + plot — same convention as the other preprocessing configs
@@ -36,7 +38,7 @@ downscale: 1.0
 # where to drop the per-image JSON report (relative to source_path)
 output_file: logs/sharpness_report.json
 
-# hydra: don't create outputs/ folder — we save our own JSON under {source_path}/logs/
+# hydra: don't create outputs/ folder (we save our own JSON under {source_path}/logs/)
 hydra:
   output_subdir: null
   run:

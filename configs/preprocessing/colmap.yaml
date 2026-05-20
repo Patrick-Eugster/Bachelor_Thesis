@@ -4,6 +4,8 @@
 
 defaults:
   - /dataset: phone           # phone-only workflow; pulls input_dir from configs/dataset/phone.yaml
+  - override /hydra/job_logging: disabled    # don't create a .log file in CWD — we print()
+  - override /hydra/hydra_logging: disabled
   - _self_
 
 # field subfolder under {dataset.input_dir}/  (e.g. field_A, field_B, ...)
@@ -63,7 +65,7 @@ colmap_executable: ""
 # explicit ImageMagick binary path (leave empty to use `magick` on PATH) — only used when resize=true
 magick_executable: ""
 
-# hydra: don't create outputs/ folder — we save our own log + config snapshot under {source_path}/logs/
+# hydra: don't create outputs/ folder (we save our own log + config snapshot under {source_path}/logs/)
 hydra:
   output_subdir: null
   run:
