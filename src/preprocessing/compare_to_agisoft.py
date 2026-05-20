@@ -15,12 +15,25 @@ Run with:  python src/preprocessing/compare_to_agisoft.py field=field_D plot=202
 import importlib.util
 import json
 import os
+import re
 import sys
+import time
 from pathlib import Path
 
 import hydra
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
+
+
+# Agisoft renames images on ingestion: "IMG_20250523_102855.jpg" -> "IMG_20250523_102855_3.jpg".
+# We strip the trailing "_<digits>" right before the extension so names can be matched against ours.
+_AGISOFT_SUFFIX_RE = re.compile(r"_(\d+)(\.[A-Za-z]+)$")
+
+
+def _strip_agisoft_suffix(name: str) -> str:
+    """Remove a trailing '_<digits>' before the file extension, e.g. 'IMG_..._3.jpg' -> 'IMG_....jpg'.
+    Leaves names without that pattern unchanged. Lets us match Agisoft's renamed files against ours."""
+    return _AGISOFT_SUFFIX_RE.sub(r"\2", name)
 
 # Reuse the same COLMAP readers 3DGS uses everywhere else, but load the file directly
 # instead of going through gaussians.scene.__init__ — that pulls in torch (and 3DGS deps)
@@ -84,17 +97,19 @@ def load_intrinsics_summary(sparse_dir: str) -> list:
     raise FileNotFoundError(f"No cameras.bin or cameras.txt in {sparse_dir}")
 
 
-def extract_poses(extrinsics: dict) -> tuple:
+def extract_poses(extrinsics: dict, name_normalizer=None) -> tuple:
     """For each image, compute the camera center (in world coords) and the rotation matrix.
     COLMAP convention: X_cam = R * X_world + t, so camera center C = -R.T @ t.
-    Returns: (centers, rotations) — both dicts keyed by image filename."""
+    Returns: (centers, rotations) — both dicts keyed by image filename. If name_normalizer
+    is given, dict keys are passed through it first (used to strip Agisoft's '_N' suffix)."""
     centers = {}
     rotations = {}
     for img in extrinsics.values():
         R = qvec2rotmat(img.qvec)         # world -> camera
         C = -R.T @ img.tvec               # camera center in world coords
-        centers[img.name] = C
-        rotations[img.name] = R
+        key = name_normalizer(img.name) if name_normalizer else img.name
+        centers[key] = C
+        rotations[key] = R
     return centers, rotations
 
 
@@ -144,19 +159,21 @@ def main(cfg: DictConfig):
     print("--- compare_to_agisoft config ---")
     print(OmegaConf.to_yaml(cfg))
     print("---------------------------------")
+    t_start = time.time()
 
     ours_dir = os.path.join(cfg.source_path, cfg.ours_sparse_dir)
     ref_dir = os.path.join(cfg.source_path, cfg.ref_sparse_dir)
 
     if not os.path.isdir(ours_dir):
         print(f"ERROR: ours sparse dir not found: {ours_dir}")
-        print("Did you run src/preprocessing/convert.py yet?")
+        print("Did you run src/preprocessing/run_colmap.py yet?")
         sys.exit(1)
     if not os.path.isdir(ref_dir):
         print(f"ERROR: reference (agisoft) sparse dir not found: {ref_dir}")
         sys.exit(1)
 
-    # 1. Load both reconstructions
+    # 1. Load both reconstructions. Agisoft renames images with an "_<index>" suffix on ingestion,
+    # so we normalize the agisoft side back to the original filenames for matching.
     print(f"Loading our COLMAP from: {ours_dir}")
     ext_ours = load_extrinsics(ours_dir)
     int_ours = load_intrinsics_summary(ours_dir)
@@ -165,7 +182,10 @@ def main(cfg: DictConfig):
     print(f"Loading Agisoft reference from: {ref_dir}")
     ext_ref = load_extrinsics(ref_dir)
     int_ref = load_intrinsics_summary(ref_dir)
-    centers_ref, rots_ref = extract_poses(ext_ref)
+    centers_ref, rots_ref = extract_poses(ext_ref, name_normalizer=_strip_agisoft_suffix)
+    n_renamed = sum(1 for img in ext_ref.values() if _strip_agisoft_suffix(img.name) != img.name)
+    if n_renamed > 0:
+        print(f"  (normalized {n_renamed}/{len(ext_ref)} Agisoft filenames by stripping '_<N>' suffix before .jpg)")
 
     # 2. Match by filename — only cameras present in both can be compared
     common = sorted(set(centers_ours.keys()) & set(centers_ref.keys()))
@@ -262,6 +282,47 @@ def main(cfg: DictConfig):
     with open(out_path, "w") as f:
         json.dump(report, f, indent=2)
     print(f"\nFull report written to {out_path}")
+
+    elapsed = time.time() - t_start
+    minutes, seconds = divmod(int(elapsed), 60)
+    print("\n" + "="*50)
+    print("      COMPARE_TO_AGISOFT SUMMARY")
+    print("="*50)
+    print(f"{'Plot:':<28} {cfg.field}/{cfg.plot}")
+    print(f"{'Cameras ours:':<28} {len(centers_ours)}")
+    print(f"{'Cameras agisoft:':<28} {len(centers_ref)}")
+    print(f"{'Common (matched):':<28} {len(common)}")
+    print(f"{'Agisoft renamed:':<28} {n_renamed}  (suffix '_<N>' stripped)")
+    print("-" * 50)
+    print(f"{'Umeyama scale (our→m):':<28} {s:.6f}")
+    print(f"{'Mean translation err:':<28} {trans_err.mean()*1000:.2f} mm")
+    print(f"{'Median translation err:':<28} {np.median(trans_err)*1000:.2f} mm")
+    if rot_err is not None:
+        print(f"{'Mean rotation err:':<28} {rot_err.mean():.3f}°")
+        print(f"{'Median rotation err:':<28} {np.median(rot_err):.3f}°")
+    print("-" * 50)
+    print(f"{'TOTAL TIME:':<28} {minutes}m {seconds}s  ({elapsed:.1f}s)")
+    print("="*50 + "\n")
+
+    summary = {
+        "step": "compare",
+        "field": cfg.field,
+        "plot": cfg.plot,
+        "n_ours": len(centers_ours),
+        "n_agisoft": len(centers_ref),
+        "n_common": len(common),
+        "scale": s,
+        "mean_trans_mm": float(trans_err.mean() * 1000),
+        "median_trans_mm": float(np.median(trans_err) * 1000),
+        "mean_rot_deg": float(rot_err.mean()) if rot_err is not None else None,
+        "median_rot_deg": float(np.median(rot_err)) if rot_err is not None else None,
+        "elapsed_s": elapsed,
+    }
+    summary_path = os.path.join(cfg.source_path, "logs", "compare_summary.json")
+    os.makedirs(os.path.dirname(summary_path), exist_ok=True)
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
+    return summary
 
 
 if __name__ == "__main__":

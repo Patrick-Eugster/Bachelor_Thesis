@@ -13,13 +13,40 @@
 # (Originally named convert.py — renamed to run_colmap.py since it runs the full COLMAP SfM pipeline,
 # not just a format conversion.)
 
+import json
 import os
+import struct
 import subprocess
 import time
 import shutil
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
+
+
+def _count_images_in_submodel(submodel_dir):
+    """Return the image count in a COLMAP sub-model folder. Reads the binary header from images.bin
+    (faster than parsing text) — first 8 bytes are uint64 num_images. Falls back to 0 if missing."""
+    images_bin = os.path.join(submodel_dir, "images.bin")
+    if not os.path.isfile(images_bin):
+        return 0
+    with open(images_bin, "rb") as f:
+        return struct.unpack("<Q", f.read(8))[0]
+
+
+def _pick_largest_submodel(distorted_sparse_dir):
+    """Scan distorted/sparse/<n>/ folders and return (best_subdir, best_count, all_counts).
+    The mapper sometimes spawns a stray small sub-model (e.g. 2 outliers) alongside the real
+    reconstruction — we always want the largest one for undistortion."""
+    candidates = []
+    for name in sorted(os.listdir(distorted_sparse_dir)):
+        sub = os.path.join(distorted_sparse_dir, name)
+        if os.path.isdir(sub):
+            candidates.append((name, sub, _count_images_in_submodel(sub)))
+    if not candidates:
+        return None, 0, []
+    best = max(candidates, key=lambda c: c[2])
+    return best[1], best[2], [(c[0], c[2]) for c in candidates]
 
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="preprocessing/colmap")
@@ -104,10 +131,14 @@ def main(cfg: DictConfig):
         # decreasing it speeds up bundle adjustment.
         print("Step 3/3: Mapping (SfM + bundle adjustment)...")
         t0 = time.time()
+        # Mapper.num_threads caps bundle adjustment + triangulation worker threads — without it
+        # the mapper grabs every core, which can spike RAM on dense scenes. We reuse cfg.num_threads
+        # (default 8) so SIFT and mapper share the same cap.
         mapper_cmd = (colmap_command + " mapper \
             --database_path " + source_path + "/distorted/database.db \
             --image_path " + image_path + " \
             --output_path " + source_path + "/distorted/sparse \
+            --Mapper.num_threads " + str(cfg.num_threads) + " \
             --Mapper.ba_global_function_tolerance=0.000001")
         exit_code = run_cmd(mapper_cmd)
         if exit_code != 0:
@@ -117,11 +148,28 @@ def main(cfg: DictConfig):
         print(f"  Mapper done in {time.time() - t0:.1f}s")
 
     # 4. Image undistortion — rewrites images to ideal pinhole intrinsics.
+    # Pick the largest sub-model: the mapper occasionally spawns a stray small sub-model
+    # (e.g. 2-image outlier blob) alongside the real reconstruction. Hardcoding "0" would
+    # undistort the wrong one on those sessions.
+    distorted_sparse = os.path.join(source_path, "distorted", "sparse")
+    best_sub, best_count, all_subs = _pick_largest_submodel(distorted_sparse)
+    if best_sub is None:
+        print(f"ERROR: no sub-models in {distorted_sparse} — mapper produced no reconstruction.")
+        log_file.close()
+        exit(1)
+    submodel_summary = ", ".join(f"{name}={n}" for name, n in all_subs)
+    if len(all_subs) > 1:
+        print(f"WARNING: mapper produced {len(all_subs)} sub-models ({submodel_summary}) — undistorting the largest one ({os.path.basename(best_sub)}, {best_count} images).")
+    else:
+        print(f"Mapper produced 1 sub-model ({submodel_summary}). Undistorting it.")
+    # remember for the summary at the end
+    mapper_submodels = all_subs
+    undistorted_count = best_count
     print("Undistorting images...")
     t0 = time.time()
     img_undist_cmd = (colmap_command + " image_undistorter \
         --image_path " + image_path + " \
-        --input_path " + source_path + "/distorted/sparse/0 \
+        --input_path " + best_sub + " \
         --output_path " + source_path + "\
         --output_type COLMAP")
     exit_code = run_cmd(img_undist_cmd)
@@ -187,10 +235,54 @@ def main(cfg: DictConfig):
                 exit(exit_code)
 
     elapsed = time.time() - t_start
-    msg = f"Done. Total time: {elapsed/60:.1f} min ({elapsed:.0f}s)"
-    print(msg)
-    log_file.write(msg + "\n")
+
+    # input image count (what we fed to feature_extractor) — symlinks are followed by os.listdir
+    try:
+        n_input = sum(1 for f in os.listdir(image_path) if f.lower().endswith((".jpg", ".jpeg", ".png")))
+    except OSError:
+        n_input = 0
+
+    minutes, seconds = divmod(int(elapsed), 60)
+    print("\n" + "="*50)
+    print("      COLMAP SUMMARY")
+    print("="*50)
+    print(f"{'Plot:':<28} {cfg.field}/{cfg.plot}")
+    print(f"{'Camera model:':<28} {cfg.camera}  (single_camera={cfg.single_camera})")
+    print(f"{'Matcher:':<28} {cfg.matcher}")
+    print(f"{'GPU enabled (SIFT+match):':<28} {not cfg.no_gpu}")
+    print(f"{'Threads (feat+match+map):':<28} {cfg.num_threads}")
+    print("-" * 50)
+    print(f"{'Input images:':<28} {n_input}")
+    print(f"{'Sub-models from mapper:':<28} {len(mapper_submodels)}  ({', '.join(f'{n}={c}' for n, c in mapper_submodels)})")
+    print(f"{'Registered in largest:':<28} {undistorted_count} / {n_input}")
+    if n_input > 0:
+        print(f"{'Registration rate:':<28} {100.0*undistorted_count/n_input:.1f}%")
+    print("-" * 50)
+    print(f"{'TOTAL TIME:':<28} {minutes}m {seconds}s  ({elapsed:.0f}s)")
+    print("="*50 + "\n")
+
+    log_file.write(f"Total time: {elapsed/60:.1f} min ({elapsed:.0f}s)\n")
+    log_file.write(f"Registered {undistorted_count}/{n_input} in {len(mapper_submodels)} sub-models\n")
     log_file.close()
+
+    # drop a JSON summary the orchestrator can pick up
+    summary = {
+        "step": "colmap",
+        "field": cfg.field,
+        "plot": cfg.plot,
+        "input_images": n_input,
+        "submodels": [{"name": n, "images": c} for n, c in mapper_submodels],
+        "registered": undistorted_count,
+        "camera": cfg.camera,
+        "single_camera": cfg.single_camera,
+        "matcher": cfg.matcher,
+        "gpu": not cfg.no_gpu,
+        "num_threads": cfg.num_threads,
+        "elapsed_s": elapsed,
+    }
+    with open(os.path.join(log_dir, "colmap_summary.json"), "w") as f:
+        json.dump(summary, f, indent=2)
+    return summary
 
 
 if __name__ == "__main__":

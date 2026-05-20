@@ -6,7 +6,7 @@ Phone images need a few cleanup steps before they can be used by the 3DGS pipeli
 
 1. **`preprocess_uniform_size.py`** — center-crops all images to a single resolution. Fixes the HDR-mode size mismatch that splits COLMAP's reconstruction into disconnected sub-models. **Run this first.** If all images are already uniform, creates `input_uniform` as a symlink to `input/` (zero disk cost) so step 2 still works without overrides.
 2. **`run_colmap.py`** (formerly `convert.py`) — runs COLMAP Structure-from-Motion: feature extraction → matching → SfM mapper → image undistortion. Produces `images/` + `sparse/0/` ready for 3DGS training.
-3. **`compare_to_agisoft.py`** — *optional*: benchmarks our `sparse/0/` against supervisor's `agisoft/sparse/0/` via Umeyama alignment. Run only when the Agisoft reference is present in the plot folder.
+3. **`compare_to_agisoft.py`** — *optional*: benchmarks our `sparse/0/` against supervisor's `agisoft/sparse/0/` via Umeyama alignment. Run only when the Agisoft reference is present in the plot folder. Strips Agisoft's `_<N>` filename suffix (e.g. `IMG_..._3.jpg`) before matching against our COLMAP names — necessary because Agisoft renames images on ingestion.
 
 These three are wrapped by **`run_preprocessing.py`**, an orchestrator with step toggles (same pattern as `src/run_reconstruction.py`). Use it for any normal session; fall back to running each script individually only when debugging one stage.
 
@@ -17,7 +17,7 @@ All scripts are configured via Hydra. Configs live in `configs/preprocessing/`.
 ## Quick start (orchestrator)
 
 ```bash
-# default: uniform-size + COLMAP, compare disabled
+# default: uniform-size + COLMAP, compare disabled, auto-clean before COLMAP
 python src/preprocessing/run_preprocessing.py field=field_D plot=20250523
 
 # all three steps (use when agisoft/sparse/0/ is present in the plot folder)
@@ -26,9 +26,18 @@ python src/preprocessing/run_preprocessing.py field=field_A plot=20250618 run_co
 # skip individual steps
 python src/preprocessing/run_preprocessing.py field=field_D plot=20250523 run_uniform=false
 python src/preprocessing/run_preprocessing.py field=field_A plot=20250618 run_colmap=false run_compare=true
+
+# keep prior COLMAP output (e.g. for skip_matching=true re-runs)
+python src/preprocessing/run_preprocessing.py field=field_D plot=20250523 clean_before_colmap=false
 ```
 
-The orchestrator simply forwards `field=` and `plot=` to each step's own Hydra config. Defaults in [`configs/preprocessing/config.yaml`](../../configs/preprocessing/config.yaml).
+The orchestrator forwards `field=` and `plot=` to each step's own Hydra config and adds three QOL features:
+
+- **`clean_before_colmap: true`** (default) — wipes `distorted/`, `sparse/`, `images/`, `stereo/` + stale `colmap_summary.json` / `compare_summary.json` from previous runs before step 2. Leaves `input/`, `input_uniform/`, `agisoft/`, `video/`, `logs/` alone. No more manual `rm -rf` when re-running on the same plot.
+- **Per-step JSON summaries** — each script writes a small `*_summary.json` in `{source_path}/logs/`. The orchestrator reads them after each subprocess finishes.
+- **Final RECAP block** — at the very end the orchestrator re-prints each script's boxed summary back-to-back (uniform-size → COLMAP → compare), followed by a per-step timing table. Useful because COLMAP's voluminous output otherwise buries the earlier summaries.
+
+Defaults in [`configs/preprocessing/config.yaml`](../../configs/preprocessing/config.yaml).
 
 ---
 
@@ -94,6 +103,13 @@ Default paths assume `dataset=phone` and `field=field_A` — the script reads fr
 
 **Symlink fallback when no cropping is needed:** if all input images already share the same dimensions, the script creates `input_uniform` as a **symlink** to `input/` instead of copying files. Costs zero disk space, takes <1 second, and `run_colmap.py`'s default `image_subdir=input_uniform` keeps working unchanged. If a later capture mixes sizes and cropping is actually needed, the stale symlink is removed first so no real files are written through it. This means **you can safely run `preprocess_uniform_size.py` on every session**, uniform or not, without thinking about overrides.
 
+**Compression behavior when cropping:**
+- **`.jpg` / `.jpeg`** — saved with Pillow's `quality="keep"`, which inherits the source quantization tables so the cropped image goes through the JPEG encoder *once more* but at the exact same quality as the original. This avoids stacking lossy round 1 (phone JPEG) + lossy round 2 (our re-encode at quality=95) which our earlier code was doing. Still a small generation loss because re-encoding decoded RGB through JPEG is never strictly lossless — but it's the best Pillow can do without `jpegtran`.
+- **`.png`** — saved with `compress_level=0` (zero deflate). Lossless, just slightly larger files. We don't currently capture PNG in the field, but the code path is here for future captures where we may shoot raw/PNG to preserve wheat-head detail for downstream segmentation.
+- **Other formats** — PIL defaults (lossless for TIFF/BMP).
+
+**Future TODO — truly lossless JPEG cropping:** Even `quality="keep"` re-encodes the pixels through JPEG. For bit-exact JPEG cropping we'd need to use `jpegtran -crop WxH+X+Y` (libjpeg's lossless DCT-coefficient crop), which works only when the crop offsets are multiples of the JPEG MCU block size (typically 8 or 16 px). Our center-crop offsets *would* land on MCU boundaries for most phone aspect ratios — so this is a real, free quality improvement once we wire it in. Not urgent because the additional loss from `quality="keep"` re-encode is minor, but worth doing when we eventually re-shoot field data and want to squeeze every last bit of feature-match quality out for both COLMAP and the YOLO+SAM wheat-head detector downstream.
+
 ### CLI options (override on command line)
 
 | Key | Default | Meaning |
@@ -120,6 +136,11 @@ Wraps four COLMAP commands into one Python script:
 | 2 | `sequential_matcher` or `exhaustive_matcher` | Finds matching features across image pairs |
 | 3 | `mapper` | Runs Structure-from-Motion (SfM) — recovers camera positions + sparse 3D points |
 | 4 | `image_undistorter` | Removes lens distortion → final `images/` + `sparse/0/` ready for 3DGS |
+
+**Robustness features** (added after the `field_D/20250523` sub-model split incident):
+
+- **Largest-sub-model picker.** The mapper occasionally spawns a stray small sub-model (e.g. 2-image outlier blob) alongside the real reconstruction. Hardcoding `distorted/sparse/0` for the undistorter would then process the wrong one (we saw this hand us "2/64 registered" instead of "64/64"). The script now scans `distorted/sparse/<n>/` after the mapper, reads each `images.bin` header to count registered frames, and passes the largest sub-model to `image_undistorter`. Prints a `WARNING: mapper produced N sub-models (0=2, 1=64) — undistorting the largest one ...` when this safeguard kicks in.
+- **`Mapper.num_threads` cap.** The mapper command now includes `--Mapper.num_threads ${cfg.num_threads}` so bundle adjustment shares the same thread budget as SIFT/matching (8 by default). Without this the mapper would grab every core, which can spike RAM on dense scenes.
 
 Output layout matches what 3DGS expects:
 ```
