@@ -44,6 +44,10 @@ def _check_overwrite(model_path, cfg):
         return  # "initial" is a scratch run, always safe to overwrite
     if os.path.exists(model_path) and os.listdir(model_path):
         print(f"\nExperiment '{cfg.experiment_name}' already exists at: {model_path}")
+        if not sys.stdin.isatty():
+            # non-interactive (SLURM job, pipe) — overwrite automatically
+            print("Non-interactive mode: overwriting.")
+            return
         answer = input("Overwrite? [y/N]: ").strip().lower()
         if answer != "y":
             print("Aborted.")

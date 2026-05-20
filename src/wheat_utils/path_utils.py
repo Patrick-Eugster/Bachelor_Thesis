@@ -27,17 +27,21 @@ def _plot_subpath(cfg):
     FIP (date=""): "plot_461"
     Phone (date="20250618"): "field_A/20250618"
     """
-    date = getattr(cfg, 'date', '')
+    date = str(getattr(cfg, 'date', ''))
     return os.path.join(cfg.plot, date) if date else cfg.plot
 
 
 def get_dataset_path(cfg):
     """Absolute path to the input plot folder.
 
-    FIP:   input_plots/fip/plot_461/
-    Phone: input_plots/phone/field_A/20250618/
+    FIP:                input_plots/fip/plot_461/
+    Phone (COLMAP):     input_plots/phone/field_A/20250618/
+    Phone (Agisoft):    input_plots/phone/field_A/20250618/agisoft/   (use_agisoft_sfm=true)
     """
-    return os.path.join(cfg.dataset.input_dir, _plot_subpath(cfg))
+    base = os.path.join(cfg.dataset.input_dir, _plot_subpath(cfg))
+    if getattr(cfg, 'use_agisoft_sfm', False):
+        return os.path.join(base, 'agisoft')
+    return base
 
 
 def get_mask_generation_result_path(cfg, plot_name):
@@ -53,10 +57,16 @@ def get_mask_generation_result_path(cfg, plot_name):
 def get_reconstruction_model_path(cfg, exp_name):
     """Derive 3DGS model output path.
 
-    FIP:   results/reconstruction/fip/plot_461/vanilla_3dgs/{experiment}/
-    Phone: results/reconstruction/phone/field_A/20250618/vanilla_3dgs/{experiment}/
+    FIP:                results/reconstruction/fip/plot_461/vanilla_3dgs/{experiment}/
+    Phone (COLMAP):     results/reconstruction/phone/field_A/20250618/vanilla_3dgs/{experiment}/
+    Phone (Agisoft):    results/reconstruction/phone/field_A/20250618/agisoft/vanilla_3dgs/{experiment}/
+                        — mirrors input layout so an Agisoft run never overwrites the COLMAP run
+                          even when both share experiment_name="initial"
     """
-    return os.path.join(cfg.dataset.result_dir_recon, _plot_subpath(cfg), "vanilla_3dgs", exp_name)
+    base = os.path.join(cfg.dataset.result_dir_recon, _plot_subpath(cfg))
+    if getattr(cfg, 'use_agisoft_sfm', False):
+        base = os.path.join(base, 'agisoft')
+    return os.path.join(base, "vanilla_3dgs", exp_name)
 
 
 def get_seg_source_dir(cfg):

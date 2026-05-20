@@ -24,6 +24,12 @@ prepend_date: false
 # set true to use ground truth yolosam bboxes+masks instead of predicted ones (for ablation)
 use_yolosam_source: false
 
+# set true to use the supervisor's Agisoft SfM instead of our COLMAP cameras
+# reads agisoft/images/ and agisoft/sparse/0/ from the plot folder instead of images/ and sparse/0/
+# use_agisoft_sfm=true → experiment_name should differ from the COLMAP run so results don't collide
+# only valid for phone plots (FIP has no agisoft/ subfolder)
+use_agisoft_sfm: false
+
 # pipeline step toggles (all off by default — enable on CLI or edit here)
 run_train: false       # step 1: train 3DGS model
 run_render: false      # step 2: render from training/test cameras (visual quality check)
