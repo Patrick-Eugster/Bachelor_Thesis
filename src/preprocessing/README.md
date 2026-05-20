@@ -7,6 +7,7 @@ Phone images need a few cleanup steps before they can be used by the 3DGS pipeli
 1. **`preprocess_uniform_size.py`** — center-crops all images to a single resolution. Fixes the HDR-mode size mismatch that splits COLMAP's reconstruction into disconnected sub-models. **Run this first.** If all images are already uniform, creates `input_uniform` as a symlink to `input/` (zero disk cost) so step 2 still works without overrides.
 2. **`run_colmap.py`** (formerly `convert.py`) — runs COLMAP Structure-from-Motion: feature extraction → matching → SfM mapper → image undistortion. Produces `images/` + `sparse/0/` ready for 3DGS training.
 3. **`compare_to_agisoft.py`** — *optional*: benchmarks our `sparse/0/` against supervisor's `agisoft/sparse/0/` via Umeyama alignment. Run only when the Agisoft reference is present in the plot folder. Strips Agisoft's `_<N>` filename suffix (e.g. `IMG_..._3.jpg`) before matching against our COLMAP names — necessary because Agisoft renames images on ingestion.
+4. **`analyze_sharpness.py`** — *diagnostic only, does NOT modify any image*: computes Laplacian variance per image (standard sharpness metric) and reports the per-session distribution. Use to confirm whether a session with poor COLMAP results is suffering from blurry input (a capture-time issue) vs a pipeline issue.
 
 These three are wrapped by **`run_preprocessing.py`**, an orchestrator with step toggles (same pattern as `src/run_reconstruction.py`). Use it for any normal session; fall back to running each script individually only when debugging one stage.
 
@@ -467,6 +468,71 @@ The two upgrade sections below (`hloc` and `ArUco markers`) each cost real engin
 The benchmarking workflow above is the **evidence-based** way to decide. If our SIFT-based COLMAP gets to within ~1 dB PSNR of Agisoft on a high-quality session like `field_D/20250530`, that's an empirical demonstration that our open-source pipeline matches the commercial reference for thesis-relevant outputs — which is the headline thesis claim. No upgrade needed.
 
 If we're 3+ dB behind, the gap is real, and that's the point where hloc becomes the right next step.
+
+---
+
+## Diagnostic: image sharpness with `analyze_sharpness.py`
+
+When a session's COLMAP result looks unexpectedly bad (low registration rate, large `compare_to_agisoft.py` errors, or wide pose spread), the most common root cause is **blurry input images**, not the pipeline. SIFT — or any feature detector — can only extract reliable keypoints from sharp, stable image content. When images are soft (wind motion, walking too fast, low light), the feature graph becomes sparse and the mapper drops frames it can't constrain.
+
+`src/preprocessing/analyze_sharpness.py` is a quick diagnostic that scores every image in a session by **Laplacian variance** — apply a 2nd-derivative Laplacian filter (kernel: `[[0,1,0],[1,-4,1],[0,1,0]]`) to the grayscale image, then take the variance of the result. Sharp images → strong edges → high variance. Blurry images → smooth gradients → low variance.
+
+**The script does NOT modify, copy, or delete any image.** It only reads them, prints a report, and writes a JSON. Purely diagnostic.
+
+### How to run
+
+```bash
+python src/preprocessing/analyze_sharpness.py field=field_D plot=20250530
+```
+
+Defaults: reads from `{source_path}/input/`, lists the 10 blurriest + 5 sharpest, full-resolution analysis.
+
+CLI overrides:
+
+```bash
+# bigger lists
+python src/preprocessing/analyze_sharpness.py field=field_D plot=20250530 worst_n=20 best_n=10
+
+# faster on huge sessions — half-resolution analysis (ranking is unaffected)
+python src/preprocessing/analyze_sharpness.py field=field_A plot=20250609 downscale=0.5
+
+# analyze post-uniform-size output instead of raw input
+python src/preprocessing/analyze_sharpness.py field=field_A plot=20250618 image_subdir=input_uniform
+```
+
+### What the report contains
+
+- `min / max / mean / median / std` of the per-image Laplacian variance.
+- `10th / 90th percentile` — quick view of the distribution spread.
+- `below 0.5x median` — count of "obvious outlier" images.
+- ASCII histogram (20 bins) — quick visual of the distribution shape.
+- Top-N blurriest list (with each image labeled `very sharp`, `sharp`, `slightly soft`, `visibly blurry`, or `heavy blur / out of focus`).
+- Top-N sharpest list (as a reference point).
+- Full per-image scores in `{source_path}/logs/sharpness_report.json`.
+
+### How to interpret
+
+| Median Laplacian variance | Meaning (12 MP phone, wheat field) |
+|---|---|
+| **> 1000** | Very sharp — typical of well-shot phone images |
+| **500–1000** | Sharp — fine for COLMAP |
+| **200–500** | Marginal — some images may fail registration |
+| **< 200** | Problematic — expect dropped images and large pose errors |
+
+Absolute thresholds are only approximate — the **session distribution** matters more than the median in isolation. Compare:
+
+| Session | Median | Outliers (<0.5× median) | COLMAP outcome |
+|---|---|---|---|
+| field_A/20250609 | **1935** | 2 | 119/119 registered, 12.3 mm vs Agisoft |
+| field_D/20250523 | **1196** | 0 | 64/64 registered, 15.1 mm vs Agisoft |
+| field_A/20250618 | **1026** | 0 | 93/93 registered, 22.9 mm vs Agisoft |
+| field_D/20250530 | **399** | **5** | 63/85 registered, 60 mm vs Agisoft ❌ |
+
+The cross-session pattern is unambiguous: sharper sessions register more images and produce tighter poses. The full discussion of how the sharpness numbers explain the `compare_to_agisoft` numbers is in [`../../docs/COMPARE_TO_AGISOFT_RESULTS.md`](../../docs/COMPARE_TO_AGISOFT_RESULTS.md).
+
+### Possible future use (not implemented)
+
+If a session is determined to be blurry, a **cheap mitigation** is to drop the bottom-N% blurriest frames before COLMAP. This is *not* currently wired into the pipeline — it would be an opt-in filtering step (e.g. `filter_sharpness_threshold: 0.5` in the orchestrator config) that uses the `sharpness_report.json` to skip outlier frames. Worth implementing **only** if the 3DGS PSNR benchmark on `field_D/20250530` shows the blur measurably degrades render quality. Until then, the analysis stays diagnostic-only.
 
 ---
 

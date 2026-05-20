@@ -1,0 +1,43 @@
+# @package _global_
+# Config for src/preprocessing/analyze_sharpness.py — DIAGNOSTIC ONLY.
+# Computes Laplacian variance per image to characterize how sharp/blurry a capture is.
+# Does NOT modify, filter, or delete any image. Only prints a report + writes a JSON.
+#
+# Typical usage:
+#   python src/preprocessing/analyze_sharpness.py field=field_D plot=20250530
+#   python src/preprocessing/analyze_sharpness.py field=field_A plot=20250609 image_subdir=input
+#   python src/preprocessing/analyze_sharpness.py field=field_D plot=20250523 worst_n=15
+
+defaults:
+  - /dataset: phone
+  - _self_
+
+# field + plot — same convention as the other preprocessing configs
+field: field_A
+plot: ???
+
+# auto-derived path the script reads from
+source_path: ${dataset.input_dir}/${field}/${plot}
+
+# subfolder under source_path containing the images. "input" reads the raw originals
+# (recommended for sharpness analysis — undistortion or downscaling can change the score).
+image_subdir: input
+
+# how many of the blurriest images to list at the end of the report (set 0 to disable)
+worst_n: 10
+
+# also list the sharpest N (useful as a reference point — set 0 to disable)
+best_n: 5
+
+# downscale images before computing Laplacian (faster on very large images, ~no effect on
+# the relative ranking). 1.0 = no downscale; 0.5 = half-resolution. Default 1.0 for accuracy.
+downscale: 1.0
+
+# where to drop the per-image JSON report (relative to source_path)
+output_file: logs/sharpness_report.json
+
+# hydra: don't create outputs/ folder — we save our own JSON under {source_path}/logs/
+hydra:
+  output_subdir: null
+  run:
+    dir: .
