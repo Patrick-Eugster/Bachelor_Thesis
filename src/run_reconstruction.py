@@ -178,6 +178,14 @@ def _run_pipeline(cfg):
 
     # Step 2: Render from original training/test camera views (for quality check)
     if cfg.run_render:
+        # wipe stale renders from any previous run — keeps next metrics step from
+        # iterating leftover files that don't correspond to the current eval split
+        import shutil as _shutil
+        for sub in ("train", "test"):
+            sub_path = os.path.join(model_path, sub)
+            if os.path.isdir(sub_path):
+                print(f"Clearing stale renders at {sub_path}")
+                _shutil.rmtree(sub_path)
         run_step("2. Render", [
             "python", "src/reconstruction/render.py",
             "-s", dataset_path,

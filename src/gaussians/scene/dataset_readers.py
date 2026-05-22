@@ -180,21 +180,22 @@ def readColmapSceneInfo(path, images, eval, llffhold=8, normalize=False, seg_dir
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
     if eval:
+        # FIP cameras are named cam_1 … cam_12 → use cam-index split (cam_11, cam_12 = test).
+        # Anything else (phone COLMAP IMG_..., phone Agisoft IMG_..._<seq>) → llffhold=8.
+        # Detecting "FIP-ness" by parsing alone is unsafe because Agisoft renames phone images
+        # with a sequential _<N> suffix (0..118), so split('_')[-1] parses fine but the >10
+        # threshold misclassifies most of them as test (108 test / 11 train, totally wrong).
+        is_fip_naming = all(c.image_name.startswith('cam_') for c in cam_infos)
         train_cam_infos = []
         test_cam_infos = []
-        # FIP cameras are named cam_1 … cam_12 — use index to split (cam_11, cam_12 = test).
-        # For phone/generic names the index parse fails or produces huge numbers (all > 10 → empty train),
-        # so fall back to standard llffhold=8 (every 8th image = test, ~12 test views for 93 images).
-        try:
+        if is_fip_naming:
             for cam_info in cam_infos:
                 cam_idx = int(cam_info.image_name.split('_')[-1])
                 if cam_idx > 10:
                     test_cam_infos.append(cam_info)
                 else:
                     train_cam_infos.append(cam_info)
-            if not train_cam_infos:
-                raise ValueError("no train cameras — not FIP naming")
-        except (ValueError, IndexError):
+        else:
             llffhold = 8
             train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]
             test_cam_infos  = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 0]

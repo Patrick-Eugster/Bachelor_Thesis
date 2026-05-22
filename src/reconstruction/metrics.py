@@ -89,8 +89,11 @@ def evaluate(model_paths):
                 json.dump(full_dict[scene_dir], fp, indent=True)
             with open(scene_dir + "/per_view.json", 'w') as fp:
                 json.dump(per_view_dict[scene_dir], fp, indent=True)
-        except:
-            print("Unable to compute metrics for model", scene_dir)
+        except Exception as e:
+            import traceback
+            print(f"!!! Unable to compute metrics for model {scene_dir}: {type(e).__name__}: {e}")
+            traceback.print_exc()
+            raise
 
 if __name__ == "__main__":
     device = torch.device("cuda:0")

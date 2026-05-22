@@ -144,7 +144,23 @@ This is the actionable part. The thesis goal is to match Agisoft's quality with 
 
 **Option B — COLMAP GCP support (more accurate).** COLMAP recently added Ground Control Point support via bundle adjustment — see [colmap/colmap#593](https://github.com/colmap/colmap/issues/593#issuecomment-3926658343). You provide a list of `(image_name, x_pixel, y_pixel, X_world, Y_world, Z_world)` rows; COLMAP uses them as constraints in BA, exactly like Agisoft does. This requires detecting marker positions in each image first (next gap).
 
-**Option C — pycolmap + custom constraints.** `pycolmap` is the Python bindings for COLMAP. Could write a script that runs reconstruction, then post-processes by triangulating known marker positions and applying a similarity transform to align them with ground truth. More work than B.
+**Option C — full pycolmap pipeline with markers integrated from the start.** `pycolmap` is the official Python bindings to the same COLMAP C++ codebase (same algorithms, same CUDA when built with CUDA flags). Instead of bolting GCPs onto a finished reconstruction post-hoc, rewrite the preprocessing pipeline as Python so markers are first-class citizens throughout, mirroring what Agisoft does internally:
+
+| Step | What |
+|---|---|
+| 1 | SIFT feature extraction (CUDA) |
+| 2 | **ArUco detection** via `cv2.aruco.detectMarkers` — get marker pixel coords per image |
+| 3 | Feature matching (CUDA) |
+| 4 | **Inject marker correspondences into the matches database** — same marker ID in two photos = a correspondence, just like a SIFT match |
+| 5 | Mapper — uses SIFT + marker matches together |
+| 6 | Bundle adjustment with marker world coordinates as **fixed GCPs** |
+| 7 | Undistort |
+
+This is the *Agisoft-equivalent* workflow. Adding markers post-hoc (a "mix" of CLI + pycolmap, CLI does 1–5, pycolmap re-runs BA with GCPs in step 6) sounds simpler but doesn't work as well: by the time the CLI mapper finishes, camera poses are already fixed; post-hoc BA can refine but can't undo a bad initial loop closure or wrong scale guess. Markers need to guide the search from the start.
+
+**Build/install note:** `pip install pycolmap` from PyPI ships CPU-only wheels — for CUDA-accelerated SIFT, build pycolmap from source with the same flags as our existing CUDA COLMAP CLI (see [`INSTALL_COLMAP_CUDA.md`](INSTALL_COLMAP_CUDA.md) — most of the dependency work is already done since we built CUDA COLMAP from source on this machine).
+
+**Rollback plan if pycolmap doesn't pan out:** our CUDA-enabled COLMAP CLI is independent. If full-pycolmap turns out to be a dead end (build issues, missing API surface, etc.), we don't lose anything — we can keep using the CLI we already have via [`run_colmap.py`](../src/preprocessing/run_colmap.py), and fall back to Option A (post-hoc scale calibration) for metric scale. The CUDA CLI is the safety net.
 
 ### Gap 2: Marker detection (and using markers as constraints)
 
@@ -168,6 +184,34 @@ This is where COLMAP+SIFT genuinely lags Agisoft, and it's also where the most e
 - **VGGSfM / MASt3R-SfM** (2024) — end-to-end neural SfM, no SIFT at all. Newer and less proven but potentially huge gains on hard scenes. Still research-grade.
 
 **Practical step:** if our current SIFT-based COLMAP starts failing on a phone capture, the first thing to try is SuperPoint + SuperGlue via `hloc`. That alone often closes the gap to Agisoft on textureless scenes. It's been on the "should try" list for a while.
+
+### How hloc + ArUco GCPs combine
+
+The two upgrades are **orthogonal** — they fix different problems and compose cleanly:
+
+| Lever | Problem it fixes | Where in the pipeline |
+|---|---|---|
+| SuperPoint + SuperGlue (via hloc) | SIFT fails on repetitive / textureless scenes → low registration rates | Replaces steps 1 + 3 (features + matching) |
+| ArUco + GCPs (via pycolmap) | No metric scale, no georeferencing | Adds steps 2 + 4 + 6 (marker detect + inject + GCP-aware BA) |
+
+hloc writes its SuperPoint features and SuperGlue matches into the **same COLMAP database format** that pycolmap reads natively, so they slot together without glue code. Combined pipeline:
+
+| Step | Tool | What |
+|---|---|---|
+| 1 | **hloc (SuperPoint)** | Deep feature extraction — beats SIFT on wheat |
+| 2 | OpenCV (`cv2.aruco`) | ArUco marker detection per image |
+| 3 | **hloc (SuperGlue / LightGlue)** | Deep feature matching — beats default matchers |
+| 4 | pycolmap | Inject marker correspondences into matches DB |
+| 5 | pycolmap | Mapper — uses SuperPoint features + marker matches |
+| 6 | pycolmap | Bundle adjustment with marker world coords as fixed GCPs |
+| 7 | pycolmap | Undistort |
+
+You can apply either upgrade independently:
+- If 3DGS metrics look fine but you need metric scale → just add ArUco/GCPs (steps 2, 4, 6).
+- If registration rates are low (sessions producing fragmented sub-models) → just add hloc (steps 1, 3).
+- If both are problems → the full combined pipeline above.
+
+CUDA-enabled COLMAP CLI remains the safety net for all variants — if either hloc or pycolmap turn out to be problematic, fall back to the current SIFT-based CLI pipeline.
 
 ### Gap 4: Quality evaluation
 
