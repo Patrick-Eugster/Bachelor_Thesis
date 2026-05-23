@@ -132,6 +132,7 @@ phase1_packages.txt
 phase2_3_packages.txt
 
 docs/CHANGES.md
+docs/CAMERA_INTRINSICS_EXPLAINED.md
 
 # --- Papers / PDFs ---
 *.pdf
