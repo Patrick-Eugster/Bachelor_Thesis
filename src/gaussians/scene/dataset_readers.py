@@ -10,6 +10,7 @@
 #
 
 import os
+import re
 import sys
 import glob
 from PIL import Image
@@ -39,6 +40,10 @@ class CameraInfo(NamedTuple):
     height: int
     bbox_path: str
     mask_paths: List[str]
+    # principal point from COLMAP/Agisoft intrinsics (pixels, in the original image's coord system)
+    # None if camera model didn't supply it; consumed only when use_principal_point=True
+    cx: float = None
+    cy: float = None
 
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
@@ -86,13 +91,27 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, bboxes_fold
         R = np.transpose(qvec2rotmat(extr.qvec))
         T = np.array(extr.tvec)
 
+        # COLMAP intrinsics layout:
+        #   SIMPLE_PINHOLE: [f, cx, cy]
+        #   PINHOLE:        [fx, fy, cx, cy]
+        # vanilla 3DGS only reads focal length and silently drops cx, cy — that's the
+        # principal-point bug (see docs/PIXEL_SHIFT_BUG.md). We now also extract cx/cy
+        # and pass them downstream; they're only USED when use_principal_point=True.
+        cx_intr = None
+        cy_intr = None
         if intr.model=="SIMPLE_PINHOLE":
             focal_length_x = intr.params[0]
+            if len(intr.params) >= 3:
+                cx_intr = float(intr.params[1])
+                cy_intr = float(intr.params[2])
             FovY = focal2fov(focal_length_x, height)
             FovX = focal2fov(focal_length_x, width)
         elif intr.model=="PINHOLE":
             focal_length_x = intr.params[0]
             focal_length_y = intr.params[1]
+            if len(intr.params) >= 4:
+                cx_intr = float(intr.params[2])
+                cy_intr = float(intr.params[3])
             FovY = focal2fov(focal_length_y, height)
             FovX = focal2fov(focal_length_x, width)
         else:
@@ -117,7 +136,8 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, bboxes_fold
             
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                               image_path=image_path, image_name=image_name, width=width, height=height,
-                              bbox_path=bbox_path, mask_paths=mask_paths)
+                              bbox_path=bbox_path, mask_paths=mask_paths,
+                              cx=cx_intr, cy=cy_intr)
         cam_infos.append(cam_info)
     sys.stdout.write('\n')
     return cam_infos
@@ -180,12 +200,16 @@ def readColmapSceneInfo(path, images, eval, llffhold=8, normalize=False, seg_dir
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
     if eval:
-        # FIP cameras are named cam_1 … cam_12 → use cam-index split (cam_11, cam_12 = test).
-        # Anything else (phone COLMAP IMG_..., phone Agisoft IMG_..._<seq>) → llffhold=8.
-        # Detecting "FIP-ness" by parsing alone is unsafe because Agisoft renames phone images
-        # with a sequential _<N> suffix (0..118), so split('_')[-1] parses fine but the >10
-        # threshold misclassifies most of them as test (108 test / 11 train, totally wrong).
-        is_fip_naming = all(c.image_name.startswith('cam_') for c in cam_infos)
+        # FIP image names end with "_cam_NN" (e.g. "FPWW036_SR0461_FIP2_cam_11") → cam-index split
+        # (cam_11, cam_12 = test). Anything else (phone COLMAP IMG_..., phone Agisoft IMG_..._<seq>)
+        # → llffhold=8 fallback.
+        # NOTE: the previous startswith('cam_') predicate returned False for actual FIP filenames
+        # (they don't start with 'cam_', they contain it in the middle) — that misrouted every FIP
+        # plot into the llffhold path and silently inflated PSNR by testing on too-easy interpolated
+        # views instead of held-out cam_11/cam_12. Use a tail regex so the check is robust against
+        # Agisoft's sequential "_<N>" suffix (small N still parses fine but the cam_ marker isn't there).
+        fip_pat = re.compile(r'_cam_\d+$')
+        is_fip_naming = all(fip_pat.search(c.image_name) for c in cam_infos)
         train_cam_infos = []
         test_cam_infos = []
         if is_fip_naming:

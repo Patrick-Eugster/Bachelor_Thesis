@@ -47,11 +47,20 @@ def loadCam(args, id, cam_info, resolution_scale):
     if resized_image_rgb.shape[1] == 4:
         loaded_mask = resized_image_rgb[3:4, ...]
 
-    return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
-                  FoVx=cam_info.FovX, FoVy=cam_info.FovY, 
+    # opt-in: pass cx/cy through to Camera scaled to the loaded resolution
+    # (image was downscaled by `scale`, so cx/cy in the downscaled coord system = cx_orig/scale)
+    cx_scaled = None
+    cy_scaled = None
+    if getattr(args, "use_principal_point", False) and cam_info.cx is not None and cam_info.cy is not None:
+        cx_scaled = cam_info.cx / scale
+        cy_scaled = cam_info.cy / scale
+
+    return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T,
+                  FoVx=cam_info.FovX, FoVy=cam_info.FovY,
                   image=gt_image, gt_alpha_mask=loaded_mask,
                   image_name=cam_info.image_name, uid=id, data_device=args.data_device,
-                  bbox_path=cam_info.bbox_path, mask_paths=cam_info.mask_paths, resolution=resolution, resolution_scale=scale)
+                  bbox_path=cam_info.bbox_path, mask_paths=cam_info.mask_paths, resolution=resolution, resolution_scale=scale,
+                  cx=cx_scaled, cy=cy_scaled)
 
 def cameraList_from_camInfos(cam_infos, resolution_scale, args):
     camera_list = []

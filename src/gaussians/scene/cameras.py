@@ -19,7 +19,8 @@ class Camera(nn.Module):
     def __init__(self, colmap_id, R, T, FoVx, FoVy, image, gt_alpha_mask,
                  image_name, uid,
                  bbox_path, mask_paths, resolution, resolution_scale,
-                 trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda"
+                 trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda",
+                 cx=None, cy=None,
                  ):
         super(Camera, self).__init__()
 
@@ -53,8 +54,19 @@ class Camera(nn.Module):
         self.trans = trans
         self.scale = scale
 
+        # principal point (already scaled to match current image_width/height by camera_utils.loadCam)
+        # None → symmetric frustum (vanilla 3DGS, principal point assumed at image center)
+        # set  → asymmetric frustum that honors the real cx/cy (see docs/PIXEL_SHIFT_BUG.md)
+        self.cx = cx
+        self.cy = cy
+
         self.world_view_transform = torch.tensor(getWorld2View2(R, T, trans, scale).astype(np.float32)).transpose(0, 1).cuda()
-        self.projection_matrix = getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy).transpose(0,1).cuda()
+        self.projection_matrix = getProjectionMatrix(
+            znear=self.znear, zfar=self.zfar,
+            fovX=self.FoVx, fovY=self.FoVy,
+            cx=self.cx, cy=self.cy,
+            width=self.image_width, height=self.image_height,
+        ).transpose(0,1).cuda()
         self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0)
         self.camera_center = self.world_view_transform.inverse()[3, :3]
 

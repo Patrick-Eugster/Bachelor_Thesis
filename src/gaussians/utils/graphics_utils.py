@@ -48,14 +48,33 @@ def getWorld2View2(R, t, translate=np.array([.0, .0, .0], dtype=np.float64), sca
     Rt = np.linalg.inv(C2W)
     return np.float64(Rt)
 
-def getProjectionMatrix(znear, zfar, fovX, fovY):
+def getProjectionMatrix(znear, zfar, fovX, fovY, cx=None, cy=None, width=None, height=None):
+    """OpenGL-style projection matrix.
+
+    If cx/cy/width/height are all None → symmetric frustum (vanilla 3DGS behavior,
+    principal point assumed at image center). If they're all provided → asymmetric
+    frustum that honors the real (cx, cy), shifting the rendered image to align
+    with the GT photo. See docs/CAMERA_INTRINSICS_EXPLAINED.md for the derivation.
+    """
     tanHalfFovY = math.tan((fovY / 2))
     tanHalfFovX = math.tan((fovX / 2))
 
-    top = tanHalfFovY * znear
-    bottom = -top
-    right = tanHalfFovX * znear
-    left = -right
+    if cx is None or cy is None or width is None or height is None:
+        # symmetric frustum: principal point at (W/2, H/2)
+        top = tanHalfFovY * znear
+        bottom = -top
+        right = tanHalfFovX * znear
+        left = -right
+    else:
+        # asymmetric frustum that places the optical axis at pixel (cx, cy)
+        # image convention: y=0 at top, y=H at bottom; camera y is up
+        # fx, fy reconstructed from FoV + image size — same numerical f as the original COLMAP entry
+        fx = width  / (2.0 * tanHalfFovX)
+        fy = height / (2.0 * tanHalfFovY)
+        right  =  (width  - cx) * znear / fx
+        left   = -cx            * znear / fx
+        top    =  cy            * znear / fy
+        bottom = -(height - cy) * znear / fy
 
     P = torch.zeros(4, 4)
 

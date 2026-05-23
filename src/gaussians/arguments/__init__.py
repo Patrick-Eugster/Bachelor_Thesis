@@ -55,6 +55,7 @@ class ModelParams(ParamGroup):
         self.data_device = "cuda"
         self.eval = True
         self.seg_dir = ""  # explicit path to detection results (bboxes/ + masks/) — auto-derived in run_reconstruction.py
+        self.use_principal_point = False  # opt-in: honor cx/cy via asymmetric frustum (see docs/PIXEL_SHIFT_BUG.md)
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):

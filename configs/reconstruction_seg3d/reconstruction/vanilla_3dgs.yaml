@@ -25,3 +25,10 @@ densify_until_iter: 11000
 
 # gradient threshold for splitting/cloning Gaussians — lower = more Gaussians = higher quality but more VRAM
 densify_grad_threshold: 0.0002
+
+# honor non-centered principal point (cx, cy) from COLMAP/Agisoft via an asymmetric projection frustum
+# vanilla 3DGS drops cx/cy and assumes principal point at (W/2, H/2) — for FIP plots this is off by 50-90 px
+# and causes a pixel shift between render and GT that destroys PSNR/SSIM/LPIPS
+# leave false to keep the original 3DGS behavior; flip to true to fix the shift
+# see docs/PIXEL_SHIFT_BUG.md and docs/CAMERA_INTRINSICS_EXPLAINED.md for the why
+use_principal_point: false

@@ -155,6 +155,8 @@ def _run_pipeline(cfg):
     wandb_flag        = ["--wandb_enabled"] if cfg.wandb_enabled else []
     resolution_str    = str(cfg.reconstruction.resolution)
     seg_dir_flag      = ["--seg_dir", seg_source]
+    # opt-in flag: when true, all stages honor the SfM cx/cy via asymmetric frustum
+    pp_flag           = ["--use_principal_point"] if cfg.reconstruction.get("use_principal_point", False) else []
     timings           = {}
 
     if cfg.run_train:
@@ -174,7 +176,7 @@ def _run_pipeline(cfg):
             "--sh_degree", str(cfg.reconstruction.sh_degree),
             "--densify_until_iter", str(cfg.reconstruction.densify_until_iter),
             "--densify_grad_threshold", str(cfg.reconstruction.densify_grad_threshold),
-        ] + seg_dir_flag + data_device_flag + wandb_flag, timings, log_file)
+        ] + seg_dir_flag + data_device_flag + pp_flag + wandb_flag, timings, log_file)
 
     # Step 2: Render from original training/test camera views (for quality check)
     if cfg.run_render:
@@ -192,7 +194,7 @@ def _run_pipeline(cfg):
             "-m", model_path,
             "--resolution", resolution_str,
             "--iteration", str(cfg.reconstruction.iterations)
-        ] + seg_dir_flag + data_device_flag, timings, log_file)
+        ] + seg_dir_flag + data_device_flag + pp_flag, timings, log_file)
 
     # Step 3: Compute PSNR/SSIM/LPIPS quality metrics on test views
     if cfg.run_metrics:
@@ -216,7 +218,7 @@ def _run_pipeline(cfg):
             "--iou_threshold", "0.5",
             "--exp_name", cfg.segmentation_3d.exp_name,
             "--vis_max_heads", str(cfg.segmentation_3d.vis_max_heads),
-        ] + seg_dir_flag + ([] if cfg.segmentation_3d.save_vis_overlay else ["--no_save_vis_overlay"]) + data_device_flag + wandb_flag, timings, log_file)
+        ] + seg_dir_flag + ([] if cfg.segmentation_3d.save_vis_overlay else ["--no_save_vis_overlay"]) + data_device_flag + pp_flag + wandb_flag, timings, log_file)
         if seg_tee:
             seg_tee.close()
         # auto-export colored PLY right after segmentation — no separate toggle needed
@@ -242,7 +244,7 @@ def _run_pipeline(cfg):
             "--n_frames", str(cfg.n_frames),
             "--framerate", str(cfg.framerate),
             "--elevation", str(cfg.elevation),
-        ] + fast_render_flag + white_bg_flag + data_device_flag, timings, log_file)
+        ] + fast_render_flag + white_bg_flag + data_device_flag + pp_flag, timings, log_file)
 
     # Step 6: Evaluate 3D segmentation quality — saves overlay PNGs per camera
     if cfg.run_eval:
@@ -253,7 +255,7 @@ def _run_pipeline(cfg):
             "--resolution", resolution_str,
             "--exp_name", cfg.segmentation_3d.exp_name,
             "--skip_train"
-        ] + seg_dir_flag + data_device_flag, timings, log_file)
+        ] + seg_dir_flag + data_device_flag + pp_flag, timings, log_file)
 
     # Step 6b: Pixel-level 2D metrics vs manual GT masks — requires run_eval output (test/segmentation/)
     if cfg.run_eval_2d:
@@ -263,7 +265,7 @@ def _run_pipeline(cfg):
             "-m", model_path,
             "--resolution", resolution_str,
             "--exp_name", cfg.segmentation_3d.exp_name,
-        ] + data_device_flag, timings, log_file)
+        ] + data_device_flag + pp_flag, timings, log_file)
 
     # Step 7: Interactive viser viewer — open http://localhost:VIEWER_PORT in browser, Ctrl+C to stop
     if cfg.run_viewer:
