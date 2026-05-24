@@ -1,84 +1,147 @@
 # Pixel-Shift Bug in train / render / metrics Pipeline
 
-Investigation into the supervisor-reported pixel-shifting issue that makes our 3DGS metrics worse than the original Wheat3DGS paper's (which used splatfacto). This document records the findings from a careful read of the train, render, and metrics code paths.
+Investigation into the supervisor-reported "pixel shifting" issue that makes our 3DGS metrics worse than the original Wheat3DGS paper's (splatfacto). This doc records the **full** journey: an initial wrong hypothesis (90 px shift), an opt-in fix that made metrics worse, an FFT phase-correlation re-measurement that exposed both the actual (much smaller) shift and a sign-flip bug in the fix, and the corrected implementation.
 
-## Summary
+## TL;DR
 
-The vanilla 3DGS pipeline in this repo **silently drops the principal point (cx, cy) from COLMAP/Agisoft camera intrinsics** and forces it to image center. For our FIP plots, the actual principal point is offset by tens of pixels (up to ~90 px) from center, so every rendered image is misaligned with its ground-truth image by that same offset. PSNR/SSIM/LPIPS are computed on misaligned pairs, which destroys the numbers even when the reconstruction itself is fine.
+1. Vanilla 3DGS in this repo *does* drop COLMAP/Agisoft's principal point `(cx, cy)` and forces the projection to assume the optical axis is at `(W/2, H/2)`.
+2. The **real** rendered-vs-GT misalignment from this is small — ~2 to 12 px on the FIP plots, not the 50–91 px that naive `Δcx = cx − W/2` arithmetic from cameras.txt suggests. Reason: vanilla 3DGS keeps camera poses fixed but optimizes Gaussian positions freely, so 30k iterations of training absorb most of the principal-point bias into the 3D scene itself. What survives is what FFT phase-correlation actually picks up.
+3. The original opt-in fix (`use_principal_point=true`) was built with the OpenGL `(right+left)/(right-left)` convention, but the 3DGS rasterizer uses `z_sign=+1` (not OpenGL's `-1`), which requires the **opposite sign** on `P[0,2]`. The Y formula was accidentally correct because the camera also uses Y-down (COLMAP convention) — the two negations cancel for Y but not for X. Empirically the broken fix **doubled the X shift instead of cancelling it**, dropping average PSNR by ~1.8 dB.
+4. Sign flip is now fixed in `getProjectionMatrix`. Re-running `paper_bench_30k_pp` is required to get correct +pp numbers; expected gain over baseline is small (sub-dB, since the underlying shift is small).
 
-Splatfacto (Nerfstudio's 3DGS, used by the paper) does not have this issue because it uses **gsplat**, which accepts the full intrinsic matrix including cx/cy.
+## The original bug: principal point silently dropped
 
-## The bug: principal point (cx, cy) is silently dropped
+**Where:** [src/gaussians/scene/dataset_readers.py:89-99](../src/gaussians/scene/dataset_readers.py#L89-L99) (pre-fix).
 
-**Where:** [src/gaussians/scene/dataset_readers.py:89-99](../src/gaussians/scene/dataset_readers.py#L89-L99)
+COLMAP intrinsics contain 4 numbers (`fx, fy, cx, cy` for PINHOLE; `f, cx, cy` for SIMPLE_PINHOLE). The vanilla 3DGS reader only consumed the focal length(s). The full chain that depended on it:
 
-```python
-if intr.model == "SIMPLE_PINHOLE":
-    focal_length_x = intr.params[0]
-    FovY = focal2fov(focal_length_x, height)
-    FovX = focal2fov(focal_length_x, width)
-elif intr.model == "PINHOLE":
-    focal_length_x = intr.params[0]
-    focal_length_y = intr.params[1]
-    FovY = focal2fov(focal_length_y, height)
-    FovX = focal2fov(focal_length_x, width)
-```
+- `CameraInfo` originally had no `cx`/`cy` fields (now extended; see "Fix" section below)
+- `Camera` stores `FoVx, FoVy` and builds its projection matrix from those
+- `getProjectionMatrix` in [graphics_utils.py](../src/gaussians/utils/graphics_utils.py) builds a **symmetric frustum** (`left=-right`, `bottom=-top`), forcing the principal point to image center
+- The CUDA rasterizer takes only `tanfovx, tanfovy, projmatrix` — no cx/cy slot in [gaussian_renderer/__init__.py](../src/gaussians/gaussian_renderer/__init__.py)
 
-COLMAP intrinsics actually contain **4 numbers** (`fx, fy, cx, cy` for PINHOLE; `f, cx, cy` for SIMPLE_PINHOLE). This code only reads the focal-length params, **never reads `cx`/`cy`**. The principal point is thrown away.
+So every rendered pixel is projected as if the camera looked straight through `(W/2, H/2)`, even when the COLMAP intrinsic says the optical axis is elsewhere.
 
-The full chain that depends on it:
-- `CameraInfo` only carries `FovX, FovY` — no cx/cy field exists ([dataset_readers.py:29-41](../src/gaussians/scene/dataset_readers.py#L29-L41))
-- `Camera` only stores `FoVx, FoVy` and computes the projection matrix from those ([cameras.py:57](../src/gaussians/scene/cameras.py#L57))
-- `getProjectionMatrix` builds a **symmetric frustum** (`left=-right`, `bottom=-top`), forcing principal point to image center: [graphics_utils.py:51-71](../src/gaussians/utils/graphics_utils.py#L51-L71)
-- The CUDA rasterizer takes only `tanfovx, tanfovy, projmatrix` — no cx/cy slot ([gaussian_renderer/__init__.py:37-53](../src/gaussians/gaussian_renderer/__init__.py#L37-L53))
+## What we got wrong the first time: magnitude
 
-So every rendered pixel is projected as if the camera looked straight through `(W/2, H/2)`, but the GT image was actually captured with a sensor whose optical axis hits a different pixel. **GT vs render are shifted by exactly `(cx − W/2, cy − H/2)` pixels.**
-
-## Evidence from our data
-
-Measured directly from each plot's `sparse/0/cameras.txt`:
+The first version of this doc tabulated `Δcx = cx − W/2` and `Δcy = cy − H/2` from each plot's cameras.txt and called those the misalignment:
 
 | Plot | W×H | cx | cy | Δcx (px) | Δcy (px) |
 |---|---|---|---|---|---|
-| plot_461 | 4095×2996 | 1956 | 1480 | **−91.5** | −18.0 |
-| plot_462 | 4095×2995 | 1969 | 1513 | **−78.5** | +15.5 |
-| plot_463 | 4094×2998 | 1987 | 1499 | −60.0 | +0.0 |
-| plot_464 | 4093×2997 | 1996 | 1438 | −50.5 | **−60.5** |
-| plot_465 | 4095×2998 | 2027 | 1524 | −20.5 | +25.0 |
-| plot_466 | 4096×2996 | 2001 | 1506 | −47.0 | +8.0 |
-| plot_467 | 4094×2996 | 1991 | 1483 | −56.0 | −15.0 |
+| 461 | 4095×2996 | 1956 | 1480 | −91.5 | −18.0 |
+| 462 | 4095×2995 | 1969 | 1513 | −78.5 | +15.5 |
+| 463 | 4094×2998 | 1987 | 1499 | −60.0 | +0.0 |
+| 464 | 4093×2997 | 1996 | 1438 | −50.5 | −60.5 |
+| 465 | 4095×2998 | 2027 | 1524 | −20.5 | +25.0 |
+| 466 | 4096×2996 | 2001 | 1506 | −47.0 | +8.0 |
+| 467 | 4094×2996 | 1991 | 1483 | −56.0 | −15.0 |
 
-Every FIP plot is off by **tens to ~90 pixels** in x, up to 60 px in y. At 4K width that's ~1–2% per axis — easily enough to destroy PSNR/SSIM on a sharp scene like wheat heads, and exactly the kind of "renders look right but metrics tank" symptom the supervisor described.
+That arithmetic is real but **doesn't equal the rendered-vs-GT pixel misalignment** in a vanilla 3DGS trained model. Vanilla 3DGS doesn't optimize camera poses — they're fixed — but it does optimize every Gaussian's 3D position freely. Over 30k iterations, the optimizer moves Gaussians slightly so that the symmetric-frustum projection of those moved Gaussians lands close to the GT. The principal-point bias is largely absorbed into the scene itself.
 
-## Why phone metrics didn't show the same bug (much)
+## What the actual shift is: FFT phase correlation
 
-For the phone data, COLMAP's `image_undistorter` (and Agisoft's equivalent) **recenter the principal point** during undistortion:
+Measured directly on each plot's first test image with FFT phase correlation (cross-correlation peak between baseline render and its GT), on the trained Round-3 baseline models:
 
+| Plot | baseline (dy, dx) | broken-fix +pp (dy, dx) |
+|---|---|---|
+| 461 | (0, **+12**) | (0, **+24**) |
+| 462 | (−2, **+10**) | (0, **+20**) |
+| 463 | (0, **+8**) | (0, **+15**) |
+| 464 | (+7, **+7**) | (0, **+13**) |
+| 465 | (−4, **+2**) | (0, **+5**) |
+| 466 | (−1, **+6**) | (0, **+12**) |
+| 467 | (+2, **+7**) | (0, **+14**) |
+
+Baseline residual shift is **2–12 px** in x (median ~7), and ±7 px in y. Matches the manual visual estimate of "at most ~5 px." Not 90 px.
+
+## The sign-flip bug in the first fix attempt
+
+Two empirical clues from the table above:
+
+- The `+pp` X shift is **almost exactly 2× the baseline X shift** (12→24, 10→20, 8→15, …).
+- The `+pp` Y shift is **always 0** (the y-axis correction worked).
+
+That asymmetry is the smoking gun. Re-deriving from scratch for the 3DGS rasterizer convention:
+
+The 3DGS rasterizer uses **z_sign = +1** (P[3,2]=+1, w_clip = +z_cam, camera looks down +Z, COLMAP convention) and the camera **Y axis is down** (COLMAP convention, matches image Y). Combined with the standard NDC-to-pixel mapping `pixel = (ndc+1)·S/2`, the principal-point pixel `(cx, cy)` lands at NDC:
+
+- `ndc_x = 2·cx/W − 1`
+- `ndc_y = 2·cy/H − 1`
+
+For a point on the optical axis (`x_cam = y_cam = 0`), `ndc_x = P[0,2]` and `ndc_y = P[1,2]`. So the correct projection-matrix entries are:
+
+- **`P[0,2] = 2·cx/W − 1`**
+- **`P[1,2] = 2·cy/H − 1`**
+
+The first (broken) `getProjectionMatrix` used the standard OpenGL formulae `P[0,2] = (right+left)/(right-left)` with `right = (W-cx)·n/fx`, `left = -cx·n/fx`. That gives `P[0,2] = (W − 2cx)/W = −(2cx/W − 1)` — **the negative of what's required**. For Y the OpenGL formula gave `(2cy − H)/H = 2cy/H − 1`, which happens to match — because the camera Y-axis is also flipped relative to OpenGL, and the two flips cancel.
+
+Net effect of the broken fix: for plot 461 (cx-effective ≈ −12 px in image space), the symmetric baseline already had +12 px of residual shift after training. The broken fix shifted by an additional 12 px in the **same** direction instead of cancelling, producing the observed +24 px shift in the `+pp` run.
+
+## Why the image-space shift is ~12 px, not ~91 px
+
+Two reasons combined:
+
+1. **Gaussian-position optimization absorbs most of the principal-point bias** during the 30k-iteration train. Camera poses are fixed in vanilla 3DGS, but the 3D Gaussians themselves move freely.
+2. Even before absorption, the literal "every rendered pixel projects through (W/2, H/2) instead of (cx, cy)" claim assumes the in-cameras.txt values are the literal pixel-space principal point. They are, but for a typical FIP plot the residual after pose-fixed Gaussian-position optimization is much smaller than the raw `Δcx`.
+
+## The fix (corrected)
+
+Asymmetric frustum in [src/gaussians/utils/graphics_utils.py](../src/gaussians/utils/graphics_utils.py) `getProjectionMatrix`, with the X branch **rewritten so the sign matches the 3DGS rasterizer convention**:
+
+```python
+# X (sign-corrected for 3DGS convention)
+left   = -(width - cx) * znear / fx   # was: -cx * znear / fx           ← BROKEN
+right  =  cx           * znear / fx   # was: (width - cx) * znear / fx  ← BROKEN
+# Y (unchanged — already correct because camera Y is down)
+top    =  cy            * znear / fy
+bottom = -(height - cy) * znear / fy
 ```
-phone field_A/20250609 colmap : W=4032 H=3024 cx=2016 cy=1512  → EXACTLY centered
-phone field_A/20250609 agisoft: W=3964 H=2926 cx=1982 cy=1463  → EXACTLY centered
-phone field_D/20250523 agisoft: W=3846 H=2924 cx=1923 cy=1462  → EXACTLY centered
+
+Sanity check at `cx = W/2` (symmetric edge case):
+- `left = -W/2·n/fx = -tanHalfFovX·n` ✓
+- `right = W/2·n/fx = +tanHalfFovX·n` ✓
+- `P[0,2] = (right+left)/(right-left) = 0` ✓
+- `P[0,0] = 2·n/(right-left) = 2fx/W = 1/tanHalfFovX` ✓ (same as old symmetric branch)
+
+For general cx:
+- `P[0,2] = (2·cx − W)/W = 2·cx/W − 1` ✓ correct sign
+- `P[0,0] = 2·n/(right-left) = 2·n / (W·n/fx) = 2·fx/W` ✓ unchanged
+
+## Splatfacto vs gsplat vs diff-gaussian-rasterization
+
+Splatfacto (Nerfstudio) runs on **gsplat**, which takes the full intrinsic matrix `K = [[fx,0,cx],[0,fy,cy],[0,0,1]]` as input and bakes cx/cy into the projection kernel directly. Vanilla `diff-gaussian-rasterization` (what this repo uses) takes only `tanfovx, tanfovy, projmatrix`, so cx/cy can only be smuggled in via `projmatrix` (which is what Option 1 does). Both work, but only gsplat handles cx/cy *inside the kernel's tile binning / radii* — see "Known residual" below.
+
+## Fix options (recap)
+
+1. **Asymmetric projection matrix** — implemented (and now sign-corrected). Smuggles cx/cy through `projmatrix` so projection lands the optical axis at `(cx, cy)`. Works for both `diff-gaussian-rasterization` and `flashsplat_rasterization`. Subtle limitation: the kernel's `tanfovx/tanfovy` (scalar) tile binning still assumes symmetric frustum — negligible at our ~7 px residual offset.
+2. **Switch to gsplat** for the rasterizer (drop-in `rasterization()` call that accepts `Ks` with cx/cy). Cleanest *correct* fix; tile binning, culling, Jacobian — all aware of cx/cy. Caveat: `flashsplat_rasterization` (used by segmentation_3d) is independent of gsplat and would still need its own fix.
+3. **Patch diff-gaussian-rasterization CUDA** to accept cx/cy. Means rebuilding the CUDA submodule with extra args, propagating cx/cy through `GaussianRasterizationSettings`, fixing the CUDA projection. Invasive; not worth it given (1) covers our case.
+
+## Option 1 — implemented as opt-in (December 2025; sign-corrected after Round 3)
+
+Option 1 is **implemented in the code** behind a config flag. Default-off so existing behavior is byte-identical to vanilla 3DGS.
+
+**Files changed:** `configs/reconstruction_seg3d/reconstruction/vanilla_3dgs.yaml` (added `use_principal_point: false`), `src/gaussians/arguments/__init__.py` (ModelParams gained the flag), `src/gaussians/scene/dataset_readers.py` (cx/cy parsed from intrinsics, CameraInfo extended), `src/gaussians/utils/camera_utils.py` (scales cx/cy with image resize), `src/gaussians/scene/cameras.py` (Camera stores cx/cy), `src/gaussians/utils/graphics_utils.py` (asymmetric frustum branch — **sign-corrected for 3DGS convention**), `src/run_reconstruction.py` (passes `--use_principal_point` to all 6 camera-using subprocess calls). Full per-file diff in [docs/CHANGES.md](CHANGES.md).
+
+**How to enable:**
+```bash
+# Default (no fix — for paper baseline comparison)
+python src/run_reconstruction.py plot=plot_461 run_train=true run_render=true run_metrics=true \
+  reconstruction.iterations=30000 experiment_name=paper_bench_30k
+
+# With pixel-shift fix (post-sign-correction — needs re-run; old `paper_bench_30k_pp` is broken)
+python src/run_reconstruction.py plot=plot_461 run_train=true run_render=true run_metrics=true \
+  reconstruction.iterations=30000 reconstruction.use_principal_point=true \
+  experiment_name=paper_bench_30k_pp_signfix
 ```
 
-So for the phone benchmark this specific bug didn't fire — both sides (COLMAP + Agisoft) deliver `cx=W/2, cy=H/2`. The phone PSNR being low (14–16) must come from somewhere else (scene difficulty, llffhold split, undertraining), but that's a different problem.
+Different `experiment_name` so the runs go to different folders, no overwrite risk.
 
-## Why splatfacto doesn't have this bug
+**Known residual artifact:** the CUDA kernel's tile binning and culling still use `tanfovx, tanfovy` (single scalars) which assume a symmetric frustum. For our residual offsets (~7 px on 4K, <0.2% of image width) this means at most sub-pixel mis-binning at the image **borders only** — center pixels (~99% of image area) get the projection-matrix shift exactly right. If the sign-fixed Option 1 still shows weird edge artifacts, Option 2 (gsplat) is the next step.
 
-Splatfacto (Nerfstudio) runs on **gsplat**, which takes the full intrinsic matrix `K = [[fx,0,cx],[0,fy,cy],[0,0,1]]` as input and bakes cx/cy into projection. Vanilla `diff-gaussian-rasterization` (what this repo uses) only takes `tanfovx, tanfovy, projmatrix`, and the CUDA code assumes principal point at center. So when the supervisor says "splatfacto doesn't have the issue" — yes, that's literally because gsplat plumbs cx/cy and diff-gaussian-rasterization doesn't.
+## Recommended path forward
 
-## Other things checked and ruled out
-
-- **PIL resize**: `PILtoTorch` uses `Image.resize(resolution)` without a resample arg ([general_utils.py:21-27](../src/gaussians/utils/general_utils.py#L21-L27)). Default is BICUBIC on modern Pillow — doesn't introduce a shift, only mild aliasing.
-- **Resolution scaling at resolution=1**: focal length scales implicitly with the FoV formula since both W and f scale together, so no shift from rescaling.
-- **render.py and metrics.py**: render.py just saves render + GT side by side ([render.py:31-35](../src/reconstruction/render.py#L31-L35)) and metrics.py loads both back at the same resolution ([metrics.py:24-34](../src/reconstruction/metrics.py#L24-L34)). No re-resizing, no flip, no per-channel offset — these are clean.
-- **Eval split**: the `cam_idx > 10` test split for FIP cameras ([dataset_readers.py:191-197](../src/gaussians/scene/dataset_readers.py#L191-L197)) is consistent between train and render but it's unknown whether the paper used the same split. Worth confirming with supervisor — if the paper used a different held-out set, that's a separate metric-gap source, not a pixel shift.
-
-## What fixing it would take
-
-Three options, in increasing effort:
-
-1. **Switch to gsplat** for the rasterizer (drop-in `rasterization()` call that accepts `Ks` with cx/cy). This is what splatfacto already does. Biggest gain for least implementation risk; the `flashsplat_rasterization` step would still need its own fix but the train/render/metrics path would be sound.
-2. **Patch diff-gaussian-rasterization** to accept cx/cy. Means rebuilding the CUDA submodule with extra args, propagating cx/cy through `GaussianRasterizationSettings`, fixing CUDA projection. Doable but invasive.
-3. **Asymmetric projection matrix hack**: read cx/cy, build a non-symmetric frustum in `getProjectionMatrix` so `P[0,2] = -(2*cx/W - 1)` and `P[1,2] = -(2*cy/H - 1)`. The CUDA code applies `projmatrix` for projection, so this can shift the rendered center to match GT without rebuilding the rasterizer. But `tanfovx/tanfovy` is also used internally for tile binning / radii, so there can be subtle binning artifacts at large offsets. Worth trying as a quick test.
-
-Recommended: option 1 if the supervisor is open to a switch, otherwise option 3 as a low-effort experiment to confirm. Even if results aren't perfect, PSNR should jump noticeably on FIP plots after the fix.
+1. **Re-run +pp with the sign fix** on Euler — same SLURM job as before but with the freshly-fixed `graphics_utils.py`. Use a new `experiment_name=paper_bench_30k_pp_signfix` so the broken `paper_bench_30k_pp` results stay archived for comparison.
+2. **Expected delta is small** (fractions of a dB), since the underlying residual shift was only ~7 px. The bigger story for the thesis is that vanilla 3DGS already lands close to the paper's numbers once eval-split + the sign fix are both right.
+3. If a noticeable gap remains vs splatfacto — switch to Option 2 (gsplat). The cleaner fix is also Blackwell-ready (helps with the RTX Pro 6000 future task in `docs/euler_setup.md`).
+4. Option 3 (patch CUDA) remains the fallback if for some reason gsplat can't be adopted — likely never needed.

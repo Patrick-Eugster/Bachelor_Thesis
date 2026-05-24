@@ -67,12 +67,17 @@ def getProjectionMatrix(znear, zfar, fovX, fovY, cx=None, cy=None, width=None, h
         left = -right
     else:
         # asymmetric frustum that places the optical axis at pixel (cx, cy)
-        # image convention: y=0 at top, y=H at bottom; camera y is up
-        # fx, fy reconstructed from FoV + image size — same numerical f as the original COLMAP entry
+        # 3DGS rasterizer convention: camera looks down +Z (z_sign=+1) AND camera y is DOWN
+        # (COLMAP convention, matches image y). So required projection-matrix entries are:
+        #   P[0,2] = 2*cx/W - 1   (x: principal point left of center → negative NDC)
+        #   P[1,2] = 2*cy/H - 1   (y: principal point above center  → negative NDC, since y-down)
+        # The Y formula matches the OpenGL `(top+bottom)/(top-bottom)` formula naturally because
+        # both negations (z_sign and y-axis) cancel. The X formula needs the opposite sign of the
+        # OpenGL convention — handled by swapping the (left, right) roles below.
         fx = width  / (2.0 * tanHalfFovX)
         fy = height / (2.0 * tanHalfFovY)
-        right  =  (width  - cx) * znear / fx
-        left   = -cx            * znear / fx
+        left   = -(width - cx) * znear / fx
+        right  =  cx           * znear / fx
         top    =  cy            * znear / fy
         bottom = -(height - cy) * znear / fy
 
