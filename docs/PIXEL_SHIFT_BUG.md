@@ -139,9 +139,40 @@ Different `experiment_name` so the runs go to different folders, no overwrite ri
 
 **Known residual artifact:** the CUDA kernel's tile binning and culling still use `tanfovx, tanfovy` (single scalars) which assume a symmetric frustum. For our residual offsets (~7 px on 4K, <0.2% of image width) this means at most sub-pixel mis-binning at the image **borders only** — center pixels (~99% of image area) get the projection-matrix shift exactly right. If the sign-fixed Option 1 still shows weird edge artifacts, Option 2 (gsplat) is the next step.
 
-## Recommended path forward
+## Recommended path forward (as planned before re-run)
 
 1. **Re-run +pp with the sign fix** on Euler — same SLURM job as before but with the freshly-fixed `graphics_utils.py`. Use a new `experiment_name=paper_bench_30k_pp_signfix` so the broken `paper_bench_30k_pp` results stay archived for comparison.
 2. **Expected delta is small** (fractions of a dB), since the underlying residual shift was only ~7 px. The bigger story for the thesis is that vanilla 3DGS already lands close to the paper's numbers once eval-split + the sign fix are both right.
 3. If a noticeable gap remains vs splatfacto — switch to Option 2 (gsplat). The cleaner fix is also Blackwell-ready (helps with the RTX Pro 6000 future task in `docs/euler_setup.md`).
 4. Option 3 (patch CUDA) remains the fallback if for some reason gsplat can't be adopted — likely never needed.
+
+---
+
+## What actually happened after the re-run — sign-fix verified, gain is enormous
+
+The +pp re-run with the sign-fixed code was submitted. The SLURM script was *not* renamed to `paper_bench_30k_pp_signfix`, so the new outputs **overwrote** the Round-3 broken `paper_bench_30k_pp/` folder on disk. The per-plot table for the sign-fixed run is in [FIP_PAPER_BENCH_RESULTS.md](FIP_PAPER_BENCH_RESULTS.md) "Round 4" — headline numbers:
+
+| Metric | Baseline (no fix) | Round-3 broken +pp | **Round-4 signfix +pp** |
+|---|---:|---:|---:|
+| PSNR avg | 20.37 | 18.59 (−1.78) | **28.17 (+7.79)** |
+| SSIM avg | 0.636 | 0.603 | **0.881** |
+| LPIPS avg | 0.325 | 0.388 | **0.198** |
+
+**FFT phase correlation now reports (0, 0) shift on every plot** — exact pixel alignment.
+
+### The "sub-dB expected" prediction was wrong — here's why
+
+The pre-run prediction said "the underlying residual shift was only ~7 px → fix can only buy fractions of a dB." Reality: +7.8 dB average. The reasoning that produced "sub-dB" treated the residual shift as the *only* thing the fix corrects. In fact:
+
+1. **Vanilla 3DGS absorbs the principal-point bias by moving Gaussians to geometrically wrong 3D positions** — not just by leaving a global pixel shift. Camera poses are fixed, but Gaussian positions are free.
+2. Those wrong positions bind **wrong colors / textures to wrong pixels**, hurting SSIM and LPIPS independently of the global pixel alignment. PSNR catches the same effect because the wrongly-placed appearance content shows up as elevated MSE in every test view.
+3. The 2–12 px residual rendered-vs-GT shift was the *easily-measurable* leftover. The much larger effect (every Gaussian sitting at a slightly biased position) wasn't visible until the fix let the scene fully reconstruct.
+
+So the FFT-phase-correlation measurement (~7 px) **understated** the bug. The (0, 0) measurement post-fix is necessary but only part of the story — the rest is the entire 3D scene now being placed in self-consistent geometry.
+
+### Updated recommendation
+
+- The Round-4 signfix-+pp numbers (28.17 PSNR avg) are now the **headline thesis-relevant result** for vanilla 3DGS on FIP plots. Compare against the original Wheat3DGS paper's splatfacto numbers — if comparable, the principal-point fix is the main finding for this section of the thesis.
+- Option 2 (gsplat) is no longer urgent. The only motivation left is the residual tile-binning approximation at image borders (uses single-scalar tanfovx/tanfovy assuming symmetric), but for our ~7 px effective offsets that's far below a tile boundary. Only revisit if Round-4 visually shows weird edge artifacts.
+- Option 3 (patch CUDA) remains a dead-end backup — likely never needed.
+- The same fix should also benefit segmentation + downstream phenotyping (same Gaussian-position correctness argument). Re-run those stages with `use_principal_point=true` and compare.

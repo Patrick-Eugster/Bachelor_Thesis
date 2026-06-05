@@ -122,16 +122,52 @@ Net effect: instead of cancelling the baseline ~7 px shift, the fix added anothe
 
 ---
 
+## Round 4 — Re-run +pp after the sign-flip fix (THESIS HEADLINE)
+
+After the X-axis sign-flip in `getProjectionMatrix` was identified and corrected, the same SLURM job was re-submitted. The script still wrote to `experiment_name=paper_bench_30k_pp`, so the Round 4 sign-fixed results **overwrote** the Round 3 broken +pp results on disk. The numbers below are the Round 4 (sign-fixed) measurements; the Round 3 broken +pp numbers above are kept in the post-mortem section for the record.
+
+| Plot | PSNR baseline | PSNR Round-3 broken +pp | **PSNR Round-4 signfix +pp** | Δ baseline → R4 | SSIM R4 | LPIPS R4 |
+|---|---:|---:|---:|---:|---:|---:|
+| 461 | 18.54 | 16.75 | **25.78** | **+7.24** | 0.830 | 0.215 |
+| 462 | 20.00 | 18.02 | **29.51** | **+9.51** | 0.901 | 0.189 |
+| 463 | 19.66 | 17.48 | **27.50** | **+7.84** | 0.882 | 0.195 |
+| 464 | 19.37 | 18.52 | **27.20** | **+7.83** | 0.874 | 0.222 |
+| 465 | 23.29 | 22.09 | **28.17** | **+4.88** | 0.880 | 0.203 |
+| 466 | 21.62 | 19.24 | **29.20** | **+7.58** | 0.891 | 0.184 |
+| 467 | 20.13 | 18.00 | **29.80** | **+9.67** | 0.912 | 0.178 |
+| **AVG** | **20.37** | **18.59** | **28.17** | **+7.79** | **0.881** | **0.198** |
+
+SSIM avg: 0.636 → **0.881** (+0.24). LPIPS avg: 0.325 → **0.198** (−0.13). Every metric, every plot, big swing.
+
+**Verification by FFT phase correlation** on the same first-test-image-per-plot used in the Round-3 post-mortem:
+
+| Plot | baseline (dy, dx) | broken +pp (dy, dx) | **signfix +pp (dy, dx)** |
+|---|---|---|---|
+| 461 | (0, +12) | (0, +24) | **(0, 0)** |
+| 462 | (−2, +10) | (0, +20) | **(0, 0)** |
+| 463 | (0, +8) | (0, +15) | **(0, 0)** |
+| 464 | (+7, +7) | (0, +13) | **(0, 0)** |
+| 465 | (−4, +2) | (0, +5) | **(0, 0)** |
+| 466 | (−1, +6) | (0, +12) | **(0, 0)** |
+| 467 | (+2, +7) | (0, +14) | **(0, 0)** |
+
+**Zero shift on every plot.** The asymmetric-frustum formula in `getProjectionMatrix` now reproduces the COLMAP principal point exactly, and the renderer's output pixel-aligns with the GT image. Combined with the metric jump, the principal-point projection inaccuracy was clearly the dominant gap between vanilla 3DGS and the splatfacto baseline on FIP data.
+
+**Why +7.8 dB and not the sub-dB predicted in Round 3?** The Round-3 post-mortem reasoning ("residual pixel shift is only ~7 px → fix can only buy fractions of a dB") was wrong. The principal-point bias isn't only spent on a global pixel shift — vanilla 3DGS absorbs it by moving individual 3D Gaussians to geometrically-wrong positions, which then bind wrong colors/textures to wrong pixels and hurts SSIM/LPIPS independently of any global alignment. When `use_principal_point=true` lets the projection sit where the camera actually points, every Gaussian can land in its correct place and the entire scene reconstructs much more faithfully — not just a global re-alignment.
+
+---
+
 ## Current status
 
 - ✅ Eval-split regression understood and fixed in [dataset_readers.py](../src/gaussians/scene/dataset_readers.py) (the `_cam_\d+$` regex).
 - ✅ Pixel-shift bug Option 1 implemented as an opt-in flag, and the X-axis sign-flip in the asymmetric frustum now corrected (see [PIXEL_SHIFT_BUG.md](PIXEL_SHIFT_BUG.md) and [CHANGES.md](CHANGES.md)). Default off → no behavior change for unaware users.
 - ✅ Round 3 **baseline** finished — `paper_bench_30k` avg PSNR = 20.37, the first trustworthy multi-plot number. plot_461 = 18.54 ≈ `initial_30k_iterations` 18.55 confirms cleanliness.
-- ⛔ Round 3 **+pp** ran with the sign-flipped frustum and is degraded (avg PSNR 18.59). **Discard** these `paper_bench_30k_pp/` numbers; re-run as `paper_bench_30k_pp_signfix` with the fixed code.
+- ✅ Round 4 **signfix +pp** finished — `paper_bench_30k_pp` (overwrote the Round-3 broken folder) avg PSNR = **28.17** (+7.79 dB over baseline), avg SSIM **0.881**, avg LPIPS **0.198**. FFT phase correlation confirms zero render-vs-GT pixel shift on all 7 plots.
+- ⛔ Round 3 **+pp** (sign-flipped frustum) is degraded (avg PSNR 18.59) — kept in the "Round 3" + "Post-mortem" sections above as the historical record of the bug. The Round-4 results superseded it on disk.
 - ⛔ Round 1 (24.09 PSNR) and Round 2 (27.08 PSNR) numbers still should not be cited — Round 1 trained with the broken predicate, Round 2 was test-contaminated.
 
 ## Next steps
 
-1. **Re-run +pp with the sign-fixed `graphics_utils.py`** on Euler — same SLURM job structure as before, but `experiment_name=paper_bench_30k_pp_signfix`. Keep the broken `paper_bench_30k_pp` archived for comparison.
-2. Expected gain over baseline is small (sub-dB) — the underlying residual shift was only ~7 px, so the headline of the +pp fix is "free correctness, not a thesis-defining boost."
-3. Compare Round 3 baseline + sign-fixed +pp against the original Wheat3DGS paper numbers. If a meaningful gap to splatfacto remains after both, the next move is Option 2 (gsplat) — see [PIXEL_SHIFT_BUG.md](PIXEL_SHIFT_BUG.md) "Fix options" §.
+1. **Compare Round-4 signfix +pp (28.17 PSNR avg) against the original Wheat3DGS paper's splatfacto numbers** — this is the headline thesis comparison. If close, the principal-point fix is the headline finding.
+2. If a noticeable residual gap to splatfacto remains, the next move is Option 2 (gsplat) — see [PIXEL_SHIFT_BUG.md](PIXEL_SHIFT_BUG.md) "Fix options" §. The kernel-level cx/cy handling could close any remaining tile-binning artifacts at image borders.
+3. Re-run segmentation + downstream phenotyping with `use_principal_point=true` and compare against baseline — the same Gaussian-position correction that helped PSNR should also tighten 3D head IDs / phenotyping accuracy.
