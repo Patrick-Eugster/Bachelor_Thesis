@@ -9,9 +9,9 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+import os
 import torch
 import math
-import gsplat
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 from gaussians.scene.gaussian_model import GaussianModel
 from gaussians.utils.sh_utils import eval_sh
@@ -29,6 +29,15 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     The old diff-gaussian path is kept below as render_diffgs() for A/B comparison.
     Background tensor (bg_color) must be on GPU!
     """
+    # Engine switch for A/B benchmarking: WHEAT_RENDERER=diffgs routes to the old
+    # diff-gaussian path so a diff-gaussian run and a gsplat run can share ONE code copy
+    # on Euler, differing only by this env var. Default (unset) = gsplat.
+    if os.environ.get("WHEAT_RENDERER", "gsplat").lower() == "diffgs":
+        return render_diffgs(viewpoint_camera, pc, pipe, bg_color, scaling_modifier, override_color)
+
+    # Lazy import: only the gsplat path needs it, so a diff-gaussian-only run (or an env
+    # where gsplat isn't installed) never triggers the import.
+    import gsplat
     device = pc.get_xyz.device
     W = int(viewpoint_camera.image_width)
     H = int(viewpoint_camera.image_height)
