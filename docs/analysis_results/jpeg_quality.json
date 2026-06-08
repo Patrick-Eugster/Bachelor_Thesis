@@ -1,0 +1,46 @@
+[
+  {
+    "label": "phone/field_A/20250609",
+    "n_total": 119,
+    "n_sampled": 8,
+    "size": "4032x3024",
+    "subsampling": "4:2:0",
+    "software": "",
+    "mean_quality": 90.8081387702724,
+    "mean_luma_hf": 20.125,
+    "mean_block_ratio": 1.0563578157931937
+  },
+  {
+    "label": "phone/field_A/20250618",
+    "n_total": 93,
+    "n_sampled": 8,
+    "size": "4032x3024",
+    "subsampling": "4:2:0",
+    "software": "G781BXXS4FVK3",
+    "mean_quality": 90.8081387702724,
+    "mean_luma_hf": 20.125,
+    "mean_block_ratio": 1.0393461751397526
+  },
+  {
+    "label": "phone/field_D/20250523",
+    "n_total": 64,
+    "n_sampled": 8,
+    "size": "4032x3024",
+    "subsampling": "4:2:0",
+    "software": "G781BXXS4FVK3",
+    "mean_quality": 90.8081387702724,
+    "mean_luma_hf": 20.125,
+    "mean_block_ratio": 1.033326826817904
+  },
+  {
+    "label": "phone/field_D/20250530",
+    "n_total": 85,
+    "n_sampled": 8,
+    "size": "4032x3024",
+    "subsampling": "4:2:0",
+    "software": "G781BXXS4FVK3",
+    "mean_quality": 90.8081387702724,
+    "mean_luma_hf": 20.125,
+    "mean_block_ratio": 1.1264891649853896
+  }
+]
