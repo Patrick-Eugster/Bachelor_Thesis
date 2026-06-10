@@ -26,6 +26,14 @@ densify_until_iter: 11000
 # gradient threshold for splitting/cloning Gaussians — lower = more Gaussians = higher quality but more VRAM
 densify_grad_threshold: 0.0002
 
+# AbsGS densification: use gsplat's absolute screen-space gradient (means2d.absgrad) to decide where
+# to densify, instead of the signed gradient. The signed gradient cancels out on fine detail (wheat
+# awns/edges) so they never get split -> blur; the absolute gradient recovers them. ~free (same engine).
+# IMPORTANT: absgrad magnitudes are larger, so when absgrad=true raise densify_grad_threshold ~2-4x
+# (e.g. 0.0006-0.0008) or you'll over-densify and OOM. false = byte-identical to current vanilla path.
+# see docs/DENSIFICATION_OPTIONS.md
+absgrad: false
+
 # honor non-centered principal point (cx, cy) from COLMAP/Agisoft via an asymmetric projection frustum
 # vanilla 3DGS drops cx/cy and assumes principal point at (W/2, H/2) — for FIP plots this is off by 50-90 px
 # and causes a pixel shift between render and GT that destroys PSNR/SSIM/LPIPS

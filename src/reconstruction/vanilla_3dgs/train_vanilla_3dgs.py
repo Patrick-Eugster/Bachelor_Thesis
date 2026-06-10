@@ -86,7 +86,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         bg = torch.rand((3), device="cuda") if opt.random_background else background
 
         e_render_s.record()
-        render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
+        render_pkg = render(viewpoint_cam, gaussians, pipe, bg, absgrad=opt.absgrad)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         e_render_e.record()
 
@@ -119,7 +119,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration < opt.densify_until_iter:
                 # Keep track of max radii in image-space for pruning
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-                gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+                # AbsGS: gsplat's .absgrad is in PIXELS and skips the pixel->NDC hook that .grad gets
+                # inside render(), so rescale it here (camera W/H known) to keep densify_grad_threshold
+                # on the same NDC scale as the default path.
+                if opt.absgrad and viewspace_point_tensor.absgrad is not None:
+                    viewspace_point_tensor.absgrad[..., 0] *= viewpoint_cam.image_width  * 0.5
+                    viewspace_point_tensor.absgrad[..., 1] *= viewpoint_cam.image_height * 0.5
+                gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter, use_absgrad=opt.absgrad)
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None

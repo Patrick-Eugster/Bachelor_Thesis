@@ -24,6 +24,10 @@ cd /cluster/project/cropsci/peugste/wheat3dgs
 
 EXP=test_gsplat_full
 
+# One combined run-report for this whole sbatch (all 7 plots append to it).
+# run_reconstruction.py also writes a per-plot run_report.txt inside each experiment folder.
+export WHEAT_RUN_REPORT=/cluster/project/cropsci/peugste/wheat3dgs/slurm_logs/run_report_${SLURM_JOB_ID}.txt
+
 # ── VRAM logger ──
 VRAM_LOG=/cluster/project/cropsci/peugste/wheat3dgs/slurm_logs/vram_${SLURM_JOB_ID}.log
 ( while true; do nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits; sleep 5; done ) > "$VRAM_LOG" &
@@ -72,3 +76,10 @@ PEAK_RAM_BYTES=$(sort -n "$RAM_LOG" | tail -1)
 PEAK_RAM_GIB=$(awk "BEGIN{printf \"%.2f\", $PEAK_RAM_BYTES/1024/1024/1024}")
 echo "Peak VRAM: ${PEAK_VRAM_MIB} MiB ($(awk "BEGIN{printf \"%.2f\", ${PEAK_VRAM_MIB}/1024}") GiB)"
 echo "Peak RAM:  ${PEAK_RAM_GIB} GiB"
+
+# ── Combined run report (all plots, step statuses + times + error tails) ──
+echo ""
+echo "========================================"
+echo "  COMBINED RUN REPORT"
+echo "========================================"
+[ -f "$WHEAT_RUN_REPORT" ] && cat "$WHEAT_RUN_REPORT" || echo "(no run report written)"

@@ -458,8 +458,11 @@ class GaussianModel:
 
         torch.cuda.empty_cache()
 
-    def add_densification_stats(self, viewspace_point_tensor, update_filter):
-        grad = viewspace_point_tensor.grad
+    def add_densification_stats(self, viewspace_point_tensor, update_filter, use_absgrad=False):
+        """Accumulate the screen-space gradient used to decide where to densify.
+        use_absgrad=True reads gsplat's means2d.absgrad (absolute per-pixel grad, the AbsGS
+        criterion that recovers fine detail) instead of the default signed .grad."""
+        grad = viewspace_point_tensor.absgrad if use_absgrad else viewspace_point_tensor.grad
         # gsplat returns means2d as [C, N, 2] (C=1); the old INRIA path returns [N, 3].
         # Squeeze the camera dim so the indexing below works for both.
         if grad.dim() == 3:

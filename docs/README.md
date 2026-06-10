@@ -1,34 +1,64 @@
-# Documentation
+# Documentation Index
 
-Setup guides and reference docs for the Wheat3DGS project.
+Quick map of every doc in this folder, grouped by topic. Each line is a one-sentence summary — open the file for the full write-up. Legend: ✅ = committed to git · 🔒 = gitignored (personal notes / large file).
 
-## Files in this folder
+> **New here? Suggested reading order:** `INSTALL_COLMAP_CUDA.md` (get it building) → `SFM_PIPELINE_COMPARISON.md` (what the preprocessing does) → `PIXEL_SHIFT_BUG.md` (the key correctness fix) → `FIP_PAPER_BENCH_RESULTS.md` (the headline results).
 
-| File | Tracked by git | Purpose |
+---
+
+### 🛠️ Setup & environment
+| Doc | | What it's about |
 |---|---|---|
-| [`INSTALL_COLMAP_CUDA.md`](INSTALL_COLMAP_CUDA.md) | ✅ yes | Step-by-step guide for building COLMAP from source with CUDA support. Use when setting up a new Docker container or machine. Covers all dependencies, the cmake config, GPU compute-capability reference, and troubleshooting for every error we hit during the build. |
-| [`SFM_PIPELINE_COMPARISON.md`](SFM_PIPELINE_COMPARISON.md) | ✅ yes | Side-by-side comparison of our COLMAP-based preprocessing vs the supervisor's Agisoft Metashape pipeline (scripts 6/7/10). Explains the two functional gaps (metric scale, marker GCPs), what each supervisor script does, and when to use which `sparse/`. |
-| [`AGISOFT_QUALITY_METRICS.md`](AGISOFT_QUALITY_METRICS.md) | ✅ yes | What `3D Error`, `Distance Error`, and `Reproj Error` actually measure in `marker_errors_summary.csv`. Use to pick which Agisoft sessions to trust as benchmarking references and to interpret the per-session quality numbers. |
-| [`COMPARE_TO_AGISOFT_RESULTS.md`](COMPARE_TO_AGISOFT_RESULTS.md) | ✅ yes | First 4-session benchmark of `compare_to_agisoft.py`. Reports per-session translation/rotation errors vs Agisoft, includes thresholds for what "good" looks like, identifies the blurry-images outlier (`field_D/20250530`), and lays out the next decision (3DGS PSNR benchmark before any pipeline engineering). |
-| [`PIXEL_SHIFT_BUG.md`](PIXEL_SHIFT_BUG.md) | ✅ yes | Investigation into the supervisor-reported "pixel shifting" issue. Vanilla 3DGS silently drops `cx, cy` from COLMAP intrinsics and assumes principal point at image center; for FIP plots the actual cx is offset by 50-91 px from center, causing global misalignment between render and GT. Documents the bug location, the per-plot offset table, why phone data is unaffected, why splatfacto/gsplat aren't affected, and three fix paths (asymmetric frustum, gsplat, patch CUDA). Option 1 is implemented behind the `use_principal_point` flag. |
-| [`FIP_PAPER_BENCH_RESULTS.md`](FIP_PAPER_BENCH_RESULTS.md) | ✅ yes | 30k-iteration benchmark of all 7 FIP plots (plots 461-467). Per-plot PSNR/SSIM/LPIPS table, the plot_461 `initial_30k_iterations` vs `paper_bench_30k` discrepancy investigation (root cause: the eval-split regression in dataset_readers.py), and the comparison context for the original Wheat3DGS paper baseline. |
-| [`GSPLAT_VS_DIFFGS_RESULTS.md`](GSPLAT_VS_DIFFGS_RESULTS.md) | ✅ yes | Full-pipeline benchmark of gsplat vs diff-gaussian on all 7 FIP plots (30k, use_principal_point). Verdict: **a strict win** — equal quality (PSNR 28.17=28.17, Δ+0.01 dB; SSIM/LPIPS identical), equal seg (IoU 0.588=0.588, Δ−0.001), 3D head counts within ±18, **Test A engine alpha-IoU 0.999998 ⇒ tan residual negligible**, **and ~1.77× faster training (~89→~50 min/plot, both on rtx_4090)**. Recommends merging gsplat-switch as default. Includes the process note on why eval_2d was missing (scikit-image absent in Euler env). Raw data in `analysis_results/gsplat_vs_diffgs.json`. |
-| [`GSPLAT_PORT.md`](GSPLAT_PORT.md) | ✅ yes | The gsplat render-engine port (branch `gsplat-switch`, WIP). What changed (`render()` → gsplat, old path kept as `render_diffgs()`), the 3 correctness details (viewmat transpose, K matrix, densification grad rescale), what runs on gsplat vs flashsplat, the container torch-import fix, the 1000-iter smoke-test result, and next steps. Rollback tag: `round4-signfix-good`. |
-| [`DENSIFICATION_OPTIONS.md`](DENSIFICATION_OPTIONS.md) | ✅ yes | Densification strategies to replace vanilla 3DGS for faster training / better fine wheat detail without quality loss. Explains what our current Default strategy does (clone/split/prune driven by signed screen-space gradient), the "gradient collision" bug that blurs fine detail, and two gsplat alternatives: **AbsGrad** (absolute-gradient densification — recovers fine detail, ~free) and **MCMC** (relocation under a fixed Gaussian budget — ~40% faster, bounded VRAM, robust on sparse views). Side-by-side table, recommendation for wheat (AbsGrad primary, MCMC for speed/VRAM — they're alternatives, not a stack), and what switching touches in `train_vanilla_3dgs.py`. All keep a standard Gaussian cloud → FlashSplat segmentation unaffected. |
-| [`SPARSENESS_ANALYSIS.md`](SPARSENESS_ANALYSIS.md) | ✅ yes | SfM sparseness profile of all 7 FIP plots + 4 phone sessions (track length, observations/image, % weakly-triangulated 2-view points, camera view-angle spread), computed by `src/analysis/analyze_sparseness.py`. Key finding: FIP and phone are sparse in **opposite** ways — FIP is narrow-angle (13° cone) but dense-matching, phone is wide-angle (63-70°) but sparse-matching with far fewer 3D points; more phone images did NOT make it denser. Maps each dataset to a densification recommendation (MCMC prime candidate on FIP). Raw numbers in `analysis_results/sparseness.json`. |
-| [`JPEG_QUALITY_ANALYSIS.md`](JPEG_QUALITY_ANALYSIS.md) | ✅ yes | What JPEG compression is (chroma subsampling, 8×8 DCT, quantization) and its effect on the wheat field per pipeline step (low for COLMAP/3DGS, **high for SAM masks + 3D segmentation** — masks ride on edges and heads are a few pixels). Measured compression of all 4 phone sessions via `src/analysis/analyze_jpeg_quality.py`: quality~91 (luma loss moderate), but **4:2:0 chroma subsampling on every session is the real mask-precision cost**, not the 8×8 luma blocking. Cross-checks the `20250530` blur outlier. Fix = re-shoot DNG/RAW or force 4:4:4. Raw numbers in `analysis_results/jpeg_quality.json`. |
-| [`MASK_SIZE_ANALYSIS.md`](MASK_SIZE_ANALYSIS.md) | ✅ yes | SAM wheat-head mask sizes (FIP vs phone) + the JPEG edge-impact metric, from `src/analysis/analyze_mask_sizes.py`. Heads average ~6,300–6,440 px area (FIP ~81×125 px; phone more elongated ~67×161 px). Explains how masks are stored (full-frame PNG, area = true silhouette, fill ratio), and defines `JPEG @Npx` = outline pixels ÷ total white pixels (worked `o`/`#` blob example): ~5%/10% (FIP) and ~6%/12.5% (phone) of mask area at 1px/2px edge uncertainty. Caveats: it's an upper bound, AND across thousands of densely packed heads even a small per-mask error can merge/split/mis-match heads in 3D segmentation. Raw numbers in `analysis_results/mask_sizes.json`. |
-| `analysis_results/` | ✅ yes | Raw machine-readable outputs (JSON/CSV) from `src/analysis/` diagnostic + comparison scripts. The human-readable write-ups that cite them live as `*.md` directly in `docs/`. |
-| `wheat3dgs_paper.pdf` | ❌ gitignored (large) | Original Wheat3DGS paper — reference for the pipeline this thesis adapts to phone capture. |
-| `euler_setup.md` | ❌ gitignored | Personal notes on running this codebase on the ETH Euler HPC cluster (code transfer, CUDA submodule compilation, SLURM job script, rsync workflow). Author-specific — not committed. |
-| `CAMERA_INTRINSICS_EXPLAINED.md` | ❌ gitignored | Beginner walkthrough of camera intrinsics (fx/fy/cx/cy, focal length, FoV, principal point, projection matrices, symmetric vs asymmetric frustums). Companion to `PIXEL_SHIFT_BUG.md`. Personal study notes, not committed. |
-| `CHANGES.md` | ❌ gitignored | Personal per-file change log (what was changed and why) — author's dev notes, not project history. |
+| [INSTALL_COLMAP_CUDA.md](INSTALL_COLMAP_CUDA.md) | ✅ | Build COLMAP from source with CUDA on a fresh machine — all deps, cmake config, GPU compute-capability table, and a fix for every build error we hit. |
+| [euler_setup.md](euler_setup.md) | 🔒 | ETH Euler HPC **one-time setup**: connect via code-server, transfer code + data, install conda env + compile CUDA submodules, job-script contents (Steps 1–8). |
+| [euler_setup_runs.md](euler_setup_runs.md) | 🔒 | ETH Euler **per-run workflow**: the push-code → connect → `sbatch` → pull-results cycle for training / segmentation / full-pipeline jobs (companion to `euler_setup.md`). |
+
+### 🛰️ SfM preprocessing & Agisoft benchmark
+| Doc | | What it's about |
+|---|---|---|
+| [SFM_PIPELINE_COMPARISON.md](SFM_PIPELINE_COMPARISON.md) | ✅ | Our COLMAP preprocessing vs the supervisor's Agisoft Metashape — the two functional gaps (metric scale, marker GCPs) and when to use which `sparse/`. |
+| [AGISOFT_QUALITY_METRICS.md](AGISOFT_QUALITY_METRICS.md) | ✅ | How to read `3D Error` / `Distance Error` / `Reproj Error` in `marker_errors_summary.csv` — i.e. which Agisoft sessions to trust as references. |
+| [COMPARE_TO_AGISOFT_RESULTS.md](COMPARE_TO_AGISOFT_RESULTS.md) | ✅ | 4-session benchmark of `compare_to_agisoft.py`: per-session translation/rotation error vs Agisoft, "good" thresholds, and the blurry `field_D/20250530` outlier. |
+
+### 🎯 Pixel-shift fix (reconstruction correctness)
+| Doc | | What it's about |
+|---|---|---|
+| [PIXEL_SHIFT_BUG.md](PIXEL_SHIFT_BUG.md) | ✅ | Vanilla 3DGS silently drops `cx, cy` → render/GT misalignment. The bug, per-plot offset table, why phone is unaffected, and three fix paths (`use_principal_point` is implemented). |
+| [CAMERA_INTRINSICS_EXPLAINED.md](CAMERA_INTRINSICS_EXPLAINED.md) | 🔒 | Beginner primer on `fx/fy/cx/cy`, focal length, FoV, principal point, projection matrices and symmetric vs asymmetric frustums. Companion to `PIXEL_SHIFT_BUG.md`. |
+| [FIP_PAPER_BENCH_RESULTS.md](FIP_PAPER_BENCH_RESULTS.md) | ✅ | 7-plot 30k PSNR/SSIM/LPIPS benchmark: the **+7.79 dB** jump from the pixel-shift fix, the eval-split regression diagnosis, and the head-to-head vs the original Wheat3DGS paper (we beat it). |
+
+### ⚡ Render engine — gsplat port
+| Doc | | What it's about |
+|---|---|---|
+| [GSPLAT_PORT.md](GSPLAT_PORT.md) | ✅ | The `diff-gaussian` → **gsplat** port (`gsplat-switch` branch): what changed in `render()`, the 3 correctness details, and what stays on flashsplat (segmentation). |
+| [GSPLAT_VS_DIFFGS_RESULTS.md](GSPLAT_VS_DIFFGS_RESULTS.md) | ✅ | Head-to-head on 7 FIP plots: equal quality + equal segmentation but **~1.77× faster training** ⇒ a strict win. (FIP only — phone still TODO.) |
+
+### 🧬 Training strategy — densification
+| Doc | | What it's about |
+|---|---|---|
+| [DENSIFICATION_OPTIONS.md](DENSIFICATION_OPTIONS.md) | ✅ | Default vs **AbsGrad** vs **MCMC** densification: the "gradient-collision" blur on fine wheat detail (awns), the recommendation, the **implemented `absgrad` flag** (§8), and a **survey of other 3DGS variants** (Mip-Splatting, GaussianPro, Scaffold-GS, Deformable, LV-3DGS) with why they don't fit our segmentation/scene (§9). |
+
+### 🔬 Input-data diagnostics (FIP vs phone)
+| Doc | | What it's about |
+|---|---|---|
+| [SPARSENESS_ANALYSIS.md](SPARSENESS_ANALYSIS.md) | ✅ | SfM sparseness of all FIP plots + phone sessions — FIP and phone are sparse in *opposite* ways (narrow-angle/dense vs wide-angle/sparse); maps each to a densification recommendation. |
+| [JPEG_QUALITY_ANALYSIS.md](JPEG_QUALITY_ANALYSIS.md) | ✅ | What JPEG does (chroma subsampling, 8×8 DCT, quantization) and its per-step impact — low for COLMAP/3DGS, high for SAM masks; **4:2:0 chroma is the real mask-edge cost**. |
+| [MASK_SIZE_ANALYSIS.md](MASK_SIZE_ANALYSIS.md) | ✅ | SAM wheat-head mask sizes (FIP vs phone) and the `JPEG @Npx` edge-impact metric — plus why even a small per-mask error matters across thousands of densely-packed heads. |
+
+### 📚 Reference & data
+| Doc | | What it's about |
+|---|---|---|
+| [analysis_results/](analysis_results/) | ✅ | Raw machine-readable JSON outputs from the `src/analysis/` scripts that the diagnostic write-ups above cite. |
+| `wheat3dgs_paper.pdf` | 🔒 | The original Wheat3DGS paper this thesis adapts to phone capture (large file, not committed). |
+| [CHANGES.md](CHANGES.md) | 🔒 | Personal per-file change log (what changed and why) — dev notes, not project history. |
+
+---
 
 ## Where other docs live
 
-- **Supervisor reference material:** [`../reference/agisoft/`](../reference/agisoft/) — supervisor's Agisoft scripts (steps 6/7/10) + coded-marker spec sheet. Read-only, not part of our pipeline.
-- **Project-wide guidance for Claude Code:** [`../CLAUDE.md`](../CLAUDE.md) (workspace root)
-- **Per-module READMEs:** under `src/<module>/README.md`
+- **Supervisor reference material:** [`../reference/agisoft/`](../reference/agisoft/) — Agisoft scripts (steps 6/7/10) + coded-marker spec sheet. Read-only, not part of our pipeline.
+- **Project-wide guidance for Claude Code:** [`../CLAUDE.md`](../CLAUDE.md) (workspace root).
+- **Per-module READMEs** (`src/<module>/README.md`):
   - [`src/preprocessing/README.md`](../src/preprocessing/README.md) — phone preprocessing (uniform-size + COLMAP), full empirical test log
   - [`src/reconstruction/README.md`](../src/reconstruction/README.md) — 3DGS training, rendering, metrics
   - [`src/segmentation_3d/README.md`](../src/segmentation_3d/README.md) — FlashSplat 3D segmentation

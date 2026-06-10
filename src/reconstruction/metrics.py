@@ -52,6 +52,15 @@ def evaluate(model_paths):
             test_dir = Path(scene_dir) / "test"
 
             for method in os.listdir(test_dir):
+                method_dir = test_dir / method
+                gt_dir = method_dir/ "gt"
+                renders_dir = method_dir / "renders"
+                # skip non-render subfolders that eval steps leave in test/ (e.g. "overlay",
+                # "segmentation") — they have no renders/+gt/, so they'd crash metrics and
+                # (because the try/except is per-scene) drop the whole scene's results.json.
+                # This lets metrics be safely re-run after seg/eval, e.g. for a 15k-vs-30k pass.
+                if not (renders_dir.is_dir() and gt_dir.is_dir()):
+                    continue
                 print("Method:", method)
 
                 full_dict[scene_dir][method] = {}
@@ -59,9 +68,6 @@ def evaluate(model_paths):
                 full_dict_polytopeonly[scene_dir][method] = {}
                 per_view_dict_polytopeonly[scene_dir][method] = {}
 
-                method_dir = test_dir / method
-                gt_dir = method_dir/ "gt"
-                renders_dir = method_dir / "renders"
                 renders, gts, image_names = readImages(renders_dir, gt_dir)
 
                 ssims = []

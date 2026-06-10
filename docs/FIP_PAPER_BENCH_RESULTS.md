@@ -166,8 +166,50 @@ SSIM avg: 0.636 → **0.881** (+0.24). LPIPS avg: 0.325 → **0.198** (−0.13).
 - ⛔ Round 3 **+pp** (sign-flipped frustum) is degraded (avg PSNR 18.59) — kept in the "Round 3" + "Post-mortem" sections above as the historical record of the bug. The Round-4 results superseded it on disk.
 - ⛔ Round 1 (24.09 PSNR) and Round 2 (27.08 PSNR) numbers still should not be cited — Round 1 trained with the broken predicate, Round 2 was test-contaminated.
 
+## Comparison vs the Wheat3DGS paper (DONE — 2026-06-09)
+
+Read the paper's actual reported numbers from `docs/wheat3dgs_paper.pdf` (Tables 1–3) and compared
+head-to-head. **We exceed the paper on reconstruction and 2D segmentation; phenotyping not yet
+implemented so not comparable.**
+
+**Paper's numbers (their FIP dataset, gsplat `3DGS*`, 30k):**
+- Table 1 (NVS): `3DGS*` PSNR **25.45**, SSIM **0.843**, LPIPS **0.226**, 146 min, 0.557 GB.
+- Table 2 (2D seg vs GT, "Ours"): IoU **0.50**, Precision **0.81**, Recall **0.57**, F1 **0.67**, SSIM **0.90**.
+- Table 3 (phenotyping MAPE, 3DGS): length **15.1%**, width **18.3%**, volume **40.2%**.
+
+**Head-to-head:**
+
+| Reconstruction | PSNR↑ | SSIM↑ | LPIPS↓ |
+|---|--:|--:|--:|
+| Paper 3DGS* | 25.45 | 0.843 | 0.226 |
+| **Ours (gsplat + pp, 30k)** | **28.17** | **0.881** | **0.198** |
+| Δ | **+2.72 dB** | +0.038 | −0.028 |
+
+| 2D seg vs GT | IoU↑ | F1↑ |
+|---|--:|--:|
+| Paper "Ours" | 0.50 | 0.67 |
+| **Ours** | **0.588** | **0.730** |
+| Δ | **+0.088** | **+0.060** |
+
+**Why we're ahead — the thesis story:** the paper **explicitly reports the pixel-shift bug as
+unsolved** (p.6: *"a translation shift by a few pixels for which we could not find a solution. This
+problem only affects 2D evaluations…"*). That is exactly the principal-point bug we fixed
+([PIXEL_SHIFT_BUG.md](PIXEL_SHIFT_BUG.md), `use_principal_point`). So **our +2.72 dB reconstruction
+and higher 2D-seg IoU/F1 come largely from solving the open problem the authors acknowledged.**
+Citable claim: *"we exceed the original Wheat3DGS reconstruction and 2D-segmentation metrics by
+resolving the principal-point pixel-shift the authors reported as unsolved."*
+
+**Caveats (state in report):** (1) same ETH FIP dataset, very likely the same 7 plots — confirm our
+`manual_label` GT masks are the paper's; (2) test split differs (paper = 6 out-of-distribution views,
+ours = held-out `cam_11/cam_12`), both held-out but not identical, so the PSNR gap isn't *only* the
+fix; (3) not a clean sweep — paper seg-SSIM 0.90 ≥ ours ~0.886, precision ~equal; (4) **phenotyping
+(the paper's headline) is unmeasured — we have not implemented it.**
+
+---
+
 ## Next steps
 
-1. **Compare Round-4 signfix +pp (28.17 PSNR avg) against the original Wheat3DGS paper's splatfacto numbers** — this is the headline thesis comparison. If close, the principal-point fix is the headline finding.
+1. ✅ **DONE** — compared Round-4 +pp (now the gsplat run, 28.17 PSNR avg) against the paper; we beat
+   it on reconstruction + 2D seg (see section above). The principal-point fix is the headline finding.
 2. If a noticeable residual gap to splatfacto remains, the next move is Option 2 (gsplat) — see [PIXEL_SHIFT_BUG.md](PIXEL_SHIFT_BUG.md) "Fix options" §. The kernel-level cx/cy handling could close any remaining tile-binning artifacts at image borders.
 3. Re-run segmentation + downstream phenotyping with `use_principal_point=true` and compare against baseline — the same Gaussian-position correction that helped PSNR should also tighten 3D head IDs / phenotyping accuracy.

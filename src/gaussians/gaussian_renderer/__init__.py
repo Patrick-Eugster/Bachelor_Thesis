@@ -20,7 +20,7 @@ from flashsplat_rasterization import GaussianRasterizationSettings as FlashSplat
 from flashsplat_rasterization import GaussianRasterizer as FlashSplat_GaussianRasterizer
 import pdb
 
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None):
+def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, absgrad = False):
     """
     Render the scene with gsplat instead of diff-gaussian-rasterization.
 
@@ -28,6 +28,11 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     so the pixel-shift fix is handled natively here — no asymmetric-frustum projmatrix needed.
     The old diff-gaussian path is kept below as render_diffgs() for A/B comparison.
     Background tensor (bg_color) must be on GPU!
+
+    absgrad: when True, gsplat's backward also accumulates the ABSOLUTE per-pixel screen-space
+    gradient into means2d.absgrad (the AbsGS densification criterion — recovers fine detail that
+    the signed gradient cancels out). Only the training loop passes True; everything else (render,
+    eval, viewer) leaves it False so behaviour is byte-identical to the default vanilla path.
     """
     # Engine switch for A/B benchmarking: WHEAT_RENDERER=diffgs routes to the old
     # diff-gaussian path so a diff-gaussian run and a gsplat run can share ONE code copy
@@ -88,6 +93,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         backgrounds=bg_color[None],
         near_plane=0.01,
         eps2d=0.3,                               # matches the old rasterizer's 0.3 screen-space blur
+        absgrad=absgrad,                         # AbsGS densification criterion (opt-in, training only)
     )
 
     # render_colors: [1, H, W, 4] = RGB + expected-depth

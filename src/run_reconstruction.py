@@ -54,10 +54,14 @@ def _check_overwrite(model_path, cfg):
             sys.exit(0)
 
 
-def run_command(command_list, log_file, cwd=None, allow_interrupt=False):
-    """Helper to run a terminal command and wait for it to finish."""
+def run_command(command_list, log_file, cwd=None, capture=None):
+    """Run a terminal command, wait for it, and RETURN its exit code (no sys.exit).
+    If `capture` (a list) is passed, the last lines of the child's output are
+    appended to it so the run-report can show a failed step's error tail."""
     import pty, os as _os, termios
+    from collections import deque
     print(f"\n>>> RUNNING: {' '.join(command_list)}\n")
+    tail = deque(maxlen=80)  # ring buffer — only the end matters for the report
     if log_file:
         # use a PTY so the child process sees a real terminal — preserves wandb colors and OSC 8 links
         master_fd, slave_fd = pty.openpty()
@@ -78,15 +82,20 @@ def run_command(command_list, log_file, cwd=None, allow_interrupt=False):
                 # flush complete lines immediately so output appears in real time
                 while b"\n" in buf:
                     line, buf = buf.split(b"\n", 1)
-                    text = line.decode("utf-8", errors="replace") + "\n"
-                    sys.stdout.write(text)
+                    text = line.decode("utf-8", errors="replace")
+                    sys.stdout.write(text + "\n")
                     sys.stdout.flush()
+                    if capture is not None:
+                        tail.append(text)
         except KeyboardInterrupt:
             import signal
             process.send_signal(signal.SIGINT)
-        if buf:  # flush any remaining partial line
-            sys.stdout.write(buf.decode("utf-8", errors="replace"))
+        if buf:  # flush any remaining partial line (e.g. a crash's last line with no trailing \n)
+            text = buf.decode("utf-8", errors="replace")
+            sys.stdout.write(text)
             sys.stdout.flush()
+            if capture is not None and text.strip():
+                tail.append(text)
         _os.close(master_fd)
         try:
             process.wait()
@@ -97,24 +106,72 @@ def run_command(command_list, log_file, cwd=None, allow_interrupt=False):
     else:
         result = subprocess.run(command_list, cwd=cwd)
         returncode = result.returncode
-    if returncode != 0:
-        if allow_interrupt:
-            print(f"\n>>> Viewer closed (exit code {returncode})")
-        else:
-            print(f"!!! ERROR: Command failed with code {returncode}")
-            sys.exit(1)
+    if capture is not None:
+        capture.extend(tail)
+    return returncode
 
 
-def run_step(step_name, command_list, timings, log_file, cwd=None, allow_interrupt=False):
-    """Run a pipeline step, print its duration, and store it in timings dict."""
+class RunContext:
+    """Collects per-step status / timing / output tails across the pipeline so we
+    can (a) skip steps whose dependency failed and (b) write the end-of-run report."""
+    def __init__(self):
+        self.records = []   # ordered list of per-step dicts (for the report)
+        self.status  = {}   # step key -> "ok" / "failed" / "skipped"
+        self.timings = {}   # step name -> seconds
+
+    def blocked_by(self, depends_on):
+        """Return the dependency key that blocks this step (it FAILED or was SKIPPED
+        this run), or None. A dependency that was toggled off and never ran is NOT in
+        status, so it's assumed to exist on disk → not blocking (keeps run_seg=true alone working)."""
+        if depends_on is None:
+            return None
+        st = self.status.get(depends_on)
+        if st is not None and st != "ok":
+            return depends_on
+        return None
+
+    def record(self, key, name, status, seconds, blocked_by, tail):
+        """Store one step's outcome. tqdm lines are collapsed to their final \\r-segment."""
+        self.status[key] = status
+        self.records.append({
+            "key": key, "name": name, "status": status,
+            "seconds": round(seconds, 2), "blocked_by": blocked_by,
+            "output_tail": [t.split("\r")[-1] for t in tail],
+        })
+
+
+def run_step(ctx, key, step_name, command_list, log_file, depends_on=None, cwd=None, allow_interrupt=False):
+    """Run one pipeline step in a dependency-aware way and record its outcome in ctx.
+    If a step it depends on failed this run, this step is SKIPPED (not executed).
+    Otherwise it runs and is marked OK or FAILED — the pipeline keeps going either way,
+    so an independent step crashing (e.g. eval) no longer aborts the whole run."""
     print(f"\n{'='*60}")
     print(f"  STEP: {step_name}")
     print(f"{'='*60}")
+
+    blocker = ctx.blocked_by(depends_on)
+    if blocker:
+        print(f">>> SKIPPED — depends on '{blocker}' which did not succeed this run.")
+        ctx.record(key, step_name, "skipped", 0.0, blocked_by=blocker, tail=[])
+        return
+
+    tail = []
     t0 = time.perf_counter()
-    run_command(command_list, log_file, cwd=cwd, allow_interrupt=allow_interrupt)
+    rc = run_command(command_list, log_file, cwd=cwd, capture=tail)
     elapsed = time.perf_counter() - t0
-    timings[step_name] = elapsed
-    print(f"\n>>> {step_name} finished in {fmt_time(elapsed)}")
+    ctx.timings[step_name] = elapsed
+
+    # allow_interrupt (viewer): a non-zero exit just means the user closed it → treat as ok
+    if rc == 0 or allow_interrupt:
+        if allow_interrupt and rc != 0:
+            print(f"\n>>> {step_name} closed (exit code {rc})")
+        else:
+            print(f"\n>>> {step_name} finished in {fmt_time(elapsed)}")
+        ctx.record(key, step_name, "ok", elapsed, blocked_by=None, tail=tail)
+    else:
+        print(f"\n>>> !!! {step_name} FAILED (exit code {rc}) after {fmt_time(elapsed)} "
+              f"— continuing; any steps that depend on it will be skipped.")
+        ctx.record(key, step_name, "failed", elapsed, blocked_by=None, tail=tail)
 
 
 class _Tee:
@@ -140,6 +197,97 @@ class _Tee:
         self.file.close()
 
 
+_STATUS_ICON = {"ok": "OK  ", "failed": "FAIL", "skipped": "SKIP"}
+
+
+def _print_and_write_report(ctx, model_path, cfg, exp_name):
+    """Print the end-of-run summary and persist it as run_report.txt + run_report.json
+    inside the experiment folder (so it rsyncs back). Includes per-step status, the
+    per-step time table + total, and the error tail of any FAILED step. If the env var
+    WHEAT_RUN_REPORT points to a file, the same report is also appended there — so one
+    sbatch run (looping over many plots) ends up with a single combined report file."""
+    total_seconds = sum(ctx.timings.values())
+    failed  = [r for r in ctx.records if r["status"] == "failed"]
+    skipped = [r for r in ctx.records if r["status"] == "skipped"]
+    verdict = "SUCCESS" if not failed else "COMPLETED WITH FAILURES"
+    job     = os.environ.get("SLURM_JOB_ID")
+
+    lines = []
+    lines.append("=" * 64)
+    lines.append("  RUN REPORT")
+    lines.append("=" * 64)
+    lines.append(f"  when        : {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"  experiment  : {exp_name}")
+    lines.append(f"  plot        : {cfg.get('plot', '?')}")
+    if cfg.get("field"):
+        lines.append(f"  field/date  : {cfg.get('field')} / {cfg.get('date', '?')}")
+    if job:
+        lines.append(f"  slurm job   : {job}")
+    lines.append(f"  model_path  : {model_path}")
+    lines.append("-" * 64)
+    lines.append(f"  {'STEP':<24}{'STATUS':<8}{'TIME':>10}")
+    lines.append("-" * 64)
+    for r in ctx.records:
+        icon  = _STATUS_ICON.get(r["status"], "?")
+        extra = f"   (blocked by {r['blocked_by']})" if r["blocked_by"] else ""
+        lines.append(f"  {r['name']:<24}{icon:<8}{fmt_time(r['seconds']):>10}{extra}")
+    lines.append("-" * 64)
+    lines.append(f"  {'TOTAL':<24}{'':<8}{fmt_time(total_seconds):>10}")
+    lines.append("=" * 64)
+    lines.append(f"  VERDICT: {verdict}")
+    if failed:
+        lines.append(f"  FAILED : {', '.join(r['name'] for r in failed)}")
+    if skipped:
+        lines.append(f"  SKIPPED (dependency did not succeed): {', '.join(r['name'] for r in skipped)}")
+    lines.append("=" * 64)
+
+    # error tail for each failed step — this is the 'important error' part
+    for r in failed:
+        tail = r["output_tail"][-40:]
+        lines.append("")
+        lines.append(f"----- ERROR TAIL: {r['name']}  (last {len(tail)} output lines) -----")
+        lines.extend("  " + l for l in tail)
+
+    text = "\n".join(lines)
+    print("\n" + text + "\n")
+
+    # persist next to the experiment outputs (rsyncs back automatically)
+    try:
+        os.makedirs(model_path, exist_ok=True)
+        report_txt = os.path.join(model_path, "run_report.txt")
+        with open(report_txt, "w", encoding="utf-8") as f:
+            f.write(text + "\n")
+        import json
+        with open(os.path.join(model_path, "run_report.json"), "w", encoding="utf-8") as f:
+            json.dump({
+                "experiment":   exp_name,
+                "plot":         cfg.get("plot"),
+                "when":         datetime.datetime.now().isoformat(timespec="seconds"),
+                "slurm_job_id": job,
+                "verdict":      verdict,
+                "total_seconds": round(total_seconds, 2),
+                "steps":        ctx.records,
+            }, f, indent=2)
+        print(f"Run report → {report_txt}")
+    except Exception as e:
+        print(f"WARNING: could not write run report: {e}")
+
+    # optional combined report for a whole sbatch run (one file across all plots)
+    agg = os.environ.get("WHEAT_RUN_REPORT")
+    if agg:
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(agg)), exist_ok=True)
+            with open(agg, "a", encoding="utf-8") as f:
+                f.write(text + "\n\n")
+        except Exception as e:
+            print(f"WARNING: could not append to WHEAT_RUN_REPORT={agg}: {e}")
+
+    if verdict == "SUCCESS":
+        print("\nOK  PIPELINE FINISHED SUCCESSFULLY!")
+    else:
+        print("\n!!! PIPELINE FINISHED WITH FAILURES — see run_report.txt")
+
+
 # =====================================================================
 # --- PIPELINE ---
 # =====================================================================
@@ -157,7 +305,9 @@ def _run_pipeline(cfg):
     seg_dir_flag      = ["--seg_dir", seg_source]
     # opt-in flag: when true, all stages honor the SfM cx/cy via asymmetric frustum
     pp_flag           = ["--use_principal_point"] if cfg.reconstruction.get("use_principal_point", False) else []
-    timings           = {}
+    # opt-in: AbsGS densification criterion (gsplat means2d.absgrad) — recovers fine wheat detail
+    absgrad_flag      = ["--absgrad"] if cfg.reconstruction.get("absgrad", False) else []
+    ctx               = RunContext()
 
     if cfg.run_train:
         _check_overwrite(model_path, cfg)
@@ -165,7 +315,7 @@ def _run_pipeline(cfg):
 
     # Step 1: Vanilla 3DGS Training
     if cfg.run_train:
-        run_step("1. Train", [
+        run_step(ctx, "train", "1. Train", [
             "python", "src/reconstruction/vanilla_3dgs/train_vanilla_3dgs.py",
             "-s", dataset_path,
             "-m", model_path,
@@ -176,7 +326,7 @@ def _run_pipeline(cfg):
             "--sh_degree", str(cfg.reconstruction.sh_degree),
             "--densify_until_iter", str(cfg.reconstruction.densify_until_iter),
             "--densify_grad_threshold", str(cfg.reconstruction.densify_grad_threshold),
-        ] + seg_dir_flag + data_device_flag + pp_flag + wandb_flag, timings, log_file)
+        ] + seg_dir_flag + data_device_flag + pp_flag + absgrad_flag + wandb_flag, log_file)
 
     # Step 2: Render from original training/test camera views (for quality check)
     if cfg.run_render:
@@ -188,20 +338,20 @@ def _run_pipeline(cfg):
             if os.path.isdir(sub_path):
                 print(f"Clearing stale renders at {sub_path}")
                 _shutil.rmtree(sub_path)
-        run_step("2. Render", [
+        run_step(ctx, "render", "2. Render", [
             "python", "src/reconstruction/render.py",
             "-s", dataset_path,
             "-m", model_path,
             "--resolution", resolution_str,
             "--iteration", str(cfg.reconstruction.iterations)
-        ] + seg_dir_flag + data_device_flag + pp_flag, timings, log_file)
+        ] + seg_dir_flag + data_device_flag + pp_flag, log_file, depends_on="train")
 
-    # Step 3: Compute PSNR/SSIM/LPIPS quality metrics on test views
+    # Step 3: Compute PSNR/SSIM/LPIPS quality metrics on test views (reads the renders from step 2)
     if cfg.run_metrics:
-        run_step("3. Metrics", [
+        run_step(ctx, "metrics", "3. Metrics", [
             "python", "src/reconstruction/metrics.py",
             "-m", model_path
-        ], timings, log_file)
+        ], log_file, depends_on="render")
 
     # Step 4: 3D Segmentation — assign wheat head IDs to Gaussians
     if cfg.run_seg:
@@ -209,7 +359,7 @@ def _run_pipeline(cfg):
         if seg_tee:
             sys.stdout = seg_tee
             print(f"Logging Step 4 to: {os.path.abspath(log_file)}")
-        run_step("4. Segmentation", [
+        run_step(ctx, "seg", "4. Segmentation", [
             "python", "src/segmentation_3d/run_3d_seg.py",
             "-s", dataset_path,
             "-m", model_path,
@@ -218,24 +368,24 @@ def _run_pipeline(cfg):
             "--iou_threshold", "0.5",
             "--exp_name", cfg.segmentation_3d.exp_name,
             "--vis_max_heads", str(cfg.segmentation_3d.vis_max_heads),
-        ] + seg_dir_flag + ([] if cfg.segmentation_3d.save_vis_overlay else ["--no_save_vis_overlay"]) + data_device_flag + pp_flag + wandb_flag, timings, log_file)
+        ] + seg_dir_flag + ([] if cfg.segmentation_3d.save_vis_overlay else ["--no_save_vis_overlay"]) + data_device_flag + pp_flag + wandb_flag, log_file, depends_on="train")
         if seg_tee:
             seg_tee.close()
         # auto-export colored PLY right after segmentation — no separate toggle needed
         exp_dir = os.path.join(model_path, "segmentation_3d", cfg.segmentation_3d.exp_name)
-        run_step("4b. Export Colored PLY", [
+        run_step(ctx, "export_ply", "4b. Export Colored PLY", [
             "python", "src/segmentation_3d/export_colored_ply.py",
             "--gaussians_ply", os.path.join(exp_dir, "gaussians.ply"),
             "--labels_path",   os.path.join(exp_dir, "all_obj_labels.pth"),
             "--output_ply",    os.path.join(exp_dir, "gaussians_colored.ply"),
             "--sh_degree",     str(cfg.reconstruction.sh_degree),
-        ], timings, log_file)
+        ], log_file, depends_on="seg")
 
     # Step 5: Render 360 flyaround video of the segmented wheat field
     if cfg.run_render_360:
         fast_render_flag = ["--fast_render"] if cfg.fast_render_360 else []
         white_bg_flag    = ["--white_background"] if cfg.white_background_360 else []
-        run_step("5. Render360", [
+        run_step(ctx, "render_360", "5. Render360", [
             "python", "src/viewer/render_360.py",
             "-s", dataset_path,
             "-m", model_path,
@@ -244,28 +394,28 @@ def _run_pipeline(cfg):
             "--n_frames", str(cfg.n_frames),
             "--framerate", str(cfg.framerate),
             "--elevation", str(cfg.elevation),
-        ] + fast_render_flag + white_bg_flag + data_device_flag + pp_flag, timings, log_file)
+        ] + fast_render_flag + white_bg_flag + data_device_flag + pp_flag, log_file, depends_on="seg")
 
     # Step 6: Evaluate 3D segmentation quality — saves overlay PNGs per camera
     if cfg.run_eval:
-        run_step("6. Eval", [
+        run_step(ctx, "eval", "6. Eval", [
             "python", "src/segmentation_3d/eval_wheatgs.py",
             "-s", dataset_path,
             "-m", model_path,
             "--resolution", resolution_str,
             "--exp_name", cfg.segmentation_3d.exp_name,
             "--skip_train"
-        ] + seg_dir_flag + data_device_flag + pp_flag, timings, log_file)
+        ] + seg_dir_flag + data_device_flag + pp_flag, log_file, depends_on="seg")
 
     # Step 6b: Pixel-level 2D metrics vs manual GT masks — requires run_eval output (test/segmentation/)
     if cfg.run_eval_2d:
-        run_step("6b. Eval2D", [
+        run_step(ctx, "eval_2d", "6b. Eval2D", [
             "python", "src/segmentation_3d/eval_seg_2d.py",
             "-s", dataset_path,
             "-m", model_path,
             "--resolution", resolution_str,
             "--exp_name", cfg.segmentation_3d.exp_name,
-        ] + data_device_flag + pp_flag, timings, log_file)
+        ] + data_device_flag + pp_flag, log_file, depends_on="eval")
 
     # Step 7: Interactive viser viewer — open http://localhost:VIEWER_PORT in browser, Ctrl+C to stop
     if cfg.run_viewer:
@@ -295,19 +445,11 @@ def _run_pipeline(cfg):
                 "--port", str(cfg.viewer_port),
             ]
         print(f"  Open http://localhost:{cfg.viewer_port} in your browser")
-        run_step("7. Viewer", viewer_cmd, timings, log_file, cwd=viewer_dir, allow_interrupt=True)
+        run_step(ctx, "viewer", "7. Viewer", viewer_cmd, log_file,
+                 depends_on="train", cwd=viewer_dir, allow_interrupt=True)
 
-    # summary table
-    total = sum(timings.values())
-    print(f"\n{'='*40}")
-    print(f"  PIPELINE SUMMARY")
-    print(f"{'='*40}")
-    for name, t in timings.items():
-        print(f"  {name:<20} {fmt_time(t)}")
-    print(f"{'='*40}")
-    print(f"  {'TOTAL':<20} {fmt_time(total)}")
-    print(f"{'='*40}")
-    print("\n✅ PIPELINE FINISHED SUCCESSFULLY!")
+    # end-of-run summary table + persisted report (statuses, times, error tails)
+    _print_and_write_report(ctx, model_path, cfg, exp_name)
 
 
 @hydra.main(version_base=None, config_path="../configs", config_name="reconstruction_seg3d/config")

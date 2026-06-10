@@ -204,3 +204,93 @@ gsplat's `Strategy` API inside
 
 Both are opt-in and should be benchmarked before becoming default, exactly like the
 `use_principal_point` and gsplat-render changes were.
+
+---
+
+## 7. Update (2026-06-09): how the gsplat benchmark changes the priority
+
+The gsplat engine benchmark ([`GSPLAT_VS_DIFFGS_RESULTS.md`](GSPLAT_VS_DIFFGS_RESULTS.md)) showed
+gsplat already trains **~1.77× faster** (~89 → ~50 min/plot) at **identical quality** (PSNR 28.17,
+seg IoU 0.588). The render engine and the densification strategy are **different layers** — gsplat
+renders the *same* Gaussians faster; it does not change *what* is reconstructed. So:
+
+- **The speed motivation for MCMC is largely satisfied by gsplat.** MCMC's remaining unique value is
+  **bounded VRAM** (only matters if the 16 GB ceiling still bites) and **sparse-view robustness**
+  (most relevant for **phone**, not FIP). → **MCMC demoted to "optional, mainly for phone."**
+- **AbsGrad stays the priority lever.** gsplat did **not** improve quality (PSNR unchanged), and the
+  thesis goal is **fine detail** (awns, small heads) with clear headroom (seg IoU only ~0.59).
+  AbsGrad targets exactly that, nearly for free. → **Reframe the planned A/B/C as
+  gsplat-Default vs gsplat-AbsGrad** as the headline arm; add gsplat-MCMC only if VRAM/phone needs it.
+
+One-line: **gsplat answered "faster"; AbsGrad answers "sharper" — and the thesis cares about sharper.**
+
+---
+
+## 8. AbsGrad IMPLEMENTED (2026-06-10) — opt-in flag, off by default
+
+AbsGrad is now wired in as a toggle. **Default is off → no-flag runs are byte-identical to the
+current vanilla path** (verified: with the flag off, gsplat never populates `means2d.absgrad` and
+densification reads the same signed `.grad` as before). We kept the existing INRIA clone/split/prune
+machinery and only swapped *which gradient feeds the split decision* — no gsplat `Strategy` refactor
+was needed (that's only required for MCMC).
+
+**What changed (4 spots):**
+1. [`gaussian_renderer/__init__.py`](../src/gaussians/gaussian_renderer/__init__.py) `render()` —
+   new `absgrad=False` arg, passed through to `gsplat.rasterization(absgrad=...)`. Only the train
+   loop passes `True`; render/eval/viewer leave it `False`.
+2. [`gaussian_model.py`](../src/gaussians/scene/gaussian_model.py) `add_densification_stats(..., use_absgrad=False)` —
+   reads `means2d.absgrad` instead of `.grad` when on.
+3. [`train_vanilla_3dgs.py`](../src/reconstruction/vanilla_3dgs/train_vanilla_3dgs.py) — renders with
+   `absgrad=opt.absgrad`, and rescales `.absgrad` from pixels → NDC (camera `W/2, H/2`) before
+   accumulating, because `.absgrad` skips the pixel→NDC autograd hook that `.grad` gets in `render()`.
+   This keeps `densify_grad_threshold` on the same scale as the default path.
+4. Config: `absgrad` flag in `OptimizationParams` (auto `--absgrad` CLI), `reconstruction.absgrad`
+   in [`vanilla_3dgs.yaml`](../configs/reconstruction_seg3d/reconstruction/vanilla_3dgs.yaml), and
+   `absgrad_flag` plumbed through `run_reconstruction.py`'s Train step.
+
+**How to run the A/B (gsplat-Default vs gsplat-AbsGrad):**
+```bash
+# A — current vanilla (control)
+python src/run_reconstruction.py plot=plot_461 run_train=true run_render=true run_metrics=true \
+  reconstruction.iterations=30000 reconstruction.use_principal_point=true experiment_name=absA_default
+
+# B — AbsGrad on. IMPORTANT: raise the threshold (~3-4x) — absgrad magnitudes are larger,
+#     so the default 0.0002 would massively over-densify and OOM.
+python src/run_reconstruction.py plot=plot_461 run_train=true run_render=true run_metrics=true \
+  reconstruction.iterations=30000 reconstruction.use_principal_point=true \
+  reconstruction.absgrad=true reconstruction.densify_grad_threshold=0.0008 experiment_name=absB_absgrad
+```
+Then compare PSNR/SSIM/LPIPS + Gaussian count + seg `eval_2d/metrics_2d.json`. **The threshold is the
+one knob to tune** — start at 0.0008 and adjust so the final Gaussian count lands near the default
+run's (too low → OOM/over-dense; too high → no benefit). AbsGrad works on the gsplat engine only
+(the `WHEAT_RENDERER=diffgs` fallback ignores it). FlashSplat segmentation is unaffected — still a
+standard Gaussian cloud.
+
+---
+
+## 9. Other 3DGS variants we evaluated (and why they don't fit)
+
+Beyond densification strategy, several well-known 3DGS variants were considered as alternatives to
+vanilla. Two hard filters decide fit for **this** project:
+
+- **Filter A — segmentation-compatible?** FlashSplat assigns a label to each Gaussian in a *fixed,
+  explicit* cloud. Anything that **decodes Gaussians from a neural network** (no stable per-Gaussian
+  identity) breaks 3D segmentation.
+- **Filter B — does it target OUR scene?** Our captures are **fixed-distance, high-texture, static,
+  fine-detail** (wheat awns/edges). Methods built for textureless, dynamic, or free-viewpoint
+  multi-scale scenes solve problems we don't have.
+
+| Method | What it targets / does | Verdict for wheat3dgs |
+|---|---|---|
+| **Mip-Splatting** (Yu et al. 2023) | Scale/zoom **aliasing**: a 3D low-pass (smoothing) filter + a 2D Mip filter replacing 3DGS's dilation, so quality is stable across resolutions/distances. | ✅ **Segmentation-safe**, and partly **free**: gsplat exposes it via `rasterize_mode="antialiased"`. But our cameras sit at ~fixed distance, so multi-scale aliasing is a minor issue → **low expected gain, but cheap to A/B** (could become a `mip`/`antialiased` opt-in flag like `absgrad`). |
+| **GaussianPro** (Cheng et al. 2024) | Progressive propagation: uses rendered depth/normal + patch-match (MVS-style) priors and planar constraints to grow Gaussians in **under-reconstructed / textureless** regions. | ⚠️ **Off-target** — wheat is *high-texture* (edges everywhere), the opposite of its use case; also meaningful integration effort. Segmentation-safe but little to gain → **skip**. |
+| **Scaffold-GS** (Lu et al. 2024) | Anchor points hold features; an **MLP decodes** the attributes of k view-dependent neural Gaussians per anchor, spawned each frame. Compact + high quality. | ❌ **Breaks segmentation** (Filter A): no fixed explicit per-Gaussian set with stable identity for FlashSplat to label. Rule out unless segmentation is re-architected. |
+| **Deformable 3DGS** (Yang et al. 2024) / 4DGS | A **deformation MLP** maps canonical Gaussians + time → deformed positions, for **dynamic/temporal** scenes. | ❌ **Not our problem** (Filter B): reconstruction is *static* per capture session; the deformation field also complicates the cloud. Only relevant if we later model *growth over time* — a different project. |
+| **LV-3DGS** | ❓ Not a name I can confidently place — it overlaps with several niche pruning / level-of-detail variants (e.g. LightGaussian, LP-3DGS). | ❓ **Needs clarification** (which paper/link). Not assessed here rather than guess. If it's a *pruning/LoD* method it's likely segmentation-safe but aimed at memory/speed, which gsplat already largely solved. |
+
+**Takeaway:** of these five, only **Mip-Splatting** is both segmentation-safe and on-target, and even
+it is a minor, cheap-to-try gain — not a fine-detail lever. **AbsGrad remains the best fit** because it
+directly attacks the awn/edge detail loss while keeping the standard explicit Gaussian cloud.
+Scaffold-GS and Deformable are ruled out by our segmentation / static-scene constraints; GaussianPro
+targets a low-texture problem we don't have. This is the same reasoning that ruled out 2DGS and other
+neural-decoded representations earlier in this doc.
