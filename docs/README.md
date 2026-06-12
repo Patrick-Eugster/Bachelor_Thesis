@@ -38,6 +38,13 @@ Quick map of every doc in this folder, grouped by topic. Each line is a one-sent
 |---|---|---|
 | [DENSIFICATION_OPTIONS.md](DENSIFICATION_OPTIONS.md) | ✅ | Default vs **AbsGrad** vs **MCMC** densification: the "gradient-collision" blur on fine wheat detail (awns), the recommendation, the **implemented `absgrad` flag** (§8), and a **survey of other 3DGS variants** (Mip-Splatting, GaussianPro, Scaffold-GS, Deformable, LV-3DGS) with why they don't fit our segmentation/scene (§9). |
 
+### 🌾 Detection & masks (YOLO + SAM)
+| Doc | | What it's about |
+|---|---|---|
+| [MASK_GENERATION_OPTIONS.md](MASK_GENERATION_OPTIONS.md) | ✅ | Survey of detector + SAM alternatives for the wheat-head mask stage: why no turnkey detector beats our GWC YOLOv5 weights without training, **SAHI** as the top training-free lever for the dense/small phone heads, SAM2/SAM3/HQ-SAM mask upgrades, and the phone-vs-FIP diagnosis (density + JPG, *not* viewpoint). |
+| [SAHI_EXPLAINED.md](SAHI_EXPLAINED.md) | ✅ | From-scratch SAHI walkthrough: the downscale problem, the tile-count formula (worked example), how to **avoid scaling** (set `imgsz = slice`), the edge-split → overlap fix (+ our 161 px head caveat), the detected-twice → NMM/IOS merge, the full-image safety net, and quick-start settings. |
+| [SAHI_IMPLEMENTATION_PLAN.md](SAHI_IMPLEMENTATION_PLAN.md) | ✅ | The agreed plan to add SAHI as a sibling `sahi_yolo_sam` method: a thin `run_mask_generation.py` orchestrator + dispatch registry, **extracted shared `sam/`**, Option-C config-driven result folders (writer+reader), detector internals (slice→batched-infer→NMM/IOS merge), parallelism/VRAM, validation + back-compat. Plan only — not yet built. |
+
 ### 🔬 Input-data diagnostics (FIP vs phone)
 | Doc | | What it's about |
 |---|---|---|
@@ -48,7 +55,7 @@ Quick map of every doc in this folder, grouped by topic. Each line is a one-sent
 ### 📚 Reference & data
 | Doc | | What it's about |
 |---|---|---|
-| [analysis_results/](analysis_results/) | ✅ | Raw machine-readable JSON outputs from the `src/analysis/` scripts that the diagnostic write-ups above cite. |
+| [analysis_results/](analysis_results/) | 🔒 | Raw machine-readable JSON outputs from the `src/analysis/` scripts that the diagnostic write-ups above cite. The folder is kept in git (via its own `.gitignore`) but its **contents are gitignored** — they're regenerable, so re-run the `src/analysis/` scripts to recreate them. |
 | `wheat3dgs_paper.pdf` | 🔒 | The original Wheat3DGS paper this thesis adapts to phone capture (large file, not committed). |
 | [CHANGES.md](CHANGES.md) | 🔒 | Personal per-file change log (what changed and why) — dev notes, not project history. |
 

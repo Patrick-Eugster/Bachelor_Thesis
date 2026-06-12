@@ -45,13 +45,16 @@ def get_dataset_path(cfg):
 
 
 def get_mask_generation_result_path(cfg, plot_name):
-    """Derive output path for a given plot name.
+    """Derive output path for a given plot name. The method-name subfolder comes from
+    cfg.method.name (Option C) so each detection method gets its own result tree; defaults
+    to "yolo_sam_v1" when no method is set, so existing paths are unchanged.
 
-    FIP:   results/mask_generation/fip/plot_461/yolo_sam_v1/{experiment}/
-    Phone: results/mask_generation/phone/field_A/20250618/yolo_sam_v1/{experiment}/
+    yolo_sam_v1:   results/mask_generation/fip/plot_461/yolo_sam_v1/{experiment}/
+    sahi_yolo_sam: results/mask_generation/fip/plot_461/sahi_yolo_sam/{experiment}/
     """
     exp_name = resolve_experiment_name(cfg)
-    return os.path.join(cfg.dataset.result_dir_masks, plot_name, "yolo_sam_v1", exp_name)
+    method_name = cfg.method.name if (hasattr(cfg, "method") and hasattr(cfg.method, "name")) else "yolo_sam_v1"
+    return os.path.join(cfg.dataset.result_dir_masks, plot_name, method_name, exp_name)
 
 
 def get_reconstruction_model_path(cfg, exp_name):
@@ -70,12 +73,15 @@ def get_reconstruction_model_path(cfg, exp_name):
 
 
 def get_seg_source_dir(cfg):
-    """Derive path to detection results used as input for reconstruction.
+    """Derive path to detection results used as input for reconstruction. The method-name
+    subfolder comes from cfg.segmentation_3d.detection_method (Option C, default "yolo_sam_v1"),
+    so segmentation can read a SAHI run's masks by setting detection_method=sahi_yolo_sam.
 
-    FIP:   results/mask_generation/fip/plot_461/yolo_sam_v1/{detection_experiment}/
-    Phone: results/mask_generation/phone/field_A/20250618/yolo_sam_v1/{detection_experiment}/
+    yolo_sam_v1:   results/mask_generation/fip/plot_461/yolo_sam_v1/{detection_experiment}/
+    sahi_yolo_sam: results/mask_generation/fip/plot_461/sahi_yolo_sam/{detection_experiment}/
     """
-    base = os.path.join(cfg.dataset.result_dir_masks, _plot_subpath(cfg), "yolo_sam_v1", cfg.segmentation_3d.detection_experiment)
+    method_dir = cfg.segmentation_3d.get("detection_method", "yolo_sam_v1")
+    base = os.path.join(cfg.dataset.result_dir_masks, _plot_subpath(cfg), method_dir, cfg.segmentation_3d.detection_experiment)
     return os.path.join(base, "yolosam") if cfg.use_yolosam_source else base
 
 

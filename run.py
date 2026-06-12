@@ -17,7 +17,7 @@ def run(cmd):
 
 
 if RUN_YOLO_SAM:
-    run(["python", "src/mask_generation/yolo_sam_v1/main_v1.py"] + extra_args)
+    run(["python", "src/mask_generation/run_mask_generation.py"] + extra_args)
 
 if RUN_RECONSTRUCTION:
     run(["python", "src/run_reconstruction.py"] + extra_args)

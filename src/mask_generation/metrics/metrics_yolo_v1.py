@@ -1,7 +1,7 @@
 """
 Before running, generate YOLO predictions using the metrics config:
 
-  python src/mask_generation/yolo_sam_v1/main_v1.py --config-name mask_generation/metrics
+  python src/mask_generation/yolo_sam_v1/main_v1.py --config-name metrics
 
 This automatically sets only_labeled_images=true and conf_threshold_nms_floor=0.01.
 Then run the metrics script from the workspace root:
@@ -762,7 +762,7 @@ def find_labeled_plots(cfg):
     for input_plot_dir in plot_dirs:
         # relpath gives "plot_461" for FIP, "field_A/20250618" for phone
         plot_name = os.path.relpath(input_plot_dir, cfg.dataset.input_dir)
-        result_plot_dir = os.path.join(cfg.dataset.result_dir_masks, plot_name, "yolo_sam_v1", cfg.detection_experiment)
+        result_plot_dir = os.path.join(cfg.dataset.result_dir_masks, plot_name, cfg.method.name, cfg.detection_experiment)
         label_dir = os.path.join(input_plot_dir, 'manual_label')
         if not os.path.isdir(label_dir):
             continue
@@ -780,7 +780,7 @@ def save_metrics_config(cfg, eval_dir):
         "experiment":   get_metrics_experiment(cfg),
         "date":         datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
         "dataset":      cfg.dataset.name,
-        "method":       "yolo_sam_v1",
+        "method":       cfg.method.name,
         "eval_script":  "metrics_yolo_v1",
         "detection_thresholds": {
             "conf_threshold_detection":  cfg.method.conf_threshold_detection,
@@ -802,7 +802,7 @@ def evaluate_all_plots(cfg):
     iou_threshold = cfg.matching_iou_threshold
 
     # derive all output paths from cfg
-    eval_dir       = os.path.join(cfg.dataset.result_dir_masks, "evaluation", "yolo_sam_v1", "metrics_yolo_v1", get_metrics_experiment(cfg))
+    eval_dir       = os.path.join(cfg.dataset.result_dir_masks, "evaluation", cfg.method.name, "metrics_yolo_v1", get_metrics_experiment(cfg))
     viz_dir        = os.path.join(eval_dir, "match_viz")
     hist_dir       = os.path.join(eval_dir, "TP_IoU_histograms")
     heatmap_fp_dir = os.path.join(eval_dir, "heatmaps_FP")
@@ -960,7 +960,7 @@ def evaluate_all_plots(cfg):
 # Entry Point
 # =====================================================================
 
-@hydra.main(version_base=None, config_path="../../../configs", config_name="mask_generation/metrics_eval")
+@hydra.main(version_base=None, config_path="../../../configs/mask_generation", config_name="metrics_eval")
 def main(cfg: DictConfig):
     evaluate_all_plots(cfg)
 

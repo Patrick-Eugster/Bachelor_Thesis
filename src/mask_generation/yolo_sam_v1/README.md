@@ -27,7 +27,7 @@ python src/mask_generation/yolo_sam_v1/main_v1.py method.conf_threshold_detectio
 For metrics evaluation, use the metrics config (automatically sets `only_labeled_images=true` and `method.conf_threshold_nms_floor=0.01`):
 
 ```bash
-python src/mask_generation/yolo_sam_v1/main_v1.py --config-name mask_generation/metrics
+python src/mask_generation/yolo_sam_v1/main_v1.py --config-name metrics
 ```
 
 ---

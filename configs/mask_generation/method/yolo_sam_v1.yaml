@@ -1,5 +1,8 @@
 # method params for yolo_sam_v1
 
+# method identifier — used by run_mask_generation.py's dispatch registry to pick the detector
+name: yolo_sam_v1
+
 # model weight files (must be placed in src/mask_generation/weights/)
 wheat_yolo_model: "wheat_head_detection_model.pt"  # YOLO model trained on wheat head detection
 sam_checkpoint: "sam_vit_h_4b8939.pth"             # SAM ViT-H checkpoint (~2.4 GB)
@@ -29,9 +32,6 @@ batch_size_yolo: 25
 
 # images loaded into RAM at once before batching — lower if RAM is limited
 ram_chunk_size_yolo: 100
-
-# number of bounding boxes per SAM forward pass (1 = one mask at a time)
-batch_size_sam_box: 1
 
 # max CPU threads for parallel image loading and saving
 max_threads: 10

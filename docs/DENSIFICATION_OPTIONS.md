@@ -266,6 +266,27 @@ run's (too low → OOM/over-dense; too high → no benefit). AbsGrad works on th
 (the `WHEAT_RENDERER=diffgs` fallback ignores it). FlashSplat segmentation is unaffected — still a
 standard Gaussian cloud.
 
+**Why 0.0008 (provenance, not a guess):** it's gsplat's own recommendation — `DefaultStrategy`'s
+docstring says absgrad "requires to set the `grow_grad2d` to a higher value, e.g., 0.0008," following
+the AbsGS paper ([arXiv:2404.10484](https://arxiv.org/abs/2404.10484)). It's 4× the `0.0002` default
+because absgrad sums per-pixel gradient *magnitudes* that don't cancel. Treat it as a calibrated
+*starting point*, not exact — finalize by matching the AbsGrad run's final Gaussian count to the
+default run's (it's a generic cross-scene value, not tuned for wheat).
+
+**Euler A/B — no vanilla re-run needed:** the existing `test_gsplat_full` runs (gsplat + pp + *default*
+densification, 30k) ARE the control. Just run the AbsGrad arm and compare. `scripts/fip_test_absgrad_job.sh`
+does both on all 7 FIP plots: **Phase 1** trains `test_absgrad` (`absgrad=true`, threshold `0.0008`);
+**Phase 2** renders 15k+30k + metrics for *both* arms. Launch with the full absolute path:
+`sbatch /cluster/project/cropsci/peugste/wheat3dgs/scripts/fip_test_absgrad_job.sh`.
+
+**15k-vs-30k for free:** because the LR schedule (`position_lr_max_steps=30000`) and densification
+schedule (`densify_until_iter=11000`) are anchored to *fixed step counts*, iteration-15000 of a 30k run
+is identical to a standalone 15k run in this codebase — and a 30k run already saves `iteration_15000`
+(`save_iterations` default). So rendering both checkpoints + metrics answers "15k or 30k?" without a
+second training. `metrics.py` now skips the non-render `test/` subfolders (`overlay`, `segmentation`
+left by eval), so it's safely re-runnable after seg. Decision rule: if LPIPS + seg-IoU are flat
+15k→30k, use 15k and halve training time; if they keep improving, 30k earns its cost.
+
 ---
 
 ## 9. Other 3DGS variants we evaluated (and why they don't fit)

@@ -8,7 +8,7 @@ Each FIP plot has **one manually labeled image** in `input_plots/fip/{plot}/manu
 
 **Step 1 — Run detection with the metrics config:**
 ```bash
-python src/mask_generation/yolo_sam_v1/main_v1.py --config-name mask_generation/metrics
+python src/mask_generation/yolo_sam_v1/main_v1.py --config-name metrics
 ```
 This loads all settings from `config.yaml` + `method/yolo_sam_v1.yaml` as usual, but automatically overrides the values that must be set for metrics:
 - `only_labeled_images: true` — only processes the manually labeled image per plot, and saves `bboxes_with_conf/` needed for the AP curve

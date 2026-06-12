@@ -1,7 +1,7 @@
 # @package _global_
 defaults:
   - /dataset: fip              # override on CLI: dataset=phone
-  - method: yolo_sam_v1        # override on CLI: method=yolo_sam_v2
+  - method: yolo_sam_v1        # override on CLI: method=sahi_yolo_sam  (clean override works via the hydra_plugins searchpath plugin)
   - override /hydra/job_logging: disabled    # don't create a .log file in CWD — we print()
   - override /hydra/hydra_logging: disabled
   - _self_

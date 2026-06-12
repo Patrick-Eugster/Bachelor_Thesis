@@ -1,0 +1,98 @@
+# method params for sahi_yolo_sam — SAHI (tiled) YOLO detection + shared SAM.
+#
+# Self-contained (NOT a Hydra defaults-inherit of yolo_sam_v1: a group member that
+# redefines its own group breaks Hydra 1.3 override). The YOLO + SAM params below
+# mirror yolo_sam_v1.yaml so each method can be tuned independently; the SAHI tiling
+# knobs are the block at the bottom. If you change a shared default in yolo_sam_v1,
+# decide whether this method should track it.
+
+# method identifier — used by run_mask_generation.py's dispatch registry to pick the detector
+name: sahi_yolo_sam
+
+# model weight files (must be placed in src/mask_generation/weights/)
+wheat_yolo_model: "wheat_head_detection_model.pt"  # YOLO model trained on wheat head detection
+sam_checkpoint: "sam_vit_h_4b8939.pth"             # SAM ViT-H checkpoint (~2.4 GB)
+
+# floor confidence applied during NMS — all boxes above this survive per-tile NMS and go into the merge
+# set low (0.01) for metrics to capture the full confidence range for AP/PR curve
+conf_threshold_nms_floor: 0.2
+
+# boxes below this confidence are rejected after the merge (shown as red boxes in yolo_vis/)
+conf_threshold_detection: 0.35
+
+# per-tile NMS IoU threshold (applied inside each tile before the cross-tile merge)
+iou_threshold_nms: 0.45
+
+# YOLO class IDs to keep — 0 = wheat head (only class in this model)
+classes_to_detect: [0]
+
+# resize algorithm (only used by the full-image safety-net pass; tiles are native 1:1)
+resize_method: "LANCZOS"
+
+# size of the optional whole-image safety-net pass (NOT the tile size — that's sahi_slice_size)
+target_image_size: 1280
+
+# number of images per GPU batch (SAM phase / full-image pass) — lower if GPU OOM
+batch_size_yolo: 25
+
+# images loaded into RAM at once before batching — lower if RAM is limited
+ram_chunk_size_yolo: 100
+
+# max CPU threads for parallel image loading and saving
+max_threads: 10
+
+# show confidence score text next to each drawn box in yolo_vis/
+show_labels: true
+
+# draw boxes below conf_threshold_detection in red in yolo_vis/ (rejected boxes)
+show_rejected_boxes: true
+
+# draw boxes above conf_threshold_detection in blue in yolo_vis/ (accepted boxes)
+show_detected_boxes: true
+
+# line thickness in pixels for drawn boxes
+box_thickness: 2
+
+# font size multiplier for confidence score labels
+label_font_scale: 1
+
+# save a DEBUG_RESIZED.jpg to verify letterbox output looks correct (first image only)
+debug_yolo_resize: false
+
+# print per-plot timing report after the detection phase completes
+show_time_yolo: true
+
+# print per-image timing during SAM phase
+show_time_sam: true
+
+# print full pipeline summary at the end
+show_time_total: true
+
+# true = skip SAM entirely, only run detection (used for metrics — SAM not needed there)
+only_yolo: false
+
+# --- SAHI tiling params (see docs/SAHI_EXPLAINED.md + docs/SAHI_IMPLEMENTATION_PLAN.md) ---
+
+# tile size in px. Set == target_image_size so tiles enter YOLO 1:1 (NO scaling, preserves fine detail)
+sahi_slice_size: 1280
+
+# fraction of overlap between neighbouring tiles. 0.3 → ~384px band, covers our ~161px elongated heads
+sahi_overlap_ratio: 0.3
+
+# how to combine the overlap duplicates: "NMM" (merge boxes) or "NMS" (drop lower-conf). NMM > NMS at seams
+sahi_merge: "NMM"
+
+# box-match metric for the merge: "IOS" (intersection-over-smaller, robust to seam fragments) or "IOU"
+sahi_match_metric: "IOS"
+
+# overlap above this is treated as the same head and merged
+sahi_match_threshold: 0.5
+
+# also run one whole-image (downscaled) pass and merge it in — backstops heads bigger than the overlap band
+sahi_full_image_pass: true
+
+# tiles per GPU forward pass — this is also the VRAM cap: a high tile-count image just splits
+# into ceil(tiles / this) forwards, so it can never OOM from tile count alone.
+# A tile is sahi_slice_size (1280) square = the SAME input size as yolo_v1's batch_size_yolo elements
+# (target_image_size 1280), so 25 here costs the same VRAM as yolo_v1's proven batch of 25. Lower if OOM.
+sahi_tile_batch_size: 25

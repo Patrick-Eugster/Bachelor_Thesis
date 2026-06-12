@@ -168,7 +168,7 @@ def run_sam_phase(image_folders, cfg):
     if cfg.wandb_enabled:
         wandb.init(
             project="wheat3dgs-sam-v1",
-            config={"batch_size_sam_box": cfg.method.batch_size_sam_box, "device": DEVICE},
+            config={"device": DEVICE},
         )
 
     # Load SAM Model ONCE
@@ -251,29 +251,30 @@ def run_sam_phase(image_folders, cfg):
                 # Main thread blocks here. load(N+1) and save(N-1) run on CPU in parallel.
                 t_start_img = time.perf_counter()
 
-                # 2. Image Embedding (heavy part)
-                predictor.set_image(image)  # only takes one image at a time, thats why batch_size_sam_box=1
+                # 2. Image Embedding (heavy part). The encoder always takes one image at a time.
+                predictor.set_image(image)
                 torch.cuda.synchronize()
                 t_embed = time.perf_counter() - t_start_img
 
-                # --- GPU INFERENCE: predict masks (batched to prevent VRAM overflow) ---
+                # --- GPU INFERENCE: predict one mask per box ---
                 t_start_pred = time.perf_counter()
 
-                # 3. Predict Masks (Batching to prevent RAM/VRAM overflow)
+                # 3. Predict Masks — one box at a time through the decoder. The decoder *can* batch
+                # boxes, but with hundreds of heads on a full-res image that spikes VRAM (each box ->
+                # a full H x W mask), so we keep it one-at-a-time which is the safe, proven default.
                 transformed_boxes = predictor.transform.apply_boxes_torch(bbox, image.shape[:2])
                 all_masks_np = []
 
-                # Process boxes in batches to save memory
-                with torch.no_grad():  # important for Batch Size 1
-                    for b_idx in range(0, len(transformed_boxes), cfg.method.batch_size_sam_box):
-                        batch_boxes = transformed_boxes[b_idx : b_idx + cfg.method.batch_size_sam_box]
+                with torch.no_grad():
+                    for b_idx in range(len(transformed_boxes)):
+                        single_box = transformed_boxes[b_idx : b_idx + 1]  # keep the [1,4] shape
                         masks, _, _ = predictor.predict_torch(
                             point_coords=None,
                             point_labels=None,
-                            boxes=batch_boxes,
+                            boxes=single_box,
                             multimask_output=False
                         )
-                        # squeeze(1) removes the empty dimension, leaving [Batch, H, W]
+                        # squeeze(1) removes the empty dimension, leaving [1, H, W]
                         # immediately move to CPU and convert to uint8 to free up VRAM
                         masks_batch_np = (masks.squeeze(1).cpu().numpy() * 255).astype(np.uint8)
                         all_masks_np.append(masks_batch_np)

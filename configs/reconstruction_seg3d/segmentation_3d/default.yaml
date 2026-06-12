@@ -4,7 +4,11 @@
 # e.g. exp_name=run_2 → results/.../segmentation_3d/run_2/
 exp_name: "run_1"
 
-# which yolo_sam detection run to read masks from — must match a folder in results/mask_generation/
+# which detection METHOD's output to read masks from (the method-name subfolder under the plot).
+# default "yolo_sam_v1"; set "sahi_yolo_sam" to segment a SAHI detection run instead (Option C)
+detection_method: "yolo_sam_v1"
+
+# which detection run (experiment folder) to read masks from — must match a folder in results/mask_generation/
 detection_experiment: "initial"
 
 # save colored overlay images showing which Gaussians were assigned to each head (useful for debugging)

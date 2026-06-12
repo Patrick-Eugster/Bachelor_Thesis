@@ -8,7 +8,7 @@ defaults:
 
 # which yolo_sam detection run to evaluate
 # must match a folder in results/mask_generation/{dataset}/{plot}/yolo_sam_v1/
-# run detection first with: python src/mask_generation/yolo_sam_v1/main_v1.py --config-name mask_generation/metrics
+# run detection first with: python src/mask_generation/yolo_sam_v1/main_v1.py --config-name metrics
 detection_experiment: "metrics_v1"
 
 # name for this metrics output folder — can differ from detection_experiment
