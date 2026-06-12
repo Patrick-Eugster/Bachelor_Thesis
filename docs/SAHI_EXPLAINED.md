@@ -204,7 +204,7 @@ The adapter wraps our existing inference call so SAHI can drive it per tile.
 Feasible, not free — see `MASK_GENERATION_OPTIONS.md` §2a.
 
 Also: we **can't measure** any of this on phone yet (no phone ground truth →
-`metrics_yolo_v1.py` can't score it). SAHI's gain is qualitative until GT exists
+`eval_yolo_boxes.py` can't score it). SAHI's gain is qualitative until GT exists
 (blocked on the supervisor's labeling method).
 
 ---

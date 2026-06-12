@@ -3,14 +3,14 @@ defaults:
   - config        # inherit all settings from config.yaml
   - _self_        # overrides below take precedence
 
-# required for metrics evaluation:
+# required to produce YOLO boxes for evaluation:
 # only_labeled_images limits YOLO to the manually labeled image per plot
 # and enables bboxes_with_conf/ output needed for the AP/PR curve
-experiment_name: "metrics_v1"   # separate folder so metrics runs don't overwrite full detection runs
+experiment_name: "metrics_v1"   # separate folder so eval runs don't overwrite full mask-gen runs
 only_labeled_images: true
 limit_plots: 0   # 0 = no limit — override any debug value set in config.yaml
 limit_images: 0  # 0 = no limit — override any debug value set in config.yaml
 
 method:
-  only_yolo: true       # metrics only needs YOLO bboxes — skip SAM entirely
+  only_yolo: true       # evaluation only needs YOLO bboxes — skip SAM entirely
   conf_threshold_nms_floor: 0.01  # low floor so the full confidence range is captured for AP

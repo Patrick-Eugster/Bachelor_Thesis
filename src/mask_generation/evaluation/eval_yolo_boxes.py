@@ -1,15 +1,16 @@
 """
-Before running, generate YOLO predictions using the metrics config:
+Before running, generate the YOLO boxes with the eval-run config:
 
-  python src/mask_generation/yolo_sam_v1/main_v1.py --config-name metrics
+  python src/mask_generation/run_mask_generation.py --config-name eval_run
 
 This automatically sets only_labeled_images=true and conf_threshold_nms_floor=0.01.
-Then run the metrics script from the workspace root:
+Then run the evaluation script from the workspace root:
 
-  python src/mask_generation/metrics/metrics_yolo_v1.py
+  python src/mask_generation/evaluation/eval_yolo_boxes.py
 
 Per-image metrics are computed first (except AP which is pooled globally).
-Aggregated mean ± std is printed at the end. JSON saved to metrics/results/metrics_yolo_v1.json
+Aggregated mean ± std is printed at the end. JSON saved to
+results/mask_generation/{dataset}/evaluation/{method}/yolo_boxes/{eval_experiment}/eval_yolo_boxes.json
 
 ------------------------------------------------------------------------
 TABLE OF CONTENTS  (in file order)
@@ -59,17 +60,17 @@ import matplotlib
 matplotlib.use('Agg')  # headless backend — prevents Qt/display warnings in WSL
 
 import hydra
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
-def get_metrics_experiment(cfg):
-    """Resolve the metrics output experiment name — same 3-option logic as the pipeline."""
-    if not cfg.metrics_experiment:
+def get_eval_experiment(cfg):
+    """Resolve the evaluation output experiment name — same 3-option logic as the pipeline."""
+    if not cfg.eval_experiment:
         return datetime.datetime.now().strftime("%Y-%m-%d_%H%M")
-    if cfg.metrics_experiment == "initial":
+    if cfg.eval_experiment == "initial":
         return "initial"
     if cfg.prepend_date:
-        return f"{datetime.datetime.now().strftime('%Y-%m-%d')}_{cfg.metrics_experiment}"
-    return cfg.metrics_experiment
+        return f"{datetime.datetime.now().strftime('%Y-%m-%d')}_{cfg.eval_experiment}"
+    return cfg.eval_experiment
 
 
 
@@ -166,7 +167,7 @@ def print_aggregated_results(per_plot_results):
     print()
 
 
-def save_results_json(per_plot_results, iou_threshold, cfg, eval_dir, ap=None):
+def save_results_json(per_plot_results, iou_threshold, cfg, eval_dir, mask_gen_thr, ap=None):
     os.makedirs(eval_dir, exist_ok=True)
 
     aggregated = {}
@@ -190,16 +191,18 @@ def save_results_json(per_plot_results, iou_threshold, cfg, eval_dir, ap=None):
 
     output = {
         'config': {
-            'matching_iou_threshold': iou_threshold,
-            'conf_threshold_good_box': cfg.method.conf_threshold_detection,
-            'conf_threshold_nms_floor': cfg.method.conf_threshold_nms_floor,
-            'yolo_nms_iou_threshold': cfg.method.iou_threshold_nms,
+            'matching_iou_threshold': iou_threshold,   # this one IS an eval param
+            # the rest come from the mask-gen run that actually made the boxes (mask_gen_thr),
+            # not the eval's live config — otherwise the eval's defaults would mislabel them
+            'conf_threshold_good_box': mask_gen_thr['conf_threshold_good_box'],
+            'conf_threshold_nms_floor': mask_gen_thr['conf_threshold_nms_floor'],
+            'yolo_nms_iou_threshold': mask_gen_thr['iou_threshold_nms'],
         },
         'per_plot': per_plot_results,
         'aggregated': aggregated,
     }
 
-    out_path = os.path.join(eval_dir, 'metrics_yolo_v1.json')
+    out_path = os.path.join(eval_dir, 'eval_yolo_boxes.json')
     with open(out_path, 'w') as f:
         json.dump(output, f, indent=2)
     print(f"Results saved to: {out_path}\n")
@@ -594,10 +597,10 @@ def compute_ap(all_pred_entries, all_gt_boxes_list, iou_threshold):
 
 
 def save_pr_curve(precisions, recalls, confs, ap, iou_threshold, title, out_path,
-                  conf_threshold_detection=None, total_preds=None, tp=None, fp=None, fn=None, mark_every=50):
+                  conf_threshold_good_box=None, total_preds=None, tp=None, fp=None, fn=None, mark_every=50):
     """Save a Precision-Recall curve image.
     mark_every: label every k-th prediction point on the curve with its confidence value.
-    total_preds/tp/fp/fn: counts at the fixed CONF_THRESHOLD_DETECTION for the stats box.
+    total_preds/tp/fp/fn: counts at the fixed CONF_THRESHOLD_GOOD_BOX for the stats box.
     """
     fig, ax = plt.subplots(figsize=(10, 7))
     ax_top = None
@@ -665,7 +668,7 @@ def save_pr_curve(precisions, recalls, confs, ap, iou_threshold, title, out_path
     if total_preds is not None:
         stats_lines = [
             f'Total preds (all conf (>=0.01)): {total_preds}',
-            f'above conf_threshold_detection (>= {conf_threshold_detection}):',
+            f'above conf_threshold_good_box (>= {conf_threshold_good_box}):',
             f'  TP: {tp}   FP: {fp}   (TP+FP = {tp + fp} preds)',
             f'  FN: {fn}   (missed GT boxes, not preds)',
         ]
@@ -697,7 +700,7 @@ def evaluate_single_image(pred_pt_path, gt_label_path, image_path, iou_threshold
     """Run all metrics for one (predicted, GT) image pair and return dict if not empty (otherwise None)."""
     if not os.path.exists(pred_pt_path):
         print(f"[SKIP] No bbox file found: {pred_pt_path}")
-        print(f"Run main_v1.py first to generate YOLO predictions.")
+        print(f"Run run_mask_generation.py first to generate the YOLO boxes.")
         return None
     if not os.path.exists(image_path):
         print(f"[SKIP] Image not found: {image_path}")
@@ -751,6 +754,38 @@ def evaluate_single_image(pred_pt_path, gt_label_path, image_path, iou_threshold
 # Aggregated Eval
 # =====================================================================
 
+def load_mask_gen_thresholds(cfg, result_plot_dir):
+    """Read the thresholds ACTUALLY used to produce the boxes, from the config.yaml that the
+    mask-generation run saved inside its experiment folder. The eval has its own config whose
+    defaults can differ from what produced the boxes (e.g. the eval-run nms-floor override
+    of 0.01 lives only in the mask-gen config), so reporting the eval's live values would be
+    misleading. Falls back to the eval's cfg.method.* with a warning if the saved config is gone."""
+    cfg_path = os.path.join(result_plot_dir, "config.yaml")
+    if os.path.exists(cfg_path):
+        saved = OmegaConf.load(cfg_path)
+        # params live under 'method:' in current configs; very old snapshots saved them flat
+        m = saved.method if "method" in saved else saved
+        # the good-box threshold key was renamed from conf_threshold_detection
+        good  = m.get("conf_threshold_good_box", m.get("conf_threshold_detection"))
+        floor = m.get("conf_threshold_nms_floor")
+        nms   = m.get("iou_threshold_nms")
+        if None not in (good, floor, nms):
+            return {
+                "conf_threshold_good_box":  float(good),
+                "conf_threshold_nms_floor": float(floor),
+                "iou_threshold_nms":        float(nms),
+            }
+        print(f"  WARNING: {cfg_path} is missing expected threshold keys — using the eval's own config.")
+    else:
+        print(f"  WARNING: no config.yaml in {result_plot_dir} — using the eval's own config "
+              f"(may not match what produced the boxes).")
+    return {
+        "conf_threshold_good_box":  float(cfg.method.conf_threshold_good_box),
+        "conf_threshold_nms_floor": float(cfg.method.conf_threshold_nms_floor),
+        "iou_threshold_nms":        float(cfg.method.iou_threshold_nms),
+    }
+
+
 def find_labeled_plots(cfg):
     """Collect all GT files and return as list of (input_plot_dir, result_plot_dir, gt_label_path, image_stem).
 
@@ -762,7 +797,7 @@ def find_labeled_plots(cfg):
     for input_plot_dir in plot_dirs:
         # relpath gives "plot_461" for FIP, "field_A/20250618" for phone
         plot_name = os.path.relpath(input_plot_dir, cfg.dataset.input_dir)
-        result_plot_dir = os.path.join(cfg.dataset.result_dir_masks, plot_name, cfg.method.name, cfg.detection_experiment)
+        result_plot_dir = os.path.join(cfg.dataset.result_dir_masks, plot_name, cfg.method.name, cfg.mask_gen_experiment)
         label_dir = os.path.join(input_plot_dir, 'manual_label')
         if not os.path.isdir(label_dir):
             continue
@@ -773,19 +808,21 @@ def find_labeled_plots(cfg):
     return labeled
 
 
-def save_metrics_config(cfg, eval_dir):
-    """Save config.yaml with all parameters used for this evaluation run."""
+def save_eval_config(cfg, eval_dir, mask_gen_thr):
+    """Save config.yaml with all parameters used for this evaluation run. The mask-generation
+    thresholds come from mask_gen_thr (read from the run that actually made the boxes), not the
+    eval's own live config."""
     os.makedirs(eval_dir, exist_ok=True)
     config = {
-        "experiment":   get_metrics_experiment(cfg),
+        "experiment":   get_eval_experiment(cfg),
         "date":         datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
         "dataset":      cfg.dataset.name,
         "method":       cfg.method.name,
-        "eval_script":  "metrics_yolo_v1",
-        "detection_thresholds": {
-            "conf_threshold_detection":  cfg.method.conf_threshold_detection,
-            "conf_threshold_nms_floor":  cfg.method.conf_threshold_nms_floor,
-            "iou_threshold_nms":         cfg.method.iou_threshold_nms,
+        "eval_script":  "eval_yolo_boxes",
+        "mask_gen_thresholds": {
+            "conf_threshold_good_box":  mask_gen_thr["conf_threshold_good_box"],
+            "conf_threshold_nms_floor":  mask_gen_thr["conf_threshold_nms_floor"],
+            "iou_threshold_nms":         mask_gen_thr["iou_threshold_nms"],
         },
         "matching": {
             "matching_iou_threshold": cfg.matching_iou_threshold,
@@ -802,23 +839,32 @@ def evaluate_all_plots(cfg):
     iou_threshold = cfg.matching_iou_threshold
 
     # derive all output paths from cfg
-    eval_dir       = os.path.join(cfg.dataset.result_dir_masks, "evaluation", cfg.method.name, "metrics_yolo_v1", get_metrics_experiment(cfg))
+    eval_dir       = os.path.join(cfg.dataset.result_dir_masks, "evaluation", cfg.method.name, "yolo_boxes", get_eval_experiment(cfg))
     viz_dir        = os.path.join(eval_dir, "match_viz")
     hist_dir       = os.path.join(eval_dir, "TP_IoU_histograms")
     heatmap_fp_dir = os.path.join(eval_dir, "heatmaps_FP")
     heatmap_fn_dir = os.path.join(eval_dir, "heatmaps_FN")
     pr_curve_dir   = os.path.join(eval_dir, "pr_curves")
 
-    save_metrics_config(cfg, eval_dir)
+    labeled_plots = find_labeled_plots(cfg)
+    if not labeled_plots:
+        print("No labeled plots found. Expected: input_plots/<camera>/<plot>/manual_label/<name>.txt")
+        return
+
+    # read the thresholds ACTUALLY used to make the boxes from the mask-gen run's saved config.yaml
+    # (any plot of the run has the same global thresholds — use the first one's folder)
+    mask_gen_thr = load_mask_gen_thresholds(cfg, labeled_plots[0][1])
+
+    save_eval_config(cfg, eval_dir, mask_gen_thr)
 
     print(f"\n{'=' * 58}")
     print(f" YOLO EVALUATION vs MANUAL LABELS")
     print(f"{'=' * 58}")
     print(f" Input dir:             {cfg.dataset.input_dir}")
-    print(f" Conf threshold (good): {cfg.method.conf_threshold_detection}  (conf_threshold_detection — used for precision/recall/F1)")
-    print(f" Conf threshold (NMS floor): {cfg.method.conf_threshold_nms_floor}  (conf_threshold_nms_floor — floor for AP curve)")
+    print(f" Conf threshold (good): {mask_gen_thr['conf_threshold_good_box']}  (conf_threshold_good_box — used for precision/recall/F1)")
+    print(f" Conf threshold (NMS floor): {mask_gen_thr['conf_threshold_nms_floor']}  (conf_threshold_nms_floor — floor for AP curve)")
     print(f" Matching IoU thr:      {iou_threshold}  (matching_iou_threshold)")
-    print(f" YOLO NMS IoU thr:      {cfg.method.iou_threshold_nms}  (iou_threshold_nms — used during YOLO inference, not here)")
+    print(f" YOLO NMS IoU thr:      {mask_gen_thr['iou_threshold_nms']}  (iou_threshold_nms — used during YOLO inference, not here)")
     print(f"{'=' * 58}\n")
 
     # wipe and recreate output folders so they only contain images from this run
@@ -826,11 +872,6 @@ def evaluate_all_plots(cfg):
         if os.path.exists(folder):
             shutil.rmtree(folder)
         os.makedirs(folder)
-
-    labeled_plots = find_labeled_plots(cfg)
-    if not labeled_plots:
-        print("No labeled plots found. Expected: input_plots/<camera>/<plot>/manual_label/<name>.txt")
-        return
 
     print(f"Found {len(labeled_plots)} labeled image(s).\n")
 
@@ -925,7 +966,7 @@ def evaluate_all_plots(cfg):
         if with_conf is None:
             ap_data_available = False
             print(f"[AP] bboxes_with_conf not found for {r['plot_name']}/{r['image_stem']}")
-            print(f"     → Re-run YOLO (main_v1.py) to generate bboxes_with_conf/ folder.")
+            print(f"     → Re-run YOLO (run_mask_generation.py) to generate bboxes_with_conf/ folder.")
             break
         for row in with_conf:
             x1, y1, x2, y2, conf = row
@@ -942,16 +983,16 @@ def evaluate_all_plots(cfg):
         total_fp = sum(r['fp'] for r in per_plot_results)
         total_fn = sum(r['fn'] for r in per_plot_results)
         print(f"  AP@IoU{iou_threshold:.2f} = {ap:.4f}  "
-              f"(NMS floor: {cfg.method.conf_threshold_nms_floor}, {len(all_pred_entries)} total preds, "
+              f"(NMS floor: {mask_gen_thr['conf_threshold_nms_floor']}, {len(all_pred_entries)} total preds, "
               f"{sum(len(g) for g in all_gt_boxes_for_ap)} GT boxes)")
         pr_out = os.path.join(pr_curve_dir, 'pr_curve_aggregated.png')
         save_pr_curve(precisions, recalls, confs, ap, iou_threshold,
                       f'PR Curve — all plots aggregated ({len(per_plot_results)} image(s))', pr_out,
-                      conf_threshold_detection=cfg.method.conf_threshold_detection,
+                      conf_threshold_good_box=mask_gen_thr['conf_threshold_good_box'],
                       total_preds=len(all_pred_entries), tp=total_tp, fp=total_fp, fn=total_fn)
     print()
 
-    save_results_json(per_plot_results, iou_threshold, cfg, eval_dir, ap=ap)
+    save_results_json(per_plot_results, iou_threshold, cfg, eval_dir, mask_gen_thr, ap=ap)
 
     return per_plot_results
 
@@ -960,7 +1001,7 @@ def evaluate_all_plots(cfg):
 # Entry Point
 # =====================================================================
 
-@hydra.main(version_base=None, config_path="../../../configs/mask_generation", config_name="metrics_eval")
+@hydra.main(version_base=None, config_path="../../../configs/mask_generation", config_name="eval_yolo_boxes")
 def main(cfg: DictConfig):
     evaluate_all_plots(cfg)
 

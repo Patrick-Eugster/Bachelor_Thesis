@@ -66,7 +66,7 @@ def print_final_configuration_report(cfg, total_seconds, sam_seconds, total_imag
     # 1. Hardware & Core Settings (common to all methods)
     print(f"{'Device:':<25} {DEVICE}")
     print(f"{'Method:':<25} {cfg.method.name}")
-    print(f"{'Confidence Threshold:':<25} {cfg.method.conf_threshold_detection}")
+    print(f"{'Confidence Threshold:':<25} {cfg.method.conf_threshold_good_box}")
     print(f"{'IoU Threshold (NMS):':<25} {cfg.method.iou_threshold_nms}")
     print("-" * 50)
     # 2. Detection strategy — method specific (SAHI never resizes, yolo_sam_v1 letterboxes)

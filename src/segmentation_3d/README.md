@@ -41,7 +41,7 @@ Controlled via `configs/reconstruction_seg3d/segmentation_3d/default.yaml`:
 
 ```yaml
 exp_name: "run_1"           # subfolder name inside segmentation_3d/ — change to re-run without overwriting
-detection_experiment: "initial"  # which yolo_sam run to read masks from
+mask_gen_experiment: "initial"   # which mask-generation run to read masks from
 save_vis_overlay: true      # save colored overlay images per head (good for debugging)
 vis_max_heads: 10           # only save overlays for first N heads (0 = all — can be slow for 300+ heads)
 wandb_enabled: false        # log per-head progress to wandb.ai

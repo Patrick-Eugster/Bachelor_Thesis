@@ -142,7 +142,7 @@ Detector replacement is **off the table** (no turnkey option without training).
   phone**, so nothing on phone can be *measured* — only eyeballed. Need to ask
   the supervisor how their manual labeling was done (tool + protocol) and
   reproduce it for a small representative phone set. Until then,
-  `metrics_yolo_v1.py` can't score phone, so any SAHI / SAM upgrade can only be
+  `eval_yolo_boxes.py` can't score phone, so any SAHI / SAM upgrade can only be
   judged qualitatively. **Blocked on supervisor's labeling method.**
 - [ ] SAHI adapter for the vendored yolov5 (§2a integration note).
 - [ ] Quick qualitative SAM 3 open-vocab (`"wheat head"`) run on one phone image.

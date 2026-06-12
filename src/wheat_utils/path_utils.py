@@ -77,11 +77,11 @@ def get_seg_source_dir(cfg):
     subfolder comes from cfg.segmentation_3d.detection_method (Option C, default "yolo_sam_v1"),
     so segmentation can read a SAHI run's masks by setting detection_method=sahi_yolo_sam.
 
-    yolo_sam_v1:   results/mask_generation/fip/plot_461/yolo_sam_v1/{detection_experiment}/
-    sahi_yolo_sam: results/mask_generation/fip/plot_461/sahi_yolo_sam/{detection_experiment}/
+    yolo_sam_v1:   results/mask_generation/fip/plot_461/yolo_sam_v1/{mask_gen_experiment}/
+    sahi_yolo_sam: results/mask_generation/fip/plot_461/sahi_yolo_sam/{mask_gen_experiment}/
     """
     method_dir = cfg.segmentation_3d.get("detection_method", "yolo_sam_v1")
-    base = os.path.join(cfg.dataset.result_dir_masks, _plot_subpath(cfg), method_dir, cfg.segmentation_3d.detection_experiment)
+    base = os.path.join(cfg.dataset.result_dir_masks, _plot_subpath(cfg), method_dir, cfg.segmentation_3d.mask_gen_experiment)
     return os.path.join(base, "yolosam") if cfg.use_yolosam_source else base
 
 

@@ -18,7 +18,7 @@ sam_checkpoint: "sam_vit_h_4b8939.pth"             # SAM ViT-H checkpoint (~2.4 
 conf_threshold_nms_floor: 0.2
 
 # boxes below this confidence are rejected after the merge (shown as red boxes in yolo_vis/)
-conf_threshold_detection: 0.35
+conf_threshold_good_box: 0.35
 
 # per-tile NMS IoU threshold (applied inside each tile before the cross-tile merge)
 iou_threshold_nms: 0.45
@@ -44,10 +44,10 @@ max_threads: 10
 # show confidence score text next to each drawn box in yolo_vis/
 show_labels: true
 
-# draw boxes below conf_threshold_detection in red in yolo_vis/ (rejected boxes)
+# draw boxes below conf_threshold_good_box in red in yolo_vis/ (rejected boxes)
 show_rejected_boxes: true
 
-# draw boxes above conf_threshold_detection in blue in yolo_vis/ (accepted boxes)
+# draw boxes above conf_threshold_good_box in blue in yolo_vis/ (accepted boxes)
 show_detected_boxes: true
 
 # line thickness in pixels for drawn boxes

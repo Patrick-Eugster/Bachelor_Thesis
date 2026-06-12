@@ -36,7 +36,7 @@ def print_final_configuration_report(cfg, total_seconds, sam_seconds, total_imag
     print("="*50)
     # 1. Hardware & Core Settings
     print(f"{'Device:':<25} {DEVICE}")
-    print(f"{'Confidence Threshold:':<25} {cfg.method.conf_threshold_detection}")
+    print(f"{'Confidence Threshold:':<25} {cfg.method.conf_threshold_good_box}")
     print(f"{'IoU Threshold (NMS):':<25} {cfg.method.iou_threshold_nms}")
     print(f"{'YOLO Resize Size:':<25} {cfg.method.target_image_size}px")
     print("-" * 50)

@@ -1,0 +1,31 @@
+# @package _global_
+defaults:
+  - /dataset: fip              # override on CLI: dataset=phone
+  - method: yolo_sam_v1        # which YOLO method's thresholds to use for evaluation
+  - override /hydra/job_logging: disabled    # don't create a .log file in CWD — we print()
+  - override /hydra/hydra_logging: disabled
+  - _self_
+
+# which mask-generation run to evaluate (the folder named by experiment_name when you ran mask gen;
+# that folder holds the whole run — bboxes/ + masks/ — the eval reads the bboxes/ from it)
+# must match a folder in results/mask_generation/{dataset}/{plot}/{method.name}/
+# run the YOLO mask generation first with: python src/mask_generation/run_mask_generation.py --config-name eval_run
+mask_gen_experiment: "metrics_v1"
+
+# name for this evaluation output folder — can differ from mask_gen_experiment
+# allows re-running the evaluation with a different matching_iou_threshold on the same boxes
+eval_experiment: "initial"
+
+# set true to prepend today's date to eval_experiment: "2025-04-28_initial"
+prepend_date: false
+
+# IoU threshold for matching predicted boxes to GT boxes when computing precision/recall/F1
+# separate from iou_threshold_nms (which is used during YOLO inference, not here)
+# lower = more lenient matching; 0.35 is more lenient than the common 0.5
+matching_iou_threshold: 0.35
+
+# hydra: don't create outputs/ folder
+hydra:
+  output_subdir: null
+  run:
+    dir: .

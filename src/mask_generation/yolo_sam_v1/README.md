@@ -21,13 +21,13 @@ Shared params (`experiment_name`, `limit_plots`, etc.) are in `configs/mask_gene
 ```bash
 python src/mask_generation/yolo_sam_v1/main_v1.py dataset=phone
 python src/mask_generation/yolo_sam_v1/main_v1.py experiment_name=my_run limit_plots=1
-python src/mask_generation/yolo_sam_v1/main_v1.py method.conf_threshold_detection=0.4
+python src/mask_generation/yolo_sam_v1/main_v1.py method.conf_threshold_good_box=0.4
 ```
 
 For metrics evaluation, use the metrics config (automatically sets `only_labeled_images=true` and `method.conf_threshold_nms_floor=0.01`):
 
 ```bash
-python src/mask_generation/yolo_sam_v1/main_v1.py --config-name metrics
+python src/mask_generation/yolo_sam_v1/main_v1.py --config-name eval_run
 ```
 
 ---

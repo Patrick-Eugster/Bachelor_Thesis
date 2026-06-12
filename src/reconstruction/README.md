@@ -39,12 +39,12 @@ prepend_date: false          # prepends today's date: "2025-04-28_initial"
 
 `configs/reconstruction_seg3d/segmentation_3d/default.yaml`:
 ```yaml
-detection_experiment: "initial"  # which yolo_sam detection run to read masks from
+mask_gen_experiment: "initial"   # which mask-generation run to read masks from
 exp_name: "run_1"                # name for the segmentation subfolder
 ```
 
 - **`experiment_name`** — controls the top-level output folder `results/reconstruction/fip/{plot}/vanilla_3dgs/{experiment_name}/`. All training, render, and metrics outputs go here. Named experiments (not `"initial"`) warn before overwriting.
-- **`detection_experiment`** — points to the mask generation run whose `bboxes/` and `masks/` are used as input for training and segmentation. Must match the folder name in `results/mask_generation/`.
+- **`mask_gen_experiment`** — points to the mask-generation run whose `bboxes/` and `masks/` are used as input for training and segmentation. Must match the folder name in `results/mask_generation/`.
 - **`exp_name`** — controls the segmentation subfolder `segmentation_3d/{exp_name}/`. Lets you re-run segmentation with different settings on the same trained model without retraining.
 
 ---

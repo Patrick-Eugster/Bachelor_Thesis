@@ -109,7 +109,7 @@ def save_single_result(_, result, original_img, pad_info, original_path, bbox_fo
         preds[:, [0, 2]] = np.clip(preds[:, [0, 2]], 0, orig_w)
         preds[:, [1, 3]] = np.clip(preds[:, [1, 3]], 0, orig_h)
         # 3. VECTORIZED FILTERING. This mask instantly separates good and bad boxes in C++
-        mask = preds[:, 4] >= cfg.method.conf_threshold_detection
+        mask = preds[:, 4] >= cfg.method.conf_threshold_good_box
         good_preds = preds[mask]
         bad_preds = preds[~mask]
         good_count = len(good_preds)

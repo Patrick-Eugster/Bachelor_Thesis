@@ -3,11 +3,15 @@
 The design + as-built record for adding **SAHI** (tiled inference) as a new
 mask-generation method, without touching the working `yolo_sam_v1` pipeline.
 
-> ## ✅ STATUS (2026-06-11): IMPLEMENTED — detection (YOLO) verified to RUN on FIP plot_461.
-> Phases 1 + 2 + the Hydra config fix are done. The detector half (tiling →
-> batched YOLO → NMM merge → `bboxes/` + `yolo_vis/`) **runs**; SAM half is the
-> shared unchanged `sam_v1/` phase. Full quality/metrics comparison vs `yolo_sam_v1`
-> still TODO (and phone needs GT). As-built details: §14; how to run: §15.
+> ## ✅ STATUS (2026-06-12): IMPLEMENTED + A/B'd on FIP. SAHI is WORSE on FIP (expected).
+> Detector (tiling → batched YOLO → NMM merge → `bboxes/`+`yolo_vis/`) runs; SAM half is
+> the shared unchanged `sam_v1/` phase. **A/B on 7 FIP plots: yolo F1 0.877 / AP 0.920 vs
+> sahi F1 0.820 / AP 0.843** — SAHI over-detects (more false positives, recall ~tied) because
+> FIP heads are sparse/overhead and already resolve at 1280; SAHI's win is dense/small PHONE
+> heads (still blocked on phone GT). Caveat: n=7, GT may under-label.
+> **Perf:** CPU/GPU pipeline added (overlap load/merge/save with GPU tiles); `sahi_tile_batch_size`
+> default 8→25. **Eval renamed:** `metrics_yolo_v1.py`→`evaluation/eval_yolo_boxes.py`,
+> `--config-name metrics`→`eval_run`, result `…/<method>/yolo_boxes/<exp>/`. As-built: §14; run: §15.
 
 - *Why SAHI / what problem it solves:* `SAHI_EXPLAINED.md`
 - *Where SAHI sits among detector/SAM options:* `MASK_GENERATION_OPTIONS.md`
@@ -107,7 +111,7 @@ Per chunk of images:
 3. UNSHIFT  box_global = box_tile + (offset_x, offset_y).   (no /r — native res)
 4. MERGE    per image: combine all tiles' boxes with NMM + IOS match metric
             (dedupes the duplicates that overlap creates; stitches seam fragments).
-5. SPLIT+SAVE  apply conf_threshold_detection (good/bad), draw, save bboxes/*.pt +
+5. SPLIT+SAVE  apply conf_threshold_good_box (good/bad), draw, save bboxes/*.pt +
             bboxes_with_conf/*.pt + yolo_vis/*.jpg  — identical to the current
             save_single_result, just fed the merged boxes.
 ```
@@ -148,8 +152,8 @@ The existing `method/yolo_sam_v1.yaml` gains `name: yolo_sam_v1`.
 - **Seg reader (`path_utils.py:78`):** → `cfg.segmentation_3d.detection_method`,
   a **new field** in `configs/reconstruction_seg3d/segmentation_3d/default.yaml`
   (default `yolo_sam_v1`).
-- **Metrics reader (`metrics_yolo_v1.py:765`, eval-out dir `:805`):** →
-  `cfg.method.name` — `metrics_eval.yaml` already loads the method group so it
+- **Metrics reader (`eval_yolo_boxes.py:765`, eval-out dir `:805`):** →
+  `cfg.method.name` — `eval_yolo_boxes.yaml` already loads the method group so it
   resolves. (Found via grep; same one-line pattern as the others.)
 
 These live in different config trees (mask-gen vs reconstruction), so they're
@@ -178,7 +182,7 @@ byte unchanged; only a SAHI run (`method=sahi_yolo_sam` +
 
 1. **Regression:** `method=yolo_sam_v1` output identical to a current run
    (orchestrator + SAM-extraction must be behavior-preserving).
-2. **FIP plot_461 (has GT):** `method=sahi_yolo_sam`, then `metrics_yolo_v1.py`
+2. **FIP plot_461 (has GT):** `method=sahi_yolo_sam`, then `eval_yolo_boxes.py`
    vs baseline. FIP heads are large/sparse so SAHI may not *help* there — the
    point is to confirm the **merge doesn't double-count** at seams (AP must not
    drop). Cheapest correctness test available.
@@ -212,7 +216,7 @@ byte unchanged; only a SAHI run (`method=sahi_yolo_sam` +
 | `configs/mask_generation/method/yolo_sam_v1.yaml` | add `name:` field |
 | `configs/.../segmentation_3d/default.yaml` | add `detection_method:` (default `yolo_sam_v1`) |
 | `src/wheat_utils/path_utils.py` | lines 54 & 78 → config-driven (Option C) |
-| `src/mask_generation/metrics/metrics_yolo_v1.py` | lines 765 & 805 → `cfg.method.name` (3rd Option-C consumer) |
+| `src/mask_generation/evaluation/eval_yolo_boxes.py` | lines 765 & 805 → `cfg.method.name` (3rd Option-C consumer) |
 | `run.py` | re-point to `run_mask_generation.py` |
 | `pyproject.toml` | add `sahi` |
 
@@ -258,10 +262,11 @@ python src/mask_generation/run_mask_generation.py method=sahi_yolo_sam experimen
 # to segment that SAHI output later: run_reconstruction ... segmentation_3d.detection_method=sahi_yolo_sam
 ```
 
-3. **`--config-name` for the metrics configs changed** (consequence of #2):
-   `--config-name mask_generation/metrics` → `--config-name metrics` (the config
-   root is now inside `configs/mask_generation/`). Updated in the metrics docstring,
-   both module READMEs, and `metrics_eval.yaml`.
+3. **`--config-name` for the eval-run config changed** (consequence of #2):
+   `--config-name mask_generation/metrics` → `--config-name eval_run` (the config
+   root is now inside `configs/mask_generation/`, and the config was later renamed
+   `metrics.yaml` → `eval_run.yaml`). Updated in the eval docstring, both module
+   READMEs, and `eval_yolo_boxes.yaml`.
 
 *(Optional follow-up for repo-wide consistency: apply the same one-line
 `config_path` change to the reconstruction entry so `reconstruction=2dgs` /

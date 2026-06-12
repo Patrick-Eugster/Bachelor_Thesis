@@ -70,4 +70,4 @@ Quick map of every doc in this folder, grouped by topic. Each line is a one-sent
   - [`src/reconstruction/README.md`](../src/reconstruction/README.md) — 3DGS training, rendering, metrics
   - [`src/segmentation_3d/README.md`](../src/segmentation_3d/README.md) — FlashSplat 3D segmentation
   - [`src/mask_generation/yolo_sam_v1/README.md`](../src/mask_generation/yolo_sam_v1/README.md) — YOLO+SAM pipelining details
-  - [`src/mask_generation/metrics/README.md`](../src/mask_generation/metrics/README.md) — YOLO evaluation metrics
+  - [`src/mask_generation/evaluation/README.md`](../src/mask_generation/evaluation/README.md) — YOLO evaluation metrics

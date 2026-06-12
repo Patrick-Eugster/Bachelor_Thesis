@@ -160,7 +160,7 @@ def save_sahi_result(preds, original_img, save_name,
     good_count = bad_count = 0
 
     if len(preds) > 0:
-        mask = preds[:, 4] >= cfg.method.conf_threshold_detection
+        mask = preds[:, 4] >= cfg.method.conf_threshold_good_box
         good = preds[mask]
         bad  = preds[~mask]
         good_count, bad_count = len(good), len(bad)
