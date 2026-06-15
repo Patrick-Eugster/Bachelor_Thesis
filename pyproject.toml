@@ -3,8 +3,14 @@ name = "wheat3dgs"
 version = "0.1.0"
 requires-python = ">=3.8"
 dependencies = [
+    # CORE pipeline deps only — MUST stay compatible with the env's torch 2.1.2 (the compiled CUDA
+    # submodules + gsplat are built against that exact ABI). Do NOT add anything that forces a torch
+    # upgrade. In particular SAHI is intentionally NOT here: every sahi version needs torch>=2.4.1,
+    # which uninstalls torch 2.1.2 → 2.12 and breaks every CUDA extension (undefined symbol
+    # _ZN2at4_ops5zeros...). SAHI mask-generation runs locally / in a separate env with newer torch.
+    "numpy<2",   # torch 2.1.2 / gsplat / cv2 are compiled against NumPy 1.x. NumPy 2.x breaks torch's numpy bridge (_ARRAY_API not found). Pin keeps pip from bumping it.
+    "opencv-python<4.12",   # opencv-python >=4.12 dropped NumPy-1.x wheels (requires numpy>=2) — conflicts with the numpy<2 pin above. Cap below 4.12.
     "scikit-image",
-    "sahi",   # tiled inference: slicing + NMM/IOS merge for the sahi_yolo_sam detector
 ]
 
 [tool.setuptools.packages.find]

@@ -1,0 +1,38 @@
+# @package _global_
+# Config for eval_compare_3way.py — the SAHI-vs-YOLO-vs-GT tuning instrument (FIP, needs manual_label/).
+# Run:  python src/mask_generation/evaluation/eval_compare_3way.py
+# Override on CLI:  ... sahi_experiment=sahi_metrics_v1 overlay_mode=both
+defaults:
+  - /dataset: fip                            # FIP only (GT comes from manual_label/); override dataset=phone is NOT valid here
+  - override /hydra/job_logging: disabled    # we print() — don't create a .log in CWD
+  - override /hydra/hydra_logging: disabled
+  - _self_
+
+# the two mask-generation methods to compare (fixed folder names under results/.../{method}/)
+yolo_method: yolo_sam_v1
+sahi_method: sahi_yolo_sam
+
+# which run folder of each method to read boxes from (the experiment_name used at mask-gen time)
+yolo_experiment: "metrics_v1"
+sahi_experiment: "metrics_v1"
+
+# IoU threshold for calling a predicted box and a GT box (or two predicted boxes) "the same box"
+matching_iou_threshold: 0.35
+
+# overlay output granularity:
+#   themed  → two mixed overlays (Coverage = regions 1-4, FP = regions 5-7)
+#   singles → one single-color image per region (default set: 2,3,4,5)
+#   both    → themed + singles
+overlay_mode: "themed"
+
+# also emit the YOLO-unique-FP (region 6) and SAHI-unique-FP (region 7) singles (only used when overlay_mode has singles)
+fp_singles: false
+
+# name for this evaluation output folder (same 3-option logic as the other evals)
+eval_experiment: "initial"
+prepend_date: false
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .

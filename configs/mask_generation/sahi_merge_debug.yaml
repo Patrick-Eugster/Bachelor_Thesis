@@ -1,0 +1,29 @@
+# @package _global_
+# Config for sahi_merge_debug.py — re-runs SAHI's tile inference + merge on a few images to make
+# the merge step visible (per-tile boxes, before/after merge, which raw boxes collapsed into each
+# final box). Re-runs SAHI (YOLO-on-tiles only, no SAM), so it's seconds per image.
+# Run:  python src/mask_generation/sahi_yolo_sam/sahi_merge_debug.py plot_glob=plot_461
+defaults:
+  - /dataset: fip                            # input images + result paths
+  - method: sahi_yolo_sam                    # the SAHI knobs (slice/overlap/merge) to inspect
+  - override /hydra/job_logging: disabled
+  - override /hydra/hydra_logging: disabled
+  - _self_
+
+# which plots to inspect (glob under dataset.input_dir). Narrow to one plot for a focused look.
+plot_glob: "*"
+
+# how many images per plot to inspect — merge debug is for eyeballing a few, not the whole set
+limit_images: 1
+
+# prefer GT-labeled images (same ones the 3-way eval uses) when a manual_label/ folder exists
+labeled_only: true
+
+# output folder name (same 3-option logic as the other evals)
+eval_experiment: "initial"
+prepend_date: false
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .

@@ -100,3 +100,70 @@ Box centers binned into 50×50 grid, Gaussian blur sigma=1.5, cells below 10% of
    - **(a) Box merging** — one predicted box contains multiple true wheat heads
    - **(b) Box splitting** — multiple predicted boxes belong to one true wheat head
    - **(c) Nested boxes** — one box is fully inside another, but IoU doesn't catch it. Idea: post-processing filter using IoS (Intersection over Smaller) — if a smaller box is fully inside a bigger one, remove the smaller box
+
+---
+
+# SAHI vs YOLO Comparison Tools
+
+`eval_yolo_boxes.py` (above) scores **one** method against GT. These three tools compare **SAHI** (`sahi_yolo_sam`) against **plain YOLO** (`yolo_sam_v1`) — head by head — to tune SAHI's tiling knobs (slice size, overlap, merge) by *seeing* what SAHI adds vs breaks, not just aggregate P/R. They import the matching primitives from `eval_yolo_boxes.py` (no changes to it) plus a shared `compare_common.py`.
+
+**Full design + the 7-region model + the metric→knob cheat-sheet:** [`docs/SAHI_YOLO_EVAL_PLAN.md`](../../../docs/SAHI_YOLO_EVAL_PLAN.md).
+
+## Prerequisite — produce boxes for BOTH methods
+
+The compare tools read each method's saved `bboxes/*.pt`, so run mask generation once per method first (the `eval_run` config sets `only_labeled_images` etc. — see top of this README):
+```bash
+python src/mask_generation/run_mask_generation.py --config-name eval_run method=yolo_sam_v1   experiment_name=metrics_v2
+python src/mask_generation/run_mask_generation.py --config-name eval_run method=sahi_yolo_sam experiment_name=metrics_v2
+```
+Then point the compare tools at those run folders via `yolo_experiment=` / `sahi_experiment=`.
+
+## 1. `eval_compare_3way.py` — SAHI vs YOLO vs GT (FIP only, needs `manual_label/`)
+
+The main tuning instrument. Sorts every head/box into the 7 regions of the `{GT, YOLO, SAHI}` Venn (recall side: both found / SAHI-rescued / YOLO-only-regression / hard-miss; precision side: shared-FP / YOLO-unique-FP / SAHI-unique-FP).
+
+```bash
+python src/mask_generation/evaluation/eval_compare_3way.py \
+  yolo_experiment=metrics_v2 sahi_experiment=metrics_v2 \
+  overlay_mode=both fp_singles=true eval_experiment=cmp_v2
+```
+
+Produces (in `results/mask_generation/{dataset}/evaluation/compare/{eval_experiment}/`):
+
+| Folder / File | Description |
+|---|---|
+| `compare.json` | per-GT-head **coverage 2×2 per size bucket** (BOTH dataset-relative **tertiles** *and* fixed **COCO** tables), **split/merge** counts vs GT, **FP breakdown** (shared / YOLO-unique / SAHI-unique), per-method **count-error ratio** |
+| `overlay_coverage/` | mixed overlay of the 4 recall regions — green=both, orange=YOLO-only (SAHI regression), blue=SAHI-rescued, red=neither |
+| `overlay_fp/` | mixed overlay of the 3 FP regions — magenta=shared, cyan=YOLO-unique, yellow=SAHI-unique (usually seam dupes) |
+| `regions/<name>/` | single-region images (only if `overlay_mode=singles`/`both`); default set = regions 2,3,4,5, plus 6,7 when `fp_singles=true` |
+
+Read the **tertiles** table for tuning (COCO's "small" bucket is often empty — FIP heads are big); SAHI's win should land in the small bucket, and `count_error_ratio` is the fastest dial for over-counting from un-merged seam duplicates.
+
+## 2. `eval_compare_nogt.py` — YOLO vs SAHI agreement (FIP **and** phone, no GT)
+
+When there's no GT (phone has none; on FIP it's a GT-free cross-check), the 7 regions collapse to 3: **agree** / **YOLO-only** / **SAHI-only**. Can't say who's right — only quantify and visualize divergence.
+
+```bash
+python src/mask_generation/evaluation/eval_compare_nogt.py dataset=phone \
+  yolo_experiment=metrics_v2 sahi_experiment=metrics_v2 overlay_mode=both
+```
+(`plot_glob` auto-resolves to the dataset's — `*` FIP, `*/*` phone.)
+
+Produces (in `.../evaluation/compare_nogt/{eval_experiment}/`): `agreement.json` (per-image + total agree / yolo-only / sahi-only + agreement rate), `overlay_agreement/` (green=agree, blue=YOLO-only, magenta=SAHI-only), and `regions/{yolo_only,sahi_only}/` singles. Signal: SAHI-only boxes clustering in dense/small regions = slicing doing its job.
+
+## 3. `sahi_merge_debug.py` — inspect SAHI's merge (lives in `../sahi_yolo_sam/`)
+
+Standalone tool that **re-runs** SAHI's tile inference (YOLO-on-tiles only, no SAM → seconds/image) to expose the merge step (the production pipeline only keeps the final merged boxes). It imports `compute_tile_boxes`/`load_and_slice`/`infer_tiles`/`merge_preds` from `sahi_yolo_pipelined.py` — the pre-merge boxes are simply `infer_tiles`' output before `merge_preds`.
+
+```bash
+python src/mask_generation/sahi_yolo_sam/sahi_merge_debug.py plot_glob=plot_461 limit_images=1
+```
+Reads the SAHI knobs from `method/sahi_yolo_sam.yaml`, so change `sahi_overlap_ratio` / `sahi_match_threshold` (file or CLI), re-run, and compare. Produces (in `.../evaluation/sahi_merge_debug/{eval_experiment}/{plot}/`): `tiles/` (tile grid + raw per-tile boxes), `before_merge/` (duplicates visible), `after_merge/` (final boxes), `clusters/` (each final box's contributing raw boxes share its color — judge over/under-merge by eye), and `merge_counts.json` (**N_raw → N_final**, `collapsed = N_raw − N_final` + the knob values).
+
+## `overlay_mode` (tools 1 & 2)
+
+- `themed` (default) — the mixed overlays (≤4 colors, readable like `match_viz`).
+- `singles` — one single-color image per region (zero clutter); `agree`/`both` (the bulk) never get a single.
+- `both` — themed + singles.
+
+Legends on all overlays are semi-transparent so boxes underneath stay visible.

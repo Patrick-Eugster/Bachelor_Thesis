@@ -1,0 +1,36 @@
+# @package _global_
+# Config for eval_compare_nogt.py — GT-free YOLO-vs-SAHI agreement (runs on FIP AND phone).
+# No manual labels needed: it only measures where the two methods agree vs diverge.
+# Run (FIP):   python src/mask_generation/evaluation/eval_compare_nogt.py
+# Run (phone): python src/mask_generation/evaluation/eval_compare_nogt.py dataset=phone
+defaults:
+  - /dataset: fip                            # override dataset=phone for phone sessions
+  - override /hydra/job_logging: disabled
+  - override /hydra/hydra_logging: disabled
+  - _self_
+
+# the two mask-generation methods to compare
+yolo_method: yolo_sam_v1
+sahi_method: sahi_yolo_sam
+yolo_experiment: "metrics_v1"
+sahi_experiment: "metrics_v1"
+
+# which plots to process — defaults to the dataset's own glob ("*" FIP, "*/*" phone), so phone works without overriding it
+plot_glob: ${dataset.plot_glob}
+
+# IoU threshold for calling a YOLO box and a SAHI box "the same box"
+matching_iou_threshold: 0.35
+
+# overlay granularity: themed (one agreement overlay) | singles (yolo-only + sahi-only images) | both
+overlay_mode: "themed"
+
+# process only the first N images per plot that have BOTH methods' boxes — 0 = all
+limit_images: 0
+
+eval_experiment: "initial"
+prepend_date: false
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .
