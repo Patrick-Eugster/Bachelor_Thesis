@@ -44,6 +44,11 @@ def bbox_dir(cfg, method, experiment, plot_name):
     return os.path.join(cfg.dataset.result_dir_masks, plot_name, method, experiment, 'bboxes')
 
 
+def withconf_dir(cfg, method, experiment, plot_name):
+    """Folder holding a method's per-image 5-col boxes-with-confidence for one plot (for the labels)."""
+    return os.path.join(cfg.dataset.result_dir_masks, plot_name, method, experiment, 'bboxes_with_conf')
+
+
 def find_image(input_plot_dir, stem):
     """Locate the undistorted image for a stem (png first, then jpg). Returns None if absent."""
     for ext in ('.png', '.jpg'):
@@ -82,6 +87,8 @@ def evaluate(cfg):
 
         y_dir = bbox_dir(cfg, cfg.yolo_method, cfg.yolo_experiment, plot_name)
         s_dir = bbox_dir(cfg, cfg.sahi_method, cfg.sahi_experiment, plot_name)
+        y_cdir = withconf_dir(cfg, cfg.yolo_method, cfg.yolo_experiment, plot_name)
+        s_cdir = withconf_dir(cfg, cfg.sahi_method, cfg.sahi_experiment, plot_name)
         if not (os.path.isdir(y_dir) and os.path.isdir(s_dir)):
             print(f"[SKIP] {plot_name}: missing YOLO or SAHI bboxes folder.")
             continue
@@ -97,16 +104,22 @@ def evaluate(cfg):
             if image_path is None:
                 print(f"[SKIP] {plot_name}/{stem}: no image file.")
                 continue
-            yolo = load_pred_boxes(os.path.join(y_dir, stem + '.pt'))
-            sahi = load_pred_boxes(os.path.join(s_dir, stem + '.pt'))
+            yolo, yolo_conf = cc.load_boxes_and_conf(os.path.join(y_dir, stem + '.pt'), os.path.join(y_cdir, stem + '.pt'))
+            sahi, sahi_conf = cc.load_boxes_and_conf(os.path.join(s_dir, stem + '.pt'), os.path.join(s_cdir, stem + '.pt'))
             cat = cc.categorize_two_sets(yolo, sahi, iou_thr)
 
-            # boxes per region (draw YOLO's box for the agreed pairs)
+            # boxes per region (draw YOLO's box for the agreed pairs) + each box's conf
             region_boxes = {
                 'agree':     yolo[[a for a, _, _ in cat['mutual']]] if cat['mutual'] else np.zeros((0, 4), np.float32),
                 'yolo_only': yolo[cat['a_only']] if cat['a_only'] else np.zeros((0, 4), np.float32),
                 'sahi_only': sahi[cat['b_only']] if cat['b_only'] else np.zeros((0, 4), np.float32),
             }
+            region_conf = {
+                'agree':     ([float(yolo_conf[a]) for a, _, _ in cat['mutual']] if yolo_conf is not None else None),
+                'yolo_only': ([float(yolo_conf[i]) for i in cat['a_only']] if yolo_conf is not None else None),
+                'sahi_only': ([float(sahi_conf[i]) for i in cat['b_only']] if sahi_conf is not None else None),
+            }
+            lbl = {r: cc.fmt_conf_labels(region_conf[r]) for r in REGIONS}
             counts = {r: len(region_boxes[r]) for r in REGIONS}
             for r in REGIONS:
                 tot[r] += counts[r]
@@ -114,13 +127,13 @@ def evaluate(cfg):
             name_tag = f"{plot_safe}_{stem}"
             if cfg.overlay_mode in ('themed', 'both'):
                 cc.draw_overlay(image_path,
-                                {LABELS[r]: (COLORS[r], region_boxes[r]) for r in REGIONS},
+                                {LABELS[r]: (COLORS[r], region_boxes[r], lbl[r]) for r in REGIONS},
                                 os.path.join(overlay_dir, name_tag + '.jpg'))
             if cfg.overlay_mode in ('singles', 'both'):
                 for r in SINGLE_REGIONS:
                     rd = os.path.join(regions_dir, r)
                     os.makedirs(rd, exist_ok=True)
-                    cc.draw_overlay(image_path, {LABELS[r]: (COLORS[r], region_boxes[r])},
+                    cc.draw_overlay(image_path, {LABELS[r]: (COLORS[r], region_boxes[r], lbl[r])},
                                     os.path.join(rd, name_tag + '.jpg'))
 
             per_image.append({'plot': plot_safe, 'stem': stem,

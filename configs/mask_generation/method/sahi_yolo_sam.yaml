@@ -13,11 +13,12 @@ name: sahi_yolo_sam
 wheat_yolo_model: "wheat_head_detection_model.pt"  # YOLO model trained on wheat head detection
 sam_checkpoint: "sam_vit_h_4b8939.pth"             # SAM ViT-H checkpoint (~2.4 GB)
 
-# floor confidence applied during NMS — all boxes above this survive per-tile NMS and go into the merge
-# set low (0.01) for metrics to capture the full confidence range for AP/PR curve
-conf_threshold_nms_floor: 0.2
-
-# boxes below this confidence are rejected after the merge (shown as red boxes in yolo_vis/)
+# THE single SAHI confidence threshold. Tiles are run at this conf, so only boxes >= it ever enter the
+# cross-tile merge and only boxes >= it come out — nothing below it exists. This is deliberate: SAHI's
+# merge (NMM) UNIONS overlapping boxes, so any sub-threshold box let into the merge would fuse into and
+# reshape a good box (the bug we hit when an eval ran tiles at 0.01). Running tiles == keep line removes
+# that whole class of problem and makes the result independent of any other floor. There is intentionally
+# NO separate nms-floor / merge-floor here (SAHI does not produce an AP/PR curve — see docs).
 conf_threshold_good_box: 0.35
 
 # per-tile NMS IoU threshold (applied inside each tile before the cross-tile merge)
@@ -79,7 +80,13 @@ sahi_slice_size: 1280
 # fraction of overlap between neighbouring tiles. 0.3 → ~384px band, covers our ~161px elongated heads
 sahi_overlap_ratio: 0.3
 
-# how to combine the overlap duplicates: "NMM" (merge boxes) or "NMS" (drop lower-conf). NMM > NMS at seams
+# how to combine the overlap duplicates:
+#   "NMM"  — sahi non-max merging (union overlapping boxes; uses sahi_match_metric below)
+#   "NMS"  — sahi non-max suppression (drop lower-conf; uses sahi_match_metric)
+#   "CONF" — confidence-aware greedy merge (ours): like IOS-NMM but PROTECTS a high-conf box that is
+#            merely contained in a bigger box (a distinct nested head, e.g. a small head in the empty
+#            corner of a big diagonal head's box) instead of swallowing it. Uses the two knobs below
+#            (sahi_dup_iou_threshold, sahi_protect_conf) + sahi_match_threshold; ignores sahi_match_metric.
 sahi_merge: "NMM"
 
 # box-match metric for the merge: "IOS" (intersection-over-smaller, robust to seam fragments) or "IOU"
@@ -87,6 +94,14 @@ sahi_match_metric: "IOS"
 
 # overlap above this is treated as the same head and merged
 sahi_match_threshold: 0.5
+
+# --- only used by sahi_merge="CONF" (confidence-aware merge) ---
+# IOU above this = the SAME head detected twice (true duplicate) -> always absorb, regardless of conf.
+sahi_dup_iou_threshold: 0.5
+# a CONTAINED box (high IOS, low IOU) is kept as a distinct nested head if its conf is >= this; below
+# this it is treated as a seam fragment and absorbed. Raise to protect more nested heads (risks leaving
+# high-conf seam fragments as duplicates); lower to absorb more (risks swallowing real small heads).
+sahi_protect_conf: 0.6
 
 # also run one whole-image (downscaled) pass and merge it in — backstops heads bigger than the overlap band
 sahi_full_image_pass: true

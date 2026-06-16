@@ -1,6 +1,6 @@
 # AbsGrad Densification — Results on FIP (7 plots)
 
-**Headline:** Switching the densification criterion to **AbsGrad (AbsGS)** — gsplat's *absolute* screen-space gradient `means2d.absgrad` for the split/clone decision — improves reconstruction **and** segmentation on **every** FIP plot, at **no extra training cost**. Best operating point: **gsplat + AbsGrad @ 15k iterations**.
+**Headline:** Switching the densification criterion to **AbsGrad (AbsGS)** — gsplat's *absolute* screen-space gradient `means2d.absgrad` for the split/clone decision — improves reconstruction on **every** FIP plot (7/7) and segmentation on **6 of 7** (one near-tie loss), at **no extra training cost**. Best operating point: **gsplat + AbsGrad @ 15k iterations**.
 
 > One-liner for the thesis: *gsplat makes training faster; AbsGrad makes the result sharper — and the thesis wants sharper (fine wheat detail: awns, edges).*
 
@@ -9,7 +9,7 @@
 ## TL;DR
 
 - **Rendering (30k):** AbsGrad beats the gsplat-default control on **7/7 plots, all 3 metrics** — mean **PSNR +0.53 dB**, **SSIM +0.012**, **LPIPS −0.026** (LPIPS lower = better).
-- **Segmentation (eval_2d, 5/7 plots so far):** AbsGrad also wins/ties — mean **IoU +0.017**, **F1 +0.014**. Mechanism: higher head **recall** at a small precision cost.
+- **Segmentation (eval_2d, 7/7 plots):** AbsGrad wins/ties on **6 of 7** — mean **IoU +0.022**, **F1 +0.019** (loses only plot 467, −0.011 IoU, where extra recall tipped into over-counting). Mechanism: higher head **recall** at a small precision cost.
 - **15k vs 30k:** essentially **flat** (PSNR −0.02, LPIPS −0.004 at 30k) → **use 15k**, half the training for the same quality.
 - **No over-densification:** Gaussian counts stay in the vanilla range (~1.0–1.45 M), so AbsGrad@`densify_grad_threshold=0.0008` is stable.
 - **The perceptual LPIPS gain is the thesis-relevant effect** — it's exactly the fine-detail recovery AbsGS is designed for.
@@ -25,7 +25,7 @@
 | **Plots** | FIP plot_461 … plot_467 (7 plots) |
 | **Iterations** | 30k (the 15k checkpoint is evaluated from the same run) |
 | **Eval split** | FIP camera-index split (cam_11 / cam_12 held out as test) |
-| **Experiment names** | recon arm `test_absgrad_v2` (463/467 seg pending → `test_absgrad_v3`); control `test_gsplat_full` |
+| **Experiment names** | test arm `test_absgrad_v2` (all 7 plots complete; 463/467 were redone via the seg-fix job and consolidated back into `test_absgrad_v2`); control `test_gsplat_full` |
 | **Scripts** | `scripts/fip_test_absgrad_split_a_job.sh` (461–463), `…_split_b_job.sh` (464–467), seg-fix `scripts/fip_absgrad_seg_fix_463_467_job.sh` |
 
 The control is the strongest non-AbsGrad baseline: gsplat already matched the old `diff-gaussian-rasterization` engine on quality (it only added speed), so "gsplat-default densification" isolates the densification change as the *only* difference vs the AbsGrad arm.
@@ -43,11 +43,11 @@ Three arms, all at resolution 1 with `use_principal_point=true`:
 |------|----------:|------------:|-------------:|----------:|------------:|-------------:|-----------:|-------------:|--------------:|
 | 461 | 26.29 | 25.76 | 25.79 | 0.846 | 0.829 | 0.830 | 0.188 | 0.216 | 0.213 |
 | 462 | 30.12 | 29.54 | 29.51 | 0.912 | 0.902 | 0.902 | 0.163 | 0.188 | 0.188 |
-| 463 | 27.95 | 27.50 | 27.45 | 0.893 | 0.882 | 0.882 | 0.173 | 0.196 | 0.195 |
+| 463 | 27.96 | 27.50 | 27.45 | 0.894 | 0.882 | 0.882 | 0.173 | 0.196 | 0.195 |
 | 464 | 27.62 | 27.22 | 27.19 | 0.887 | 0.874 | 0.874 | 0.187 | 0.222 | 0.222 |
 | 465 | 28.61 | 28.21 | 28.17 | 0.890 | 0.881 | 0.880 | 0.181 | 0.204 | 0.203 |
 | 466 | 29.83 | 29.16 | 29.20 | 0.902 | 0.891 | 0.891 | 0.160 | 0.184 | 0.183 |
-| 467 | 30.49 | 29.84 | 29.85 | 0.923 | 0.912 | 0.912 | 0.152 | 0.179 | 0.179 |
+| 467 | 30.50 | 29.84 | 29.85 | 0.923 | 0.912 | 0.912 | 0.152 | 0.179 | 0.179 |
 | **mean** | **28.70** | **28.17** | **28.17** | **0.893** | **0.881** | **0.881** | **0.172** | **0.198** | **0.198** |
 
 **Two readings:**
@@ -71,18 +71,20 @@ PSNR/SSIM are statistically identical at 15k and 30k (on several plots 15k is ma
 
 ## 3. Segmentation quality (eval_2d) — AbsGrad vs gsplat-default
 
-2D segmentation metrics vs the manually-labelled GT mask (one GT camera per plot). Available for 5/7 plots; 463 & 467 pending the seg-fix run.
+2D segmentation metrics vs the manually-labelled GT mask (one GT camera per plot). All 7 plots.
 
 | plot | IoU abs | IoU gs | ΔIoU | F1 abs | F1 gs | ΔF1 |
 |------|--------:|-------:|-----:|-------:|------:|----:|
 | 461 | 0.565 | 0.518 | +0.048 | 0.722 | 0.682 | +0.040 |
 | 462 | 0.718 | 0.695 | +0.023 | 0.836 | 0.820 | +0.016 |
+| 463 | 0.590 | 0.509 | +0.081 | 0.742 | 0.674 | +0.068 |
 | 464 | 0.695 | 0.685 | +0.010 | 0.820 | 0.813 | +0.007 |
 | 465 | 0.693 | 0.693 | +0.000 | 0.819 | 0.819 | +0.000 |
 | 466 | 0.304 | 0.298 | +0.006 | 0.467 | 0.460 | +0.007 |
-| **mean** | **0.595** | **0.578** | **+0.017** | **0.733** | **0.719** | **+0.014** |
+| 467 | 0.706 | 0.717 | −0.011 | 0.827 | 0.835 | −0.008 |
+| **mean** | **0.610** | **0.588** | **+0.022** | **0.748** | **0.729** | **+0.019** |
 
-**AbsGrad wins or ties on all 5 measured plots.** The per-plot precision/recall split shows the mechanism: AbsGrad lifts **recall** (it finds more heads — e.g. 461 recall 0.650 vs 0.597) at a small precision cost, so net IoU/F1 go up. 461 is the clear win; 464/465 are near-ties.
+**AbsGrad wins or ties on 6 of 7 plots.** The per-plot precision/recall split shows the mechanism: AbsGrad lifts **recall** (it finds more heads — e.g. 461 recall 0.650 vs 0.597) at a small precision cost, so net IoU/F1 go up. **463 is the biggest single win** (+0.081 IoU); 461 is also a clear win; 464/465 are near-ties. **467 is the lone slight loss** (−0.011 IoU): there AbsGrad's extra recall tipped into over-counting (pred 328 heads vs 216 GT, count-error +0.52), so precision dropped enough to net-lose — consistent with the single-GT-camera caveat below.
 
 > Note: 466 has low absolute IoU (~0.30) for both methods — a hard plot — but AbsGrad is still ahead. This is a plot-difficulty issue, not a method issue.
 
@@ -96,8 +98,8 @@ Default 3DGS densification decides where to add Gaussians from the **signed** sc
 
 ## Caveats
 
-- **Seg is a single GT camera per plot** — treat small seg deltas (464, 465) as ties; 461 is the robust win.
-- **463 & 467 seg pending** — their `test_absgrad_v2` flashsplat seg was cut by a 6 h per-plot timeout (recon metrics valid; seg being redone as `test_absgrad_v3`). Update tables 3 once complete.
+- **Seg is a single GT camera per plot** — treat small seg deltas (464, 465, and the 467 loss) as ties/noise; 461 and 463 are the robust wins.
+- **463 & 467 seg** — their original `test_absgrad_v2` flashsplat seg was cut by a 6 h per-plot timeout, so they were redone via the seg-fix job and consolidated back into `test_absgrad_v2`. Their recon is from that retrain (≤0.01 dB vs the original). Tables now 7/7.
 - **360 videos not produced** — Euler ffmpeg is missing `libopenh264.so.5`; frames render fine, only the mp4 stitch fails (cosmetic, no effect on any metric).
 - Numbers are from the `test_absgrad_v2` / `test_gsplat_full` runs at resolution 1; principal-point fix on (`use_principal_point=true`) for both arms, so the comparison isolates densification only.
 
@@ -105,7 +107,6 @@ Default 3DGS densification decides where to add Gaussians from the **signed** sc
 
 ## Status / reproducibility
 
-- **Done:** recon (7/7) + seg (5/7). AbsGrad validated as a strict improvement over gsplat-default on FIP.
-- **Pending:** 463/467 seg (`test_absgrad_v3`) → completes the 7/7 seg table.
+- **Done:** recon (7/7) + seg (7/7). AbsGrad validated as a strong improvement over gsplat-default on FIP (recon 7/7, seg 6/7 wins/ties, one near-tie loss on 467).
 - **Config knob:** when `absgrad=true`, `densify_grad_threshold` must be raised ~3–4× (0.0008 here vs the 0.0002 default) or it over-densifies — see `docs/DENSIFICATION_OPTIONS.md` §8.
 - **Phone:** not yet run — AbsGrad on phone sessions is the next step.

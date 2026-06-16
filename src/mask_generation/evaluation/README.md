@@ -1,3 +1,35 @@
+# Mask-generation Evaluation — quick reference
+
+| file | what it does |
+|---|---|
+| [`eval_yolo_boxes.py`](eval_yolo_boxes.py) | score **one** method (YOLO *or* SAHI) vs GT — P/R/F1/AP, match_viz, IoU histograms, FP/FN heatmaps, PR curves |
+| [`eval_compare_3way.py`](eval_compare_3way.py) | **SAHI vs YOLO vs GT**, head-by-head (7-region Venn) — coverage tables (tertiles+COCO), split/merge, FP breakdown, coverage/FP overlays |
+| [`eval_compare_nogt.py`](eval_compare_nogt.py) | **SAHI vs YOLO agreement, no GT** (FIP + phone) — agree / YOLO-only / SAHI-only + overlay |
+| [`sahi_merge_debug.py`](../sahi_yolo_sam/sahi_merge_debug.py) | inspect SAHI's tile **merge** — tiles / before / after / clusters + N_raw→N_final counts (re-runs SAHI) |
+| `compare_common.py` | shared helpers (not run directly) |
+
+```bash
+# 0. PREREQUISITE — produce boxes for BOTH methods once (eval_run sets only_labeled_images etc.)
+python src/mask_generation/run_mask_generation.py --config-name eval_run method=yolo_sam_v1   experiment_name=metrics_v2
+python src/mask_generation/run_mask_generation.py --config-name eval_run method=sahi_yolo_sam experiment_name=metrics_v2
+
+# 1. one method vs GT  (swap method=yolo_sam_v1 for the YOLO arm)
+python src/mask_generation/evaluation/eval_yolo_boxes.py method=sahi_yolo_sam mask_gen_experiment=metrics_v2 eval_experiment=sahi_v2
+
+# 2. SAHI vs YOLO vs GT — the tuning instrument (FIP only)
+python src/mask_generation/evaluation/eval_compare_3way.py yolo_experiment=metrics_v2 sahi_experiment=metrics_v2 overlay_mode=both fp_singles=true eval_experiment=cmp_v2
+
+# 3. SAHI vs YOLO agreement, no GT (FIP cross-check, or dataset=phone)
+python src/mask_generation/evaluation/eval_compare_nogt.py yolo_experiment=metrics_v2 sahi_experiment=metrics_v2 overlay_mode=both eval_experiment=cmp_v2
+
+# 4. SAHI merge inspector (re-runs SAHI; one image per plot)
+python src/mask_generation/sahi_yolo_sam/sahi_merge_debug.py plot_glob=plot_461 limit_images=1 eval_experiment=cmp_v2
+```
+
+Full details for each below (`eval_yolo_boxes.py` first, then the comparison tools).
+
+---
+
 # YOLO Bounding Box Evaluation — `eval_yolo_boxes.py`
 
 ## Overview
@@ -107,7 +139,9 @@ Box centers binned into 50×50 grid, Gaussian blur sigma=1.5, cells below 10% of
 
 `eval_yolo_boxes.py` (above) scores **one** method against GT. These three tools compare **SAHI** (`sahi_yolo_sam`) against **plain YOLO** (`yolo_sam_v1`) — head by head — to tune SAHI's tiling knobs (slice size, overlap, merge) by *seeing* what SAHI adds vs breaks, not just aggregate P/R. They import the matching primitives from `eval_yolo_boxes.py` (no changes to it) plus a shared `compare_common.py`.
 
-**Full design + the 7-region model + the metric→knob cheat-sheet:** [`docs/SAHI_YOLO_EVAL_PLAN.md`](../../../docs/SAHI_YOLO_EVAL_PLAN.md).
+**Full design + the 7-region model + the metric→knob cheat-sheet:** `docs/archive/SAHI_YOLO_EVAL_PLAN.md` (archived, local-only — plan complete; the tools below are what it produced).
+
+**Findings from running these tools** → [`docs/SAHI_EVAL_RESULTS.md`](../../../docs/SAHI_EVAL_RESULTS.md): the confidence-floor bug that made SAHI first look worse, the single-threshold fix (SAHI now beats YOLO on recall), and the IOS/IOU/CONF merge study (IOS wins on FIP; nested-head case needs mask-based dedup, parked for phone). **SAHI eval boxes are now produced by a normal run with `only_labeled_images=true` — NOT `--config-name eval_run` (SAHI no longer has the `conf_threshold_nms_floor` key).**
 
 ## Prerequisite — produce boxes for BOTH methods
 
@@ -165,5 +199,7 @@ Reads the SAHI knobs from `method/sahi_yolo_sam.yaml`, so change `sahi_overlap_r
 - `themed` (default) — the mixed overlays (≤4 colors, readable like `match_viz`).
 - `singles` — one single-color image per region (zero clutter); `agree`/`both` (the bulk) never get a single.
 - `both` — themed + singles.
+
+**Box labels:** every box is labeled with its **confidence** in white text + colored stroke (same style as `eval_yolo_boxes` `match_viz`). Confidences come from each method's `bboxes_with_conf/*.pt` (matched to the good boxes by coordinate). On the **coverage** overlay the boxes are GT boxes (no confidence of their own), so they show the **detecting method's** confidence — YOLO's for `both`/`yolo_only`, SAHI's for `sahi_rescued`, none for `neither`. If a run has no `bboxes_with_conf/` (i.e. it wasn't an `only_labeled_images` run), labels are simply omitted.
 
 Legends on all overlays are semi-transparent so boxes underneath stay visible.

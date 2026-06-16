@@ -93,6 +93,18 @@ def bbox_path(cfg, method, experiment, plot_name, stem):
     return os.path.join(cfg.dataset.result_dir_masks, plot_name, method, experiment, 'bboxes', stem + '.pt')
 
 
+def withconf_path(cfg, method, experiment, plot_name, stem):
+    """Path to a method's 5-col boxes-with-confidence (.pt) — used to label each box with its conf."""
+    return os.path.join(cfg.dataset.result_dir_masks, plot_name, method, experiment, 'bboxes_with_conf', stem + '.pt')
+
+
+def _sub_conf(conf_arr, idx):
+    """Pick the confidences at the given indices (or a list of None if conf isn't available)."""
+    if conf_arr is None:
+        return [None] * len(idx)
+    return [float(conf_arr[i]) for i in idx]
+
+
 # =====================================================================
 # Core categorization (the 7-region Venn for one image)
 # =====================================================================
@@ -110,11 +122,13 @@ def split_merge_counts(preds, gt, iou_threshold):
     return n_split, n_merge
 
 
-def categorize_3way(gt, yolo, sahi, iou_threshold):
+def categorize_3way(gt, yolo, sahi, iou_threshold, yolo_conf=None, sahi_conf=None):
     """Split one image's heads/boxes into the 7 Venn regions. Returns recall-side GT-index
     lists (regions 1-4, for the coverage table) and precision-side FP box arrays (regions 5-7),
-    plus split/merge and raw counts. GT indices (not boxes) on the recall side so the caller
-    can bucket them by size with the dataset-global cutoffs."""
+    plus per-region confidences for the overlay labels, split/merge and raw counts. GT indices
+    (not boxes) on the recall side so the caller can bucket them by size with the dataset-global
+    cutoffs. yolo_conf/sahi_conf (per-box confidences) feed the labels: recall regions get the
+    DETECTING method's conf (GT boxes have none of their own); FP regions get the predicted conf."""
     gt   = np.asarray(gt,   dtype=np.float32).reshape(-1, 4)
     yolo = np.asarray(yolo, dtype=np.float32).reshape(-1, 4)
     sahi = np.asarray(sahi, dtype=np.float32).reshape(-1, 4)
@@ -124,6 +138,9 @@ def categorize_3way(gt, yolo, sahi, iou_threshold):
     s_tp, s_fp_idx, _ = match_boxes(compute_iou_matrix(sahi, gt), iou_threshold)
     yolo_hit = {g for _, g, _ in y_tp}    # GT indices YOLO found
     sahi_hit = {g for _, g, _ in s_tp}    # GT indices SAHI found
+    # GT head → confidence of the box that detected it (for the recall-region labels)
+    gt_yolo_conf = {g: (float(yolo_conf[yi]) if yolo_conf is not None else None) for yi, g, _ in y_tp}
+    gt_sahi_conf = {g: (float(sahi_conf[si]) if sahi_conf is not None else None) for si, g, _ in s_tp}
 
     # recall side: bucket each GT head by (yolo_hit, sahi_hit)
     recall_idx = {'both': [], 'yolo_only': [], 'sahi_rescued': [], 'neither': []}
@@ -133,20 +150,36 @@ def categorize_3way(gt, yolo, sahi, iou_threshold):
         elif in_y and not in_s: recall_idx['yolo_only'].append(g)       # SAHI regression
         elif in_s and not in_y: recall_idx['sahi_rescued'].append(g)    # the SAHI value
         else:                   recall_idx['neither'].append(g)         # hard miss
+    # conf shown per recall region = the detecting method's conf (none for the hard-miss region)
+    recall_conf = {
+        'both':         [gt_yolo_conf.get(g) for g in recall_idx['both']],
+        'yolo_only':    [gt_yolo_conf.get(g) for g in recall_idx['yolo_only']],
+        'sahi_rescued': [gt_sahi_conf.get(g) for g in recall_idx['sahi_rescued']],
+        'neither':      [None for _ in recall_idx['neither']],
+    }
 
     # precision side: cross-match the two FP sets → shared (both) vs method-unique
     yolo_fp = yolo[y_fp_idx] if y_fp_idx else np.zeros((0, 4), np.float32)
     sahi_fp = sahi[s_fp_idx] if s_fp_idx else np.zeros((0, 4), np.float32)
+    yfp_conf = _sub_conf(yolo_conf, y_fp_idx)   # confidences aligned to yolo_fp / sahi_fp
+    sfp_conf = _sub_conf(sahi_conf, s_fp_idx)
     cross = cc.categorize_two_sets(yolo_fp, sahi_fp, iou_threshold)
     fp_boxes = {
         'shared':      yolo_fp[[a for a, _, _ in cross['mutual']]] if cross['mutual'] else np.zeros((0, 4), np.float32),
         'yolo_unique': yolo_fp[cross['a_only']] if cross['a_only'] else np.zeros((0, 4), np.float32),
         'sahi_unique': sahi_fp[cross['b_only']] if cross['b_only'] else np.zeros((0, 4), np.float32),
     }
+    fp_conf = {
+        'shared':      [yfp_conf[a] for a, _, _ in cross['mutual']],
+        'yolo_unique': [yfp_conf[a] for a in cross['a_only']],
+        'sahi_unique': [sfp_conf[b] for b in cross['b_only']],
+    }
 
     return {
         'recall_idx': recall_idx,
+        'recall_conf': recall_conf,
         'fp_boxes': fp_boxes,
+        'fp_conf': fp_conf,
         'split_merge': {
             'yolo': split_merge_counts(yolo, gt, iou_threshold),
             'sahi': split_merge_counts(sahi, gt, iou_threshold),
@@ -200,17 +233,21 @@ def empty_coverage():
 # =====================================================================
 
 def draw_image_overlays(image_path, gt, cat, dirs, name_tag, overlay_mode, fp_singles):
-    """Write the Coverage + FP mixed overlays and/or the per-region single images for one image."""
+    """Write the Coverage + FP mixed overlays and/or the per-region single images for one image.
+    Each box is labeled with its confidence (white text + colored stroke)."""
     gt = np.asarray(gt, dtype=np.float32).reshape(-1, 4)
     recall_boxes = {n: gt[cat['recall_idx'][n]] if cat['recall_idx'][n] else np.zeros((0, 4), np.float32)
                     for n in RECALL_REGIONS}
     fp_boxes = cat['fp_boxes']
+    # per-box conf label strings, one list per region
+    lbl = {n: cc.fmt_conf_labels(cat['recall_conf'][n]) for n in RECALL_REGIONS}
+    lbl.update({n: cc.fmt_conf_labels(cat['fp_conf'][n]) for n in FP_REGIONS})
 
     if overlay_mode in ('themed', 'both'):
         # bulk region first so the rare/interesting ones draw on top
-        cov_layers = {LABELS[n]: (COLORS[n], recall_boxes[n]) for n in RECALL_REGIONS}
+        cov_layers = {LABELS[n]: (COLORS[n], recall_boxes[n], lbl[n]) for n in RECALL_REGIONS}
         cc.draw_overlay(image_path, cov_layers, os.path.join(dirs['coverage'], name_tag + '.jpg'))
-        fp_layers = {LABELS[n]: (COLORS[n], fp_boxes[n]) for n in FP_REGIONS}
+        fp_layers = {LABELS[n]: (COLORS[n], fp_boxes[n], lbl[n]) for n in FP_REGIONS}
         cc.draw_overlay(image_path, fp_layers, os.path.join(dirs['fp'], name_tag + '.jpg'))
 
     if overlay_mode in ('singles', 'both'):
@@ -219,7 +256,7 @@ def draw_image_overlays(image_path, gt, cat, dirs, name_tag, overlay_mode, fp_si
             boxes = recall_boxes[n] if n in RECALL_REGIONS else fp_boxes[n]
             region_dir = os.path.join(dirs['regions'], n)
             os.makedirs(region_dir, exist_ok=True)
-            cc.draw_overlay(image_path, {LABELS[n]: (COLORS[n], boxes)},
+            cc.draw_overlay(image_path, {LABELS[n]: (COLORS[n], boxes, lbl[n])},
                             os.path.join(region_dir, name_tag + '.jpg'))
 
 
@@ -291,11 +328,11 @@ def evaluate(cfg):
         from PIL import Image
         with Image.open(image_path) as im:
             img_w, img_h = im.size
-        gt   = load_gt_boxes(gt_label, img_w, img_h)
-        yolo = load_pred_boxes(y_path)
-        sahi = load_pred_boxes(s_path)
+        gt = load_gt_boxes(gt_label, img_w, img_h)
+        yolo, yolo_conf = cc.load_boxes_and_conf(y_path, withconf_path(cfg, cfg.yolo_method, cfg.yolo_experiment, plot_name, stem))
+        sahi, sahi_conf = cc.load_boxes_and_conf(s_path, withconf_path(cfg, cfg.sahi_method, cfg.sahi_experiment, plot_name, stem))
 
-        cat = categorize_3way(gt, yolo, sahi, iou_thr)
+        cat = categorize_3way(gt, yolo, sahi, iou_thr, yolo_conf, sahi_conf)
         gt_areas = box_areas(gt)
         all_gt_areas.extend(gt_areas.tolist())
 

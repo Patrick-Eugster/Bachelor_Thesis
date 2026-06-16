@@ -43,7 +43,7 @@ Quick map of every doc in this folder, grouped by topic. Each line is a one-sent
 |---|---|---|
 | [MASK_GENERATION_OPTIONS.md](MASK_GENERATION_OPTIONS.md) | ✅ | Survey of detector + SAM alternatives for the wheat-head mask stage: why no turnkey detector beats our GWC YOLOv5 weights without training, **SAHI** as the top training-free lever for the dense/small phone heads, SAM2/SAM3/HQ-SAM mask upgrades, and the phone-vs-FIP diagnosis (density + JPG, *not* viewpoint). |
 | [SAHI_EXPLAINED.md](SAHI_EXPLAINED.md) | ✅ | From-scratch SAHI walkthrough: the downscale problem, the tile-count formula (worked example), how to **avoid scaling** (set `imgsz = slice`), the edge-split → overlap fix (+ our 161 px head caveat), the detected-twice → NMM/IOS merge, the full-image safety net, and quick-start settings. |
-| [SAHI_IMPLEMENTATION_PLAN.md](SAHI_IMPLEMENTATION_PLAN.md) | ✅ | The agreed plan to add SAHI as a sibling `sahi_yolo_sam` method: a thin `run_mask_generation.py` orchestrator + dispatch registry, **extracted shared `sam/`**, Option-C config-driven result folders (writer+reader), detector internals (slice→batched-infer→NMM/IOS merge), parallelism/VRAM, validation + back-compat. Plan only — not yet built. |
+| [SAHI_EVAL_RESULTS.md](SAHI_EVAL_RESULTS.md) | ✅ | SAHI-vs-YOLO eval results: the **confidence-floor bug** that made SAHI first look worse (NMM unions junk boxes at floor 0.01; YOLO immune), the **single-threshold fix** (SAHI now beats YOLO on recall, +0.04 F1), and the **IOS/IOU/CONF merge study** (IOS wins; the nested-head case is not box-fixable → mask-based dedup, parked for phone). |
 
 ### 🔬 Input-data diagnostics (FIP vs phone)
 | Doc | | What it's about |
@@ -63,6 +63,7 @@ Quick map of every doc in this folder, grouped by topic. Each line is a one-sent
 
 ## Where other docs live
 
+- **Archived plans** (`docs/archive/`, gitignored — local-only, kept for the record): `SAHI_IMPLEMENTATION_PLAN.md` and `SAHI_YOLO_EVAL_PLAN.md` were the design plans for the SAHI detector and the SAHI-vs-YOLO eval tools. Both are now **built** — see `SAHI_EXPLAINED.md` and `src/mask_generation/evaluation/README.md` for the as-built docs.
 - **Supervisor reference material:** [`../reference/agisoft/`](../reference/agisoft/) — Agisoft scripts (steps 6/7/10) + coded-marker spec sheet. Read-only, not part of our pipeline.
 - **Project-wide guidance for Claude Code:** [`../CLAUDE.md`](../CLAUDE.md) (workspace root).
 - **Per-module READMEs** (`src/<module>/README.md`):

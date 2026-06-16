@@ -9,7 +9,7 @@ overlap duplicates. This recovers the small/dense/overlapping heads in phone
 images that get lost when a big frame is squashed to 1280.
 
 Why this exists + the math (tile count, edge overlap, the merge): docs/SAHI_EXPLAINED.md.
-Design decisions (sahi pkg for the merge only, simple loop first): docs/SAHI_IMPLEMENTATION_PLAN.md.
+Design decisions (sahi pkg for the merge only, simple loop first): docs/archive/SAHI_IMPLEMENTATION_PLAN.md (archived, local-only — plan complete).
 
 One image at a time on the GPU (all its tiles go in GPU-sized batches), but the CPU
 work is pipelined the same way yolo_v1_pipelined does it: while the GPU runs image N's
@@ -126,11 +126,68 @@ def infer_tiles(model, img_np, crops, offsets, img_w, img_h, cfg):
     return preds
 
 
-def merge_preds(preds, img_h, img_w, cfg):
-    """Merge the overlap duplicates from all tiles into one box per head using sahi's NMM/NMS.
-    Returns merged detections [M,5] = x1,y1,x2,y2,conf."""
+def _iou_ios(a, B):
+    """Overlap of one box a=[x1,y1,x2,y2] against every box in B=[M,4].
+    Returns (iou[M], ios[M]) where ios = intersection-over-smaller (the contained-box metric)."""
+    x1 = np.maximum(a[0], B[:, 0]); y1 = np.maximum(a[1], B[:, 1])
+    x2 = np.minimum(a[2], B[:, 2]); y2 = np.minimum(a[3], B[:, 3])
+    inter = np.clip(x2 - x1, 0, None) * np.clip(y2 - y1, 0, None)
+    area_a = (a[2] - a[0]) * (a[3] - a[1])
+    area_B = (B[:, 2] - B[:, 0]) * (B[:, 3] - B[:, 1])
+    iou = inter / np.maximum(area_a + area_B - inter, 1e-9)
+    ios = inter / np.maximum(np.minimum(area_a, area_B), 1e-9)
+    return iou, ios
+
+
+def merge_preds_conf_aware(preds, cfg):
+    """Confidence-aware greedy merge (the sahi_merge=CONF mode). Behaves like IOS-NMM (absorbs partial
+    seam fragments + duplicates) BUT protects a high-confidence box that is merely *contained* in a
+    bigger box — that's a distinct nested head (e.g. a small head in the empty corner of a big diagonal
+    head's axis-aligned box), not a fragment, so swallowing it would lose a real head.
+    Per overlapping pair (keeper = the higher-conf box, processed first):
+      - IOU >= dup_iou           -> same head detected twice -> absorb (true duplicate)
+      - IOS >= match_threshold   -> one box contained in the other (low IOU):
+            absorb only if its conf < protect_conf (a faint partial = fragment); else KEEP it (nested head)
+      - otherwise                -> keep.
+    Absorbed boxes union into the keeper, conf = max (same as NMM)."""
     if len(preds) == 0:
         return preds
+    ios_thr = float(cfg.method.sahi_match_threshold)
+    dup_iou = float(cfg.method.sahi_dup_iou_threshold)
+    protect = float(cfg.method.sahi_protect_conf)
+    boxes = preds[np.argsort(-preds[:, 4])].astype(np.float32)   # highest conf first
+    used = np.zeros(len(boxes), dtype=bool)
+    out = []
+    for i in range(len(boxes)):
+        if used[i]:
+            continue
+        used[i] = True
+        keep = boxes[i].copy()
+        rest = np.where(~used)[0]
+        if len(rest):
+            iou, ios = _iou_ios(keep[:4], boxes[rest][:, :4])
+            confs = boxes[rest][:, 4]
+            absorb = (iou >= dup_iou) | ((ios >= ios_thr) & (confs < protect))
+            take = rest[absorb]
+            if len(take):
+                used[take] = True
+                grp = boxes[np.append(i, take)]
+                keep[0], keep[1] = grp[:, 0].min(), grp[:, 1].min()
+                keep[2], keep[3] = grp[:, 2].max(), grp[:, 3].max()
+                keep[4] = grp[:, 4].max()
+        out.append(keep)
+    return np.array(out, dtype=np.float32)
+
+
+def merge_preds(preds, img_h, img_w, cfg):
+    """Merge the overlap duplicates from all tiles into one box per head using sahi's NMM/NMS.
+    Returns merged detections [M,5] = x1,y1,x2,y2,conf. The tiles were already run at
+    conf_threshold_good_box, so every box here is >= the keep line — no sub-threshold box can leak
+    into the NMM union and reshape a good box (that was the floor bug)."""
+    if len(preds) == 0:
+        return preds
+    if cfg.method.sahi_merge.upper() == "CONF":
+        return merge_preds_conf_aware(preds, cfg)
     obj_preds = [
         ObjectPrediction(bbox=[float(x1), float(y1), float(x2), float(y2)],
                          category_id=0, category_name="wheat",
@@ -237,6 +294,7 @@ def run_yolo_phase_sahi(image_folders, cfg):
     print("=" * 50)
     print(f"  slice={cfg.method.sahi_slice_size}px  overlap={cfg.method.sahi_overlap_ratio} "
           f"merge={cfg.method.sahi_merge}/{cfg.method.sahi_match_metric}@{cfg.method.sahi_match_threshold} "
+          f"conf={cfg.method.conf_threshold_good_box}  "
           f"full_image_pass={cfg.method.sahi_full_image_pass}  tile_batch={cfg.method.sahi_tile_batch_size}")
 
     weights_dir = os.path.join(os.path.dirname(__file__), "..", "weights")
@@ -247,9 +305,10 @@ def run_yolo_phase_sahi(image_folders, cfg):
         print(f"ERROR: Wheat model not found at {wheat_model}")
         return 0
 
-    # Load YOLO once (same as yolo_v1). conf=nms_floor so tiles keep the full range before merge.
+    # Load YOLO once (same as yolo_v1). Tiles run AT the keep line (conf_threshold_good_box): SAHI has
+    # one confidence threshold, so no sub-threshold box can leak into the NMM union and reshape good boxes.
     model = torch.hub.load(yolo_dir, 'custom', path=wheat_model, source='local')
-    model.conf = cfg.method.conf_threshold_nms_floor
+    model.conf = cfg.method.conf_threshold_good_box
     model.iou  = cfg.method.iou_threshold_nms
     model.classes = list(cfg.method.classes_to_detect)
 

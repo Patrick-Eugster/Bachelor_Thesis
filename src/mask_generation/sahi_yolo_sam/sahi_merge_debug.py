@@ -30,9 +30,14 @@ import json
 import shutil
 import datetime
 import colorsys
+import warnings
 import yaml
 import numpy as np
 import torch
+
+# the bundled yolov5 calls the old torch.cuda.amp.autocast API, which newer torch deprecated.
+# it's harmless (inference is unaffected) — silence just that one FutureWarning to keep output clean.
+warnings.filterwarnings("ignore", message=r".*torch\.cuda\.amp\.autocast.*", category=FutureWarning)
 
 import hydra
 from omegaconf import DictConfig
@@ -50,8 +55,8 @@ from eval_yolo_boxes import compute_iou_matrix, get_eval_experiment
 
 
 def load_yolo(cfg):
-    """Load the same YOLO model the SAHI pipeline uses, set conf=nms_floor so tiles keep the full
-    confidence range before the merge (exactly as run_yolo_phase_sahi does)."""
+    """Load the same YOLO model the SAHI pipeline uses, set conf=conf_threshold_good_box so tiles run at
+    the single SAHI keep line (exactly as run_yolo_phase_sahi does — no sub-threshold boxes enter merge)."""
     base = os.path.dirname(sp.__file__)
     weights_dir = os.path.join(base, "..", "weights")
     yolo_dir    = os.path.join(base, "..", "yolov5")
@@ -59,7 +64,7 @@ def load_yolo(cfg):
     if not os.path.exists(wheat_model):
         raise FileNotFoundError(f"Wheat model not found at {wheat_model}")
     model = torch.hub.load(yolo_dir, 'custom', path=wheat_model, source='local')
-    model.conf = cfg.method.conf_threshold_nms_floor
+    model.conf = cfg.method.conf_threshold_good_box
     model.iou  = cfg.method.iou_threshold_nms
     model.classes = list(cfg.method.classes_to_detect)
     return model
@@ -94,9 +99,14 @@ def draw_clusters(image_path, preds, merged, out_path, iou_threshold):
     assign = iou.argmax(axis=1)
     best   = iou.max(axis=1)
 
-    # final boxes: thick outline in the cluster color
+    merged_conf = np.asarray(merged, dtype=np.float32).reshape(-1, 5)[:, 4]
+    font = cc._load_font(28)
+    # final boxes: thick outline in the cluster color + the merged box's confidence (white/stroke)
     for j, (x1, y1, x2, y2) in enumerate(merged4):
-        draw.rectangle([x1, y1, x2, y2], outline=_cluster_color(j), width=4)
+        color = _cluster_color(j)
+        draw.rectangle([x1, y1, x2, y2], outline=color, width=4)
+        draw.text((x1, max(0, y1 - 30)), f"{merged_conf[j]:.2f}", fill=(255, 255, 255),
+                  font=font, stroke_width=2, stroke_fill=color)
     # raw boxes: thin outline in their final box's color (gray if they matched nothing)
     for i, (x1, y1, x2, y2) in enumerate(preds4):
         if best[i] >= iou_threshold:
@@ -140,6 +150,7 @@ def run(cfg):
         'merge': str(cfg.method.sahi_merge),
         'match_metric': str(cfg.method.sahi_match_metric),
         'match_threshold': float(cfg.method.sahi_match_threshold),
+        'conf': float(cfg.method.conf_threshold_good_box),
         'full_image_pass': bool(cfg.method.sahi_full_image_pass),
     }
     print(f"\n{'=' * 64}\n SAHI MERGE DEBUG\n{'=' * 64}")
@@ -173,16 +184,18 @@ def run(cfg):
             n_raw, n_final = len(preds), len(merged)
 
             tile_boxes = np.array([[x0, y0, x1, y1] for (x0, y0, x1, y1) in tiles], dtype=np.float32)
-            # 1. tile grid + raw per-tile boxes
+            raw_labels    = cc.fmt_conf_labels(preds[:, 4].tolist())    # conf per raw box
+            merged_labels = cc.fmt_conf_labels(merged[:, 4].tolist())   # conf per merged box
+            # 1. tile grid + raw per-tile boxes (labeled with conf)
             cc.draw_overlay(img_path,
                             {'tile (slice)': ((255, 255, 0), tile_boxes),
-                             'raw box':      ((0, 180, 255), preds[:, :4])},
+                             'raw box':      ((0, 180, 255), preds[:, :4], raw_labels)},
                             os.path.join(dirs['tiles'], stem + '.jpg'), line_width=2)
             # 2. before merge (duplicates visible)
-            cc.draw_overlay(img_path, {'raw (pre-merge)': ((255, 80, 80), preds[:, :4])},
+            cc.draw_overlay(img_path, {'raw (pre-merge)': ((255, 80, 80), preds[:, :4], raw_labels)},
                             os.path.join(dirs['before_merge'], stem + '.jpg'), line_width=2)
             # 3. after merge (final boxes)
-            cc.draw_overlay(img_path, {'merged': ((40, 200, 40), merged[:, :4] if n_final else merged)},
+            cc.draw_overlay(img_path, {'merged': ((40, 200, 40), merged[:, :4], merged_labels)},
                             os.path.join(dirs['after_merge'], stem + '.jpg'), line_width=2)
             # 4. clusters (which raw boxes collapsed into which final box)
             draw_clusters(img_path, preds, merged, os.path.join(dirs['clusters'], stem + '.jpg'), iou_thr)
