@@ -1,0 +1,35 @@
+# @package _global_
+# Config for sahi_mask_dedup.py — EXPERIMENTAL standalone mask-based dedup. Does NOT touch the normal
+# SAHI/SAM pipeline (run_mask_generation / sahi_yolo_pipelined / sam_v1 are all untouched).
+# Flow: SAHI tiles (NO box-merge) -> SAM one clean mask per box (point + negative-neighbour prompts)
+#       -> dedup on MASK overlap -> save masks/ + bboxes/ + viz. Fixes nested diagonal heads that the
+#       normal box-IOS merge wrongly absorbs. Justification spike: docs/SAHI_EVAL_RESULTS.md §6.
+# Run:  python src/mask_generation/sahi_yolo_sam/sahi_mask_dedup.py plot_glob=plot_461 limit_images=1
+defaults:
+  - /dataset: fip                            # input images + result paths
+  - method: sahi_yolo_sam                    # SAHI tiling knobs + YOLO/SAM weights + conf_threshold_good_box
+  - override /hydra/job_logging: disabled
+  - override /hydra/hydra_logging: disabled
+  - _self_
+
+# which plots (glob under dataset.input_dir) and how many images per plot (0 = all)
+plot_glob: "*"
+limit_images: 0
+labeled_only: false                          # true = only GT-labeled images (quick A/B vs the box-merge runs)
+
+# writes to results/mask_generation/{dataset}/{plot}/sahi_yolo_sam/{experiment_name}/{bboxes,masks,viz}/
+experiment_name: "maskdedup_v1"
+prepend_date: false
+
+# --- mask-dedup knobs ---
+pre_collapse_iou: 0.8    # before SAM: drop near-identical boxes (IoU>=this), keep highest conf — fewer SAM calls (nested heads have low IoU, untouched)
+neg_ios_min: 0.3         # a box overlapping this one (box-IoS>=this) is a NEGATIVE-point candidate ("this head, not that one")
+neg_iou_max: 0.5         # ...but ONLY if box-IoU<this — so a near-duplicate of the SAME head (high IoU) is NOT used as a negative (that would put a negative point on head i itself -> garbage mask)
+max_neg: 5               # cap negative points per box (nearest by center)
+mask_dedup_ios: 0.6      # two masks overlapping (mask-IoS>=this) = SAME head -> merge; below = distinct -> keep both
+save_viz: true           # write viz/ colored-mask overlay for eyeballing
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .

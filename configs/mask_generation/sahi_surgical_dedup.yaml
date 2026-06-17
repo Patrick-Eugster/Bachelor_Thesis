@@ -1,0 +1,42 @@
+# @package _global_
+# Config for sahi_surgical_dedup.py — EXPERIMENTAL standalone SURGICAL/HYBRID mask dedup.
+# Does NOT touch the normal pipeline (run_mask_generation / sahi_yolo_pipelined / sam_v1) OR the v1
+# mask-dedup (sahi_mask_dedup.py) — all untouched.
+# Flow: SAHI tiles -> TIER 2 IoU-NMS collapse (same head in 2 tiles) -> classify survivors ->
+#       TIER 1 clean singles kept as-is (NO SAM) ; TIER 3 contained pairs get SAM (point + negative
+#       neighbour) to decide split-vs-keep on MASK overlap. SAM only runs on the few ambiguous boxes.
+# Doc: docs/SAHI_SURGICAL_DEDUP.md
+# Run: python src/mask_generation/sahi_yolo_sam/sahi_surgical_dedup.py plot_glob=plot_461 limit_images=1
+defaults:
+  - /dataset: fip                            # input images + result paths
+  - method: sahi_yolo_sam                    # SAHI tiling knobs + YOLO/SAM weights + conf_threshold_good_box
+  - override /hydra/job_logging: disabled
+  - override /hydra/hydra_logging: disabled
+  - _self_
+
+# which plots (glob under dataset.input_dir) and how many images per plot (0 = all)
+plot_glob: "*"
+limit_images: 0
+labeled_only: false                          # true = only GT-labeled images (quick A/B vs the box-merge runs)
+
+# writes to results/mask_generation/{dataset}/{plot}/sahi_yolo_sam/{experiment_name}/{bboxes,masks,viz}/
+experiment_name: "surgical_v4"   # KEPT config (best merges/splits, top recall). v1=point-only(leaky); v2=box+guard; v3=dm.45; v4=ci.45/dm.45
+prepend_date: false
+
+# --- surgical tiering knobs ---
+nms_merge_iou: 0.5       # TIER 2: IoU>=this = SAME head detected in two tiles -> NMS-merge (keep max-conf), NO SAM. Nested heads have LOW IoU so they survive this step.
+contained_ios: 0.45      # TIER 3 gate: a survivor box-IoS>=this vs another survivor = "contained" (kept v4 value; sweep showed precision ~flat 0.6->0.45)
+contained_iou_max: 0.5   # TIER 3 gate: ...AND box-IoU<this -> it's a nested pair (not a tier-2 duplicate) -> AMBIGUOUS -> SAM
+# --- SAM prompt knobs (only used on TIER 3 boxes) ---
+use_box_prompt: true     # TIER 3 SAM: prompt with the detection BOX + point + negatives so the mask is BOUNDED to the head (stops the leaks: box around several heads / giant empty box). false = old point-only prompt.
+max_area_ratio: 1.5      # area guard: if a SAM mask's bbox area > this × the detection-box area it LEAKED -> drop the mask, keep the raw YOLO box. 0 disables the guard.
+neg_ios_min: 0.3         # a box overlapping this one (box-IoS>=this) is a NEGATIVE-point candidate ("this head, not that one")
+neg_iou_max: 0.5         # ...but ONLY if box-IoU<this — so a near-duplicate of the SAME head is NOT used as a negative
+max_neg: 5               # cap negative points per box (nearest by center)
+decide_mask_ios: 0.45    # TIER 3 decision: two masks overlapping (mask-IoS>=this) = SAME head -> drop; below = distinct -> keep both (kept v4 value)
+save_viz: true           # write yolo_vis/ (boxes, 🟢 tier1 / 🟣 tier3) + viz/ (tier3 masks overlaid)
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .

@@ -6,6 +6,42 @@ Tools used: `eval_compare_3way.py` (SAHI vs YOLO vs GT), `eval_compare_nogt.py`,
 
 ---
 
+## 0. IoU vs IoS — quick reference (these come up everywhere below)
+
+Both measure **how much two boxes (or masks) overlap**, as a number from 0 to 1. They differ *only* in what they divide by:
+
+```
+        overlap area                          overlap area
+IoU = ──────────────────────        IoS = ────────────────────
+       area of BOTH combined                area of the SMALLER
+       (the UNION)                           one
+```
+
+- **IoU = Intersection over Union** — divides by the **union** (both boxes together). Symmetric, "fair." Asks: *are these basically the same box (same size, same place)?*
+- **IoS = Intersection over Smaller** — divides by the **smaller** box. Asks: *is the smaller one mostly inside the bigger one?* (sensitive to **containment**).
+
+**Worked example** — a small box (80×80 = 6400) sitting fully inside a big box (200×100 = 20000):
+
+```
+┌─────────────────┐   intersection = 6400 (the whole small box)
+│ ┌────┐          │
+│ │ ▓▓ │  BIG     │   IoU = 6400 / 20000 = 0.32   ← looks DIFFERENT (low)
+│ └────┘          │   IoS = 6400 /  6400 = 1.00   ← looks IDENTICAL (high)
+└─────────────────┘
+```
+
+So the **same pair** gives a *low* IoU but a *high* IoS. That single difference drives every merge decision here:
+
+| relationship | IoU | IoS | merge interprets it as |
+|---|---|---|---|
+| same head detected twice (boxes coincide) | high | high | **duplicate → merge** |
+| small head nested in a big diagonal head's box | **low** | **high** | containment — IoS says "merge", IoU says "keep" |
+| two heads side by side, barely touching | low | low | **distinct → keep** |
+
+That's why **IOS over-merges** the nested case (IoS=1 → absorbs the small head) while **IOU under-merges** seam fragments (their boxes are offset → low IoU → left as duplicates). Neither metric can tell "nested distinct head" from "fragment of one head" apart, because both look the same to a box-overlap number — see §3. The exact same IoU/IoS definitions apply to **masks** (pixels instead of box area) in the mask-dedup approach ([`SAHI_MASK_DEDUP.md`](SAHI_MASK_DEDUP.md)).
+
+---
+
 ## 1. The floor bug (why SAHI first looked worse)
 
 The first comparison (`metrics_v2` / `cmp_v2`) gave SAHI **F1 0.825 vs YOLO 0.881** — worse on both precision and recall, while emitting *more* boxes. Diagnosis:
@@ -76,11 +112,14 @@ Motivated by a visible failure: **a small head nested in a big diagonal head's a
 
 ---
 
-## 4. The real fix (not done) + phone relevance
+## 4. The real fix (BUILT) + phone relevance
 
-The nested-head problem is the **axis-aligned-box-on-diagonal-head** limitation. The only approach with the right information is **mask-based dedup**: SAM gives each head a distinct mask, so two heads have separate masks even when their boxes nest — mask overlap separates exactly the cases box overlap cannot. Cost: reorder the pipeline so SAM runs before the dedup. **Not implemented.**
+The nested-head problem is the **axis-aligned-box-on-diagonal-head** limitation. The only approach with the right information is **mask-based dedup**: SAM gives each head a distinct mask, so two heads have separate masks even when their boxes nest — mask overlap separates exactly the cases box overlap cannot. **Now built — two variants, full write-up in [`SAHI_MASK_DEDUP.md`](SAHI_MASK_DEDUP.md) (v1) and [`SAHI_SURGICAL_DEDUP.md`](SAHI_SURGICAL_DEDUP.md) (surgical):**
+- **v1 (SAM everything):** failed — leaky point-only masks *swallowed* heads (recall 0.832, merges 47). Dead.
+- **surgical (SAM only the ambiguous contained pairs, box+point prompt + area guard):** **solves the over-merge** (merges 26→**15**, below even YOLO) and has the **best recall (0.959)**. But IOS keeps the better **F1 (0.865 vs 0.851)** — surgical carries ~80 extra FPs from un-absorbed seam fragments, and a knob sweep (decide_mask_ios, contained_ios) showed that gap is **structural, not tunable**.
+- **Net on FIP:** IOS (v3) stays production (best F1). Surgical is the **recall champion** kept for phone.
 
-**Phone relevance:** phone images are shot **from the side**, so many wheat heads are **diagonal** in frame — the empty-corner / nested-head case will be **more common** than on FIP's overhead views. So on phone, IOS may over-merge more, and CONF or mask-based dedup may become worth it. **Decision: revisit when running SAHI on phone; for now FIP uses IOS (v3).**
+**Phone relevance:** phone images are shot **from the side**, so many wheat heads are **diagonal** in frame — the empty-corner / nested-head case will be **more common** than on FIP's overhead views. So on phone, IOS over-merges more, and **surgical mask-dedup** (top recall + fixed merges) is the better tool. **Decision: FIP uses IOS (v3); evaluate surgical vs IOS on phone when SAHI runs there.**
 
 ---
 
@@ -91,4 +130,30 @@ SAHI default = the **v3** setup:
 - `sahi_merge: "NMM"`, `sahi_match_metric: "IOS"`, `sahi_match_threshold: 0.5`
 - `sahi_slice_size: 1280`, `sahi_overlap_ratio: 0.3`, `sahi_full_image_pass: true`
 
-**Net:** on FIP, SAHI is a solid, honest win over plain YOLO on recall (its intended purpose), with a small precision deficit that is partly a GT-completeness artifact. Phenotyping-grade nested-head separation is a phone-era, mask-based follow-up.
+**Net:** on FIP, SAHI is a solid, honest win over plain YOLO on recall (its intended purpose), with a small precision deficit that is partly a GT-completeness artifact. Phenotyping-grade nested-head separation is a mask-based follow-up — feasibility now confirmed (§6).
+
+---
+
+## 6. Spike: can SAM separate nested heads? (mask-based dedup feasibility)
+
+A **spike** = a quick throwaway experiment to test one risky assumption before committing to a build. Before building **mask-based dedup** (the proper fix for the nested-head case §3–4 — dedup on *mask* overlap instead of *box* overlap, so a small head inside a big diagonal head's box isn't absorbed), we tested the one assumption it rests on: **does SAM return distinct masks for two heads whose boxes nest, or does it blob them?**
+
+**Tool:** `src/analysis/sam_nested_spike.py` (throwaway, not pipeline code). Uses the **GT** boxes (one box per head) to auto-find nested pairs (high box-IoS, low box-IoU = small head in a big head's corner), prompts SAM for each box, and compares the two resulting masks (mask-IoS, low = separated). Tested on 10 nested pairs across the 7 FIP GT images. Viz → `docs/analysis_results/sam_nested_spike/`.
+
+**Result (separated = mask-IoS < 0.5):**
+
+| SAM prompt mode | separated | note |
+|---|---|---|
+| **box** (segment the rectangle) | 5/10 | a big box also contains the corner neighbour → SAM grabs both |
+| **center point only** | 3/10 | *worse* — a lone point makes SAM grab the biggest object touching it |
+| **center point + negative on neighbour** | **8/10** | 👍 "this head" + 👎 "not that one" → clean separation |
+
+**Verdict: GREEN LIGHT.** Mask-based dedup will fix the nested-head case — but **only with the right prompt**: a positive point at the box centre **plus negative points at the centres of the overlapping neighbour boxes** ("this head, not those"). Raw box prompts and lone points don't work. The 2 remaining failures were both `plot_463` — heads so entangled they're one visual clump from a single view (unfixable by any single-view method; the pipeline's multi-view 3D segmentation resolves those later anyway).
+
+**Build recipe (for when implemented, FIP + phone):**
+1. SAHI phase: skip the box-merge; pass pre-merge boxes through (optionally a safe high-IOU pre-collapse of obvious duplicates).
+2. SAM phase: for each box, prompt with **positive centre point + negative points = centres of overlapping boxes** → one clean per-head mask. (Box overlap is the cheap filter for *which* boxes are candidates / where the negatives go.)
+3. Dedup on **mask** overlap: high overlap = same head → merge; low overlap = distinct heads → keep both.
+4. Write `bboxes/` = bounding box of each kept mask, index-aligned with `masks/` (segmentation step 4 + box eval keep working — they read box `i` ↔ mask `i`).
+
+Estimated ~1–2 days. Reuses the existing SAM phase (same model, same per-image encode); the new work is the point+negative prompting, the mask dedup, and re-deriving boxes from the final masks.
