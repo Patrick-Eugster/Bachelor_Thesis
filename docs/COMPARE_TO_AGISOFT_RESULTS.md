@@ -248,3 +248,24 @@ These three together should rule out the "Conclusion 2" candidate causes without
 | field_D/20250530 | 60.0 | 3.74 | 16.51 | 16.40 | −0.10 |
 
 **Interesting:** the session with the *worst* SfM agreement to Agisoft (`field_D/20250530`, 60 mm / 3.7° median errors) has the *smallest* 3DGS quality gap (and even reverses direction). This suggests that for our wheat scenes, 3DGS quality is **not sensitive to SfM precision** at this level — bundle adjustment refines the camera poses during 3DGS training anyway, and the small initial differences wash out. This further weakens any case for engineering effort on the SfM side.
+
+---
+
+## Extended comparison — intrinsics, point cloud, reprojection (added)
+
+`compare_to_agisoft.py` was extended beyond camera poses with **3 opt-in blocks** (toggles in `configs/preprocessing/compare_to_agisoft.yaml`: `compare_intrinsics` / `compare_points` / `compare_reproj`, default on; `points_trim_pct`). The original pose output is untouched. Distinction: **intrinsics** and **point cloud** are *ours-vs-Agisoft* differences; **reprojection** is each model's *internal* self-consistency reported side by side (not a distance between them).
+
+### What each block measures
+- **Intrinsics** — focal length normalized as **f/W** + horizontal FOV. (Both sides are `SIMPLE_PINHOLE` with the principal point pinned at center, so there's nothing to compare on `cx/cy`.)
+- **Point cloud** — symmetric **Chamfer nearest-neighbour distance** (scipy `cKDTree`) after applying the *same* Umeyama (s,R,t) from the pose alignment to our cloud. The two clouds are independent triangulations with no point correspondence, so NN distance is the right tool. Reports both directions + a trimmed mean.
+- **Reprojection** — px error **recomputed from scratch the same way for BOTH** (project each `point3D` into its observing cameras via the id→xyz map from `images.txt`'s 2D keypoints). Agisoft's exported `ERROR` column is **all zeros**, so it had to be recomputed; ours is cross-checked against its stored `ERROR` column.
+
+### Results — `field_A/20250609`
+| Metric | Ours | Agisoft | Read |
+|---|---|---|---|
+| **Focal f/W** | 0.7537 (FOVx 67.1°) | 0.7686 (FOVx 66.1°) | our focal **−1.94%** (slightly wider); Agisoft used **2** camera groups (HDR res mix), we forced 1 |
+| **Point cloud** ours→agisoft | **median 16.7 mm** | — | our points sit ~17 mm from a real Agisoft point ⇒ **geometry accurate** (matches the 12 mm pose agreement) |
+| **Point cloud** agisoft→ours | median 58.5 mm | — | Agisoft has 8× more points (64k vs 7.5k) ⇒ we are **sparser**, not wrong → "**accurate but sparse**"; the asymmetry *is* the finding |
+| **Reprojection** | **1.28 px** | **0.72 px** | both healthy sub-1.3 px; Agisoft's commercial BA fits tighter. Cross-check validated the recompute (1.28 vs stored 1.24) |
+
+**Takeaway:** the benchmark now spans **poses (12 mm / 0.5°), intrinsics (−1.9% focal), geometry (17 mm where it overlaps), and internal fit (1.3 vs 0.7 px)** — a fuller COLMAP-vs-Agisoft picture than poses alone. What it still does **not** give is *metric ground-truth* accuracy — that's what the marker work adds (see [MARKER_INTEGRATION_PLAN.md](MARKER_INTEGRATION_PLAN.md)).

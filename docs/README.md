@@ -18,7 +18,8 @@ Quick map of every doc in this folder, grouped by topic. Each line is a one-sent
 |---|---|---|
 | [SFM_PIPELINE_COMPARISON.md](SFM_PIPELINE_COMPARISON.md) | ✅ | Our COLMAP preprocessing vs the supervisor's Agisoft Metashape — the two functional gaps (metric scale, marker GCPs) and when to use which `sparse/`. |
 | [AGISOFT_QUALITY_METRICS.md](AGISOFT_QUALITY_METRICS.md) | ✅ | How to read `3D Error` / `Distance Error` / `Reproj Error` in `marker_errors_summary.csv` — i.e. which Agisoft sessions to trust as references. |
-| [COMPARE_TO_AGISOFT_RESULTS.md](COMPARE_TO_AGISOFT_RESULTS.md) | ✅ | 4-session benchmark of `compare_to_agisoft.py`: per-session translation/rotation error vs Agisoft, "good" thresholds, and the blurry `field_D/20250530` outlier. |
+| [COMPARE_TO_AGISOFT_RESULTS.md](COMPARE_TO_AGISOFT_RESULTS.md) | ✅ | 4-session benchmark of `compare_to_agisoft.py`: per-session translation/rotation error vs Agisoft, "good" thresholds, the blurry `field_D/20250530` outlier, **and the extended blocks** (intrinsics −1.9% focal, point-cloud Chamfer "accurate-but-sparse" 16.7 mm, reprojection 1.28 vs 0.72 px). |
+| [MARKER_INTEGRATION_PLAN.md](MARKER_INTEGRATION_PLAN.md) | ✅ | **Plan** for bringing the Agisoft coded markers into our COLMAP for metric scale + a distance-accuracy number vs Agisoft. The phone-vs-FIP data map (projections / positions / distances), why detection is only *half* the job, the detector decision (template-match the 6 codes, not CCTDecode), and the 4-step phone pipeline. **Not yet coded — next step is the phone detector.** |
 
 ### 🎯 Pixel-shift fix (reconstruction correctness)
 | Doc | | What it's about |
@@ -51,7 +52,7 @@ Quick map of every doc in this folder, grouped by topic. Each line is a one-sent
 | Doc | | What it's about |
 |---|---|---|
 | [SPARSENESS_ANALYSIS.md](SPARSENESS_ANALYSIS.md) | ✅ | SfM sparseness of all FIP plots + phone sessions — FIP and phone are sparse in *opposite* ways (narrow-angle/dense vs wide-angle/sparse); maps each to a densification recommendation. |
-| [JPEG_QUALITY_ANALYSIS.md](JPEG_QUALITY_ANALYSIS.md) | ✅ | What JPEG does (chroma subsampling, 8×8 DCT, quantization) and its per-step impact — low for COLMAP/3DGS, high for SAM masks; **4:2:0 chroma is the real mask-edge cost**. |
+| [JPEG_QUALITY_ANALYSIS.md](JPEG_QUALITY_ANALYSIS.md) | ✅ | What JPEG does (chroma subsampling, 8×8 DCT, quantization) and its per-step impact — low for COLMAP/3DGS, high for SAM masks; **4:2:0 chroma is the real mask-edge cost**. §5 (added) — the `input/` JPGs are **native phone stills, NOT frames of the MP4** (different resolution + aspect ratio), checked with the reusable `src/preprocessing/inspect_video.py`; so no hidden double compression. |
 | [MASK_SIZE_ANALYSIS.md](MASK_SIZE_ANALYSIS.md) | ✅ | SAM wheat-head mask sizes (FIP vs phone) and the `JPEG @Npx` edge-impact metric — plus why even a small per-mask error matters across thousands of densely-packed heads. |
 
 ### 📚 Reference & data
