@@ -112,7 +112,50 @@ guess. For each phone session we sampled images and read, without altering anyth
 
 ---
 
-## 5. Caveats
+## 5. Are the JPGs actually extracted from the MP4? — No (checked)
+
+Each session folder also holds a raw **MP4** clip (in `video/`) next to the `input/` JPGs. The
+working **assumption was that the JPGs were extracted frames of that video** — which would mean a
+**double lossy round** (H.264 video compression *then* JPEG on top), and the right fix would be to
+re-extract straight to PNG to drop the second JPEG step.
+
+**We checked, and for our data the assumption is wrong — the JPGs are NOT frames of the video.**
+
+**Script:** [`src/preprocessing/inspect_video.py`](../src/preprocessing/inspect_video.py) (read-only,
+ffprobe). Run: `python src/preprocessing/inspect_video.py <video_folder> --compare-jpg <a_jpg>`.
+
+Evidence from `field_A/20250609` (`VID_20250609_112414.mp4` vs `input/IMG_20250609_112212.jpg`):
+
+| | MP4 video | `input/` JPG |
+|---|---|---|
+| Resolution | 3840×2160 | **4032×3024** |
+| Aspect ratio | 16:9 (1.778) | **4:3 (1.333)** |
+| Megapixels | 8.29 MP | **12.2 MP** |
+| Codec / format | H.264 High, 8-bit `4:2:0` | JPEG (see §3) |
+
+The JPG is a **different aspect ratio *and* higher resolution** than the video — you cannot get a
+4:3, 12 MP image out of a 16:9, 8.3 MP video (no way to add those pixels or that extra vertical
+field of view). 4032×3024 / 12 MP / 4:3 is the phone's **native still-photo** output; 3840×2160 is
+4K-UHD video. So the `input/` JPGs are **genuine native photos**, recorded *separately* from the MP4
+(the MP4 is just a parked 4K clip — see CLAUDE.md "video/ … parked, unused for now").
+
+**Consequences:**
+- **No double-compression problem for the stills.** The JPEG cost in §1–§4 is the *only* lossy
+  round on our `input/` images — there is no hidden H.264 round underneath. The 12 MP stills are
+  already the best available source (higher res than any video frame).
+- The MP4 itself is a viable *supplementary* source for denser viewpoints if ever needed, but it's a
+  **fallback, not an upgrade**: lower res (8.3 MP), 8-bit `4:2:0`, and only ~103 clean I-frames over
+  103 s (1/sec, GOP ~30) — the other ~2979 frames are predicted (motion-blur/blocking prone). If
+  used, extract **I-frames only** (or sharpness-filter), not every frame.
+
+> ⚠️ The compare heuristic in `inspect_video.py` reports `different_aspect` / `jpg_larger` /
+> `downscaled` / `same_resolution`. Only `same_resolution` (+ matching aspect) would indicate a
+> JPG that really *is* a video frame. None of our sessions show that — but rerun the one-liner on
+> the other three sessions if you want to confirm each individually.
+
+---
+
+## 6. Caveats
 
 - `quality~` is an **estimate** (inverts the standard IJG luma table; assumes IJG-derived tables,
   which most phone encoders use). Good enough to separate "near-lossless ~95" from "destructive

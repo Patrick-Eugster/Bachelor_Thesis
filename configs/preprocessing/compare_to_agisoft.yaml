@@ -26,6 +26,12 @@ output_file: logs/compare_to_agisoft.json
 # include rotation comparison? (computes per-camera rotation error in degrees)
 include_rotation: true
 
+# --- extra comparisons (all opt-in, default on) ---
+compare_intrinsics: true     # focal length (resolution-normalized f/W) + horizontal FOV, ours vs Agisoft
+compare_points: true         # cloud-to-cloud nearest-neighbour (Chamfer) distance, ours vs Agisoft (mm)
+compare_reproj: true         # reprojection error in px, recomputed the same way for BOTH (internal quality)
+points_trim_pct: 5.0         # Chamfer: drop the worst N% of NN distances as outlier triangulations
+
 # hydra: don't create outputs/ (we save our own log under {source_path}/logs/)
 hydra:
   output_subdir: null
