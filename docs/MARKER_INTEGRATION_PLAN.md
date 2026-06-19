@@ -1,6 +1,14 @@
 # Marker Integration into COLMAP — Plan & Data Map
 
-Plan for bringing the surveyed **coded ground markers** into our COLMAP pipeline. Status: **planned, not yet coded.** Next concrete step is the **phone marker detector** (Stage A below).
+Plan for bringing the surveyed **coded ground markers** into our COLMAP pipeline.
+
+**Status (current):** Stage A (the marker *localizer*) is under active development — four heuristic
+versions built (v1 square → v2 ellipses → v3 fiducial → v4 hybrid; full write-up in
+[`MARKER_DETECTION_VERSIONS.md`](MARKER_DETECTION_VERSIONS.md)). Heuristics have **hit their ceiling**
+(recall/precision/center can't all be satisfied by hand-tuned rules on the canopy). **Next step:
+Option A = template-match the central bullseye (no training), escalating to Option B = a trained
+CNN/YOLO detector if needed.** Detection is the **prerequisite for everything below** — and for both
+the post-hoc *and* the in-SfM use of markers.
 
 ---
 
@@ -8,9 +16,11 @@ Plan for bringing the surveyed **coded ground markers** into our COLMAP pipeline
 
 Our COLMAP currently has **no metric scale** (it relies on a Umeyama transform onto Agisoft to recover meters — scale ≈ 0.559 on `field_A/20250609`). The markers give us:
 
-1. **A metric-accuracy number** — marker-to-marker distances from our reconstruction vs ground truth, directly comparable to the supervisor's Agisoft "Dist Error" (~5–15 mm). **This is the immediate target.**
-2. **Metric scale independent of Agisoft** (a true phone-only pipeline) — later.
-3. **Optional**: help SfM (tie-points) / refine calibration — later, low priority.
+1. **A metric-accuracy number** — marker-to-marker distances from our reconstruction vs ground truth, directly comparable to the supervisor's Agisoft "Dist Error" (~5–15 mm). **This is the immediate, easy validation target.**
+2. **Markers used IN the SfM itself** — the real goal (decided with supervisor's framing), not just post-hoc. See §11b. Gives metric scale + better SfM natively.
+3. **Optional**: refine calibration — later, low priority.
+
+**Post-hoc vs in-SfM — both need the detector first.** Whether we triangulate markers *after* SfM (post-hoc, easy, validates the detector) or feed them *into* SfM (the goal, §11b), the prerequisite is identical: the 2D marker points from Stage A. So the detector is step one either way. Natural order: get detection solid → post-hoc validation → inject into SfM.
 
 ## 2. What the markers are
 
@@ -89,9 +99,9 @@ STEP 3  Compute our marker-to-marker distances
 STEP 4  Compare to GT distances (tape xlsx / survey)    → accuracy vs Agisoft's ~15 mm
 ```
 
-Everything except Step 1 already exists. **Detect on `images/`** (undistorted — matches our `sparse/0` poses). Outputs → `{source_path}/marker_vis/*.png` + `{source_path}/logs/marker_*.json`. Read-only on the data, no pipeline changes.
+Everything except Step 1 already exists. **Detect on `images/`** (undistorted — matches our `sparse/0` poses). Outputs → `{source_path}/marker_vis*/*.png` + `{source_path}/logs/marker_detections*.json`. Read-only on the data, no pipeline changes.
 
-**Immediate next step — Stage A:** `detect_markers.py` doing **localization + overlay PNGs** on `field_A/20250609`, then **eyeball the overlays** to confirm all 6 targets are found before adding IDs (Stage B) or triangulation (Step 2).
+**Step 1 status:** four heuristic localizers built (v1–v4, see [`MARKER_DETECTION_VERSIONS.md`](MARKER_DETECTION_VERSIONS.md)); v4 (hybrid, contrast-relative thresholds) is best but still has poor recall + occasional FPs + center drift → **heuristics hit their ceiling**. **Immediate next step = Option A: template-match the central bullseye** (rotation-invariant; correlation peak = exact center; no training). If recall on distant/occluded plates is insufficient → **Option B: a trained CNN/YOLO marker detector** (repurpose the repo's YOLO infra; label 6 markers in ~30–40 images; fiducial-snap inside each box for sub-pixel center). Only after Step 1 is solid do we move to Stage B (IDs) + Step 2 (triangulate).
 
 ## 9. Where markers actually help (honest)
 
@@ -110,6 +120,21 @@ Everything except Step 1 already exists. **Detect on `images/`** (undistorted �
 ## 11. FIP gold data (parked, available)
 
 `demoanlage2025_v0/FIP_single_row_exp_2024_reprocessed/`: plots 461–467, each with `colmap_reprocessed/` in **4 variants** (`{distorted,undistorted} × {jpg,png}`) + `marker_projections.csv`. The **distorted originals** would also let us run *our own* COLMAP on FIP (previously FIP came only as Agisoft output). Parked until FIP GT distances arrive; meanwhile it's an optional **sanity-check of the triangulation math** on gold 2D dots.
+
+## 11b. Using markers IN the SfM (the real goal, not post-hoc)
+
+Post-hoc triangulation only *measures* accuracy. The actual aim is to feed markers **into** COLMAP. Two levels (both need Stage A detections first):
+
+- **Level A — markers as reliable tie-points.** Inject the detected 2D marker points into COLMAP's database as extra cross-image matches. COLMAP triangulates + bundle-adjusts them with the SIFT points. Because markers are unambiguous and repeatable (unlike SIFT on **repetitive wheat** — the reason we already need `single_camera` + exhaustive matching), they add strong correct constraints → **better connectivity, less drift**. This mirrors Agisoft's `detectMarkers` *before* alignment.
+- **Level B — markers as Ground Control Points (GCPs).** Attach the **known surveyed XYZ** to the marker points and constrain the reconstruction to them → the model comes out in **real metric scale**, anchored to the markers, **no Umeyama-to-Agisoft needed**. In COLMAP: `model_aligner` with control points, or a constrained bundle adjustment via `pycolmap`.
+
+Full Agisoft-equivalent = **A + B**. More engineering (write marker observations into the COLMAP DB / use pycolmap), but very doable, and it's the genuine thesis contribution.
+
+## 11c. How false positives / detection quality actually matter (clarifications)
+
+- **Stage A only *proposes*.** "Fewer false positives in vX" = fewer *eyeballed* wrong proposals vs the image, not geometry-confirmed. The **rigorous** false-positive rejection is downstream: **multi-view triangulation consistency** (a real marker's rays intersect; a canopy FP's don't → rejected) + **ID matching** (Stage B: a real marker matches one of the 6 codes; an FP matches none).
+- **Coverage that matters = per-marker, not per-image.** Each of the 6 markers needs to be localized in **≥2 views over the whole set** to triangulate. Per-image count is irrelevant. More views per marker → better (noise averaging + RANSAC outlier rejection), diminishing after ~5–10.
+- **FPs do NOT touch COLMAP/3DGS in the post-hoc plan** — those are already trained without markers; a stray FP only adds noise to the marker triangulation (and usually won't triangulate at all). **Only if markers are injected into SfM (§11b) would an FP bias the reconstruction** — which is why detection precision + the ID/geometry filters matter before doing Level A/B.
 
 ---
 

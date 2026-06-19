@@ -1,0 +1,69 @@
+# @package _global_
+# Config for src/preprocessing/detect_markers_v4.py — Stage A marker localizer, VERSION 4
+# (HYBRID). v2 region finding (ellipses + white-surround + size-aware clustering) → then v3
+# fiducial search LOCALLY inside each region to snap the center to the white dot. A region
+# with no fiducial is dropped (extra false-positive rejection).
+# READ-ONLY: writes overlays to marker_vis_v4/ + logs/marker_detections_v4.json.
+#
+# Typical usage:
+#   python src/preprocessing/detect_markers_v4.py field=field_A plot=20250609
+#   python src/preprocessing/detect_markers_v4.py field=field_A plot=20250609 limit=5
+
+defaults:
+  - /dataset: phone
+  - override /hydra/job_logging: disabled
+  - override /hydra/hydra_logging: disabled
+  - _self_
+
+field: field_A
+plot: ???
+
+source_path: ${dataset.input_dir}/${field}/${plot}
+image_subdir: images
+output_vis_dir: marker_vis_v4
+output_json: logs/marker_detections_v4.json
+expected_markers: 6
+
+# === v2 region finding ===
+blur_ksize: 5
+canny_lo: 50
+canny_hi: 150
+min_contour_pts: 20
+min_ellipse_area: 80
+max_ellipse_area: 200000
+fit_ratio_lo: 0.7
+fit_ratio_hi: 1.3
+min_axis_ratio: 0.4
+# white tests are now CONTRAST-RELATIVE (local Otsu defines "bright = plate" per region), so
+# they adapt to sunlight/shadow/phone/compression instead of using a fixed brightness cutoff.
+white_v_min: 140         # (legacy / unused now that white-surround uses local Otsu)
+white_s_max: 70          # saturation ceiling kept — "white = desaturated" is fairly lighting-robust
+surround_scale_inner: 1.1
+surround_scale_outer: 1.8
+min_white_surround: 0.6      # slightly looser than v2's 0.65 — the fiducial check now backstops FPs
+cluster_reach_factor: 1.5
+cluster_min_reach: 25
+min_cluster_size: 2
+
+# === v3 fiducial search (run locally inside each region) ===
+fid_search_min: 60          # px — min half-window to search for the fiducial
+fid_search_factor: 1.2      # search window = this × region size (scales with plate apparent size)
+fid_min_area: 30            # px² — fiducial disk size band (local window, so generous)
+fid_max_area: 40000
+fid_min_radius: 3
+fid_min_circularity: 0.45   # round disk
+fid_min_solidity: 0.85      # solid/filled (arcs fail)
+center_inner_frac: 0.45     # look for the white dot within this fraction of the disk radius
+white_dot_v_min: 150        # brightness of the white center dot
+
+# if a region has NO detectable fiducial: false → drop it (precision); true → keep cluster centroid
+keep_without_fiducial: false
+
+# --- run / output ---
+limit: 0
+overlay_max_width: 1600
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .

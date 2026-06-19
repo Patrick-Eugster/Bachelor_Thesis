@@ -1,0 +1,27 @@
+# @package _global_
+# Config for src/preprocessing/make_fiducial_template.py — crop a REAL fiducial as a v6 template.
+# Defaults point at the clean, frontal fiducial we picked from the v4 contact sheet
+# (IMG_20250609_112212.jpg, candidate #0). Override image/cx/cy/radius to use a different one.
+
+defaults:
+  - /dataset: phone
+  - override /hydra/job_logging: disabled
+  - override /hydra/hydra_logging: disabled
+  - _self_
+
+field: field_A
+plot: 20250609
+
+image: IMG_20250609_112212.jpg
+cx: 2030.86
+cy: 2140.25
+radius: 36.1            # measured fiducial disk radius (full-res px), from v4
+
+template_margin: 1.35   # white-plate margin kept around the disk (must match v6's template_margin)
+canon_radius: 30        # save at this canonical disk radius; v6 rescales from here
+out_path: src/preprocessing/templates/fiducial_real.png
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .

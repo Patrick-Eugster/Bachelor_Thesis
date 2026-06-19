@@ -1,0 +1,76 @@
+# @package _global_
+# Config for src/preprocessing/detect_markers_v6.py — Stage A marker localizer, VERSION 6
+# (REAL-template NCC + fiducial-snap). Match a REAL cropped fiducial (from make_fiducial_template.py)
+# at multiple scales with Normalized Cross-Correlation, NMS the peaks, gate on contrast + white
+# plate, then snap the center to the white dot inside the dark disk (v4's find_fiducial_local).
+# READ-ONLY: writes overlays to marker_vis_v6/ + logs/marker_detections_v6.json.
+#
+# Prereq: run make_fiducial_template.py first (creates template_image below).
+#
+# Usage:
+#   python src/preprocessing/detect_markers_v6.py field=field_A plot=20250609
+#   python src/preprocessing/detect_markers_v6.py field=field_A plot=20250609 limit=5
+
+defaults:
+  - /dataset: phone
+  - override /hydra/job_logging: disabled
+  - override /hydra/hydra_logging: disabled
+  - _self_
+
+field: field_A
+plot: ???
+
+source_path: ${dataset.input_dir}/${field}/${plot}
+image_subdir: images
+output_vis_dir: marker_vis_v6
+output_json: logs/marker_detections_v6.json
+expected_markers: 6
+
+# === real fiducial template ===
+template_image: src/preprocessing/templates/fiducial_real.png
+canon_radius: 30         # the canonical disk radius the template was saved at (must match maker)
+template_margin: 1.35    # plate margin baked into the saved template (must match maker)
+
+# === multi-scale matching ===
+# real fiducials in field_A/20250609 measured ~6-41 px radius (v4) → bank 6-48 covers them.
+disk_radius_min: 6
+disk_radius_max: 48
+disk_radius_num: 10
+match_max_width: 2016    # 0.5× of the 4032 px phone images — better far-marker recall (~2× slower)
+match_blur_ksize: 3      # light blur before matching (denoise); 0/1 to disable
+ncc_threshold: 0.7       # TM_CCOEFF_NORMED keep line — real fiducials reach 0.85-0.98, canopy lower
+top_k_per_scale: 400     # cap strongest hits per scale before NMS (keeps it fast)
+
+# === NMS (collapse duplicate hits per fiducial) ===
+nms_suppress_radius: 40  # px — peaks closer than this (or 1.5× the kept radius) are merged
+
+# === contrast-relative false-positive guard ===
+min_rel_contrast: 0.15   # disk must be ≥ this fraction darker than the plate ring (relative drop)
+
+# === white-plate surround gate (contrast-relative) ===
+surround_scale_inner: 1.2
+surround_scale_outer: 1.9
+white_s_max: 70
+min_white_surround: 0.8      # real plates score ~0.9-1.0; canopy FPs lower → strong separator
+
+# === fiducial-snap (v4's find_fiducial_local, run locally around each NCC peak) ===
+fid_search_min: 50          # px — min half-window to search for the fiducial disk
+fid_search_factor: 1.5      # search window = this × disk radius
+fid_min_area: 30            # px² — fiducial disk size band (local window)
+fid_max_area: 40000
+fid_min_radius: 3
+fid_min_circularity: 0.45   # round disk
+fid_min_solidity: 0.85      # solid/filled (arcs fail)
+center_inner_frac: 0.45     # look for the white dot within this fraction of the disk radius
+
+# if a region has NO detectable fiducial disk: false → drop it (precision); true → keep NCC peak
+keep_without_fiducial: false
+
+# --- run / output ---
+limit: 0
+overlay_max_width: 1600
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .

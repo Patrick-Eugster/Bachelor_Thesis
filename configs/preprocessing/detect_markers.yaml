@@ -1,0 +1,66 @@
+# @package _global_
+# Config for src/preprocessing/detect_markers.py — Stage A marker LOCALIZER.
+# Finds the white coded-marker plates in each phone image and draws overlays so we
+# can eyeball whether localization works. READ-ONLY on the data (only writes overlay
+# PNGs + a JSON). No IDs, no triangulation — that's Stage B / Step 2.
+#
+# Typical usage:
+#   python src/preprocessing/detect_markers.py field=field_A plot=20250609
+#   python src/preprocessing/detect_markers.py field=field_A plot=20250609 limit=5
+#   python src/preprocessing/detect_markers.py field=field_A plot=20250609 v_min=140 s_max=70
+
+defaults:
+  - /dataset: phone
+  - override /hydra/job_logging: disabled    # we print() our own report
+  - override /hydra/hydra_logging: disabled
+  - _self_
+
+field: field_A
+plot: ???                                    # REQUIRED — e.g. 20250609
+
+source_path: ${dataset.input_dir}/${field}/${plot}
+
+# read the UNDISTORTED images (these match the sparse/0 poses we triangulate with later)
+image_subdir: images
+
+# outputs (relative to source_path)
+output_vis_dir: marker_vis                   # overlay PNGs land here
+output_json: logs/marker_detections.json     # per-image centers + score metrics
+
+# how many markers exist per field (only used for the health-check counts in the summary)
+expected_markers: 6
+
+# --- white-plate threshold (HSV) ---
+# plate = bright + desaturated; green canopy = saturated. Loosen v_min / raise s_max
+# if plates are missed in shadow; tighten if too much canopy leaks through.
+v_min: 150          # min brightness (Value) to count as "white plate"
+s_max: 60           # max saturation to count as "white plate"
+
+# --- black coded disk inside the plate ---
+dark_v_max: 80      # pixels below this Value count as the black disk
+
+# --- morphology kernels (px, tuned for ~4000px-wide phone frames) ---
+close_kernel: 15    # fill the holes the black disk punches in the white plate
+open_kernel: 5      # drop tiny bright specks (glare, sky slivers)
+
+# --- shape gates (defaults measured from real plates on field_A/20250609) ---
+# area as a fraction of the whole frame. Real plates measured at ~0.002-0.006; the
+# 0.0015 floor kills small canopy specks (most false positives) at the cost of the
+# most-distant tiny plates (acceptable — each marker only needs ANY 2 views to triangulate).
+min_area_frac: 0.0015
+max_area_frac: 0.01
+min_extent: 0.7     # CONVEX-HULL area / rotated-rect area — a square plate fills ~0.85
+aspect_max: 2.0     # longer/shorter side of the rotated rect (tolerates perspective tilt)
+
+# --- "has a black disk" gate (the marker-vs-junk test) ---
+dark_frac_min: 0.12 # need at least this fraction of the box to be the black coded disk
+dark_frac_max: 0.5  # but not mostly-dark (that's a shadow, not a white plate)
+
+# --- run / output options ---
+limit: 0            # 0 = all images; set e.g. 5 for a quick threshold-tuning pass
+overlay_max_width: 1600   # downscale saved overlays to this width (0 = full res)
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .

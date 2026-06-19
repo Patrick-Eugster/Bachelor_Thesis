@@ -1,0 +1,64 @@
+# @package _global_
+# Config for src/preprocessing/detect_markers_v2.py — Stage A marker localizer, VERSION 2
+# (ellipse-based coded-target detection). READ-ONLY: writes overlays to marker_vis_v2/ and a
+# JSON to logs/marker_detections_v2.json. Does NOT overwrite v1's marker_vis/ output.
+#
+# Typical usage:
+#   python src/preprocessing/detect_markers_v2.py field=field_A plot=20250609
+#   python src/preprocessing/detect_markers_v2.py field=field_A plot=20250609 limit=5
+
+defaults:
+  - /dataset: phone
+  - override /hydra/job_logging: disabled
+  - override /hydra/hydra_logging: disabled
+  - _self_
+
+field: field_A
+plot: ???                                    # REQUIRED — e.g. 20250609
+
+source_path: ${dataset.input_dir}/${field}/${plot}
+image_subdir: images                         # undistorted images (match sparse/0 poses)
+
+# v2 outputs — separate from v1 so nothing is overwritten
+output_vis_dir: marker_vis_v2
+output_json: logs/marker_detections_v2.json
+
+expected_markers: 6                          # only used for the health-check counts
+
+# --- step 1-2: edges + ellipse fitting ---
+blur_ksize: 5            # Gaussian blur before Canny (odd number) — denoise the canopy
+canny_lo: 50             # Canny low threshold
+canny_hi: 150            # Canny high threshold
+min_contour_pts: 20      # need enough edge points to fit a stable ellipse
+min_ellipse_area: 80     # px² — drop tiny edge loops
+max_ellipse_area: 200000 # px² — drop huge contours (whole-plate outlines, big background loops)
+fit_ratio_lo: 0.7        # contour-area / fitted-ellipse-area must be near 1 (good fit)
+fit_ratio_hi: 1.3
+min_axis_ratio: 0.4      # short/long axis — reject very elongated (non-circular) fits
+
+# --- step 3: white-surround filter (the strong discriminator) ---
+white_v_min: 140         # "white plate" brightness floor (HSV Value)
+white_s_max: 70          # "white plate" saturation ceiling
+surround_scale_inner: 1.1  # inner radius of the sampled ring, as a multiple of the ellipse
+surround_scale_outer: 1.8  # outer radius of the sampled ring
+min_white_surround: 0.65   # require ≥ this fraction of the ring to be white (on a plate).
+                           # real markers measure ~0.8-1.0; canopy false positives ~0.55,
+                           # so 0.65 separates them. Lower to catch oblique plates, raise to cut FPs.
+
+# --- step 4-5: cluster ellipses into one marker, pick the center ---
+# SIZE-AWARE clustering (replaces a hardcoded pixel distance, which is wrong because a
+# plate's features are far apart in px when close/zoomed and near when distant). Two ellipses
+# merge when their center distance ≤ cluster_reach_factor × the larger ellipse's major axis,
+# so the merge radius auto-scales with how big the plate appears (distance/zoom/resolution).
+cluster_reach_factor: 1.5  # merge reach as a multiple of the larger ellipse's size
+cluster_min_reach: 25      # px floor, so tiny fiducials still merge with adjacent tiny features
+min_cluster_size: 2      # a real marker fits ≥2 ellipses (fiducial + arcs); reject loners
+
+# --- run / output ---
+limit: 0                 # 0 = all images
+overlay_max_width: 1600
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .

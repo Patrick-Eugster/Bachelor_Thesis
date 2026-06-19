@@ -1,0 +1,70 @@
+# @package _global_
+# Config for src/preprocessing/detect_markers_v5.py — Stage A marker localizer, VERSION 5
+# (TEMPLATE MATCHING / NCC). Build a synthetic bullseye template (white plate -> grey disk ->
+# white center dot, the rotation-invariant fiducial core, ID ring left out on purpose), slide it
+# over the image at several scales with Normalized Cross-Correlation, NMS the peaks, reject flat-
+# noise hits with a contrast-relative guard, then snap each center to its white dot (local Otsu).
+# READ-ONLY: writes overlays to marker_vis_v5/ + logs/marker_detections_v5.json.
+#
+# Typical usage:
+#   python src/preprocessing/detect_markers_v5.py field=field_A plot=20250609
+#   python src/preprocessing/detect_markers_v5.py field=field_A plot=20250609 limit=5
+
+defaults:
+  - /dataset: phone
+  - override /hydra/job_logging: disabled
+  - override /hydra/hydra_logging: disabled
+  - _self_
+
+field: field_A
+plot: ???
+
+source_path: ${dataset.input_dir}/${field}/${plot}
+image_subdir: images
+output_vis_dir: marker_vis_v5
+output_json: logs/marker_detections_v5.json
+expected_markers: 6
+
+# === bullseye template shape ===
+# absolute values barely matter (NCC normalizes), only the relative pattern: plate bright, disk
+# grey/darker, dot brightest. Measured roughly from real fiducials (plate ~230, disk ~105, dot ~250).
+plate_val: 230
+disk_val: 105
+dot_val: 250
+dot_frac: 0.22           # white-dot radius as a fraction of the disk radius
+template_margin: 1.35    # white plate margin around the disk (× disk radius, per side)
+
+# === multi-scale matching ===
+# fiducials are bigger up close, smaller far away → match a range of disk radii (geometric spacing).
+# min set to 8 (a 5 px synthetic disk at 0.35× ≈ 2-3 px → pure noise, fired thousands of times).
+disk_radius_min: 8
+disk_radius_max: 45
+disk_radius_num: 8
+match_max_width: 1400    # downscale to this width for matching (huge speedup); refine at full res
+match_blur_ksize: 3      # light blur before matching (denoise); 0/1 to disable
+ncc_threshold: 0.6       # TM_CCOEFF_NORMED keep line (real fiducials top out ~0.73; canopy ~0.5-0.6)
+top_k_per_scale: 400     # cap strongest hits per scale before NMS (keeps it fast)
+
+# === NMS (collapse duplicate hits per fiducial) ===
+nms_suppress_radius: 30  # px — peaks closer than this (or 1.5× the kept radius) are merged
+
+# === contrast-relative false-positive guard ===
+min_rel_contrast: 0.15   # disk must be ≥ this fraction darker than the plate ring (relative drop)
+
+# === white-plate surround gate (the strong canopy rejector, contrast-relative) ===
+surround_scale_inner: 1.2    # ring starts just outside the disk (× disk radius)
+surround_scale_outer: 1.9    # ring ends here (× disk radius)
+white_s_max: 70              # saturation ceiling — "white = desaturated" (fairly lighting-robust)
+min_white_surround: 0.5      # ≥ this fraction of the ring must be white plate
+
+# === white-dot sub-pixel refine ===
+dot_search_frac: 0.6     # search the dot within this fraction of the disk radius around the peak
+
+# --- run / output ---
+limit: 0
+overlay_max_width: 1600
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .

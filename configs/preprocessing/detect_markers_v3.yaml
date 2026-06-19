@@ -1,0 +1,62 @@
+# @package _global_
+# Config for src/preprocessing/detect_markers_v3.py — Stage A marker localizer, VERSION 3
+# (fiducial-centric). Detects the central fiducial directly: a solid round dark disk with a
+# white center dot, on a white plate. READ-ONLY: writes overlays to marker_vis_v3/ and a JSON
+# to logs/marker_detections_v3.json. Does NOT touch v1/v2 output.
+#
+# Typical usage:
+#   python src/preprocessing/detect_markers_v3.py field=field_A plot=20250609
+#   python src/preprocessing/detect_markers_v3.py field=field_A plot=20250609 limit=5
+
+defaults:
+  - /dataset: phone
+  - override /hydra/job_logging: disabled
+  - override /hydra/hydra_logging: disabled
+  - _self_
+
+field: field_A
+plot: ???                                    # REQUIRED — e.g. 20250609
+
+source_path: ${dataset.input_dir}/${field}/${plot}
+image_subdir: images                         # undistorted images (match sparse/0 poses)
+
+output_vis_dir: marker_vis_v3
+output_json: logs/marker_detections_v3.json
+expected_markers: 6
+
+# --- the dark disk (the fiducial body) ---
+# DARK-DISK detection. A fixed global threshold is fragile (the disk's grey value varies with
+# lighting/distance → poor recall), so by default use an ADAPTIVE threshold: each pixel is
+# compared to its local neighborhood, catching the disk because it's darker than the white
+# plate around it, whatever its absolute brightness.
+use_adaptive: false      # adaptive fragmented the disk + flooded canopy edges → worse; off by default
+adaptive_block: 121      # (kept for experimentation)
+adaptive_C: 12
+dark_max: 125            # fixed global threshold (the working default): precise but recall-limited
+min_disk_area: 50        # px² — smallest fiducial disk (distant plates)
+max_disk_area: 60000     # px² — largest fiducial disk (close plates); arcs/shadows are bigger
+min_radius: 4            # px — min enclosing-circle radius
+min_circularity: 0.45    # area / enclosing-circle area — round disk (tilt lowers this; arcs fail it)
+min_solidity: 0.85       # area / convex-hull area — solid/filled (arcs are thin → fail)
+
+# --- white plate surround (the strong precision gate) ---
+white_v_min: 140
+white_s_max: 70
+surround_scale_inner: 1.3  # inner radius of the sampled ring (× disk radius)
+surround_scale_outer: 2.0  # outer radius of the sampled ring
+min_white_surround: 0.6    # require ≥ this fraction white around the disk (on a plate)
+
+# --- white center dot (the precise point + a soft confidence) ---
+center_inner_frac: 0.4   # look for the dot within this fraction of the disk radius
+white_dot_v_min: 150     # brightness for the white center dot
+min_white_dot: 0.01      # require at least a little bright center. Lower toward 0 to boost
+                         # recall (distant plates: tiny/blurred dot); raise to cut false positives.
+
+# --- run / output ---
+limit: 0
+overlay_max_width: 1600
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .
