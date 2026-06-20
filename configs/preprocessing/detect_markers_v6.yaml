@@ -51,20 +51,26 @@ min_rel_contrast: 0.15   # disk must be ≥ this fraction darker than the plate 
 surround_scale_inner: 1.2
 surround_scale_outer: 1.9
 white_s_max: 70
-min_white_surround: 0.8      # real plates score ~0.9-1.0; canopy FPs lower → strong separator
+min_white_surround: 0.65     # relaxed to catch partly-wheat-occluded plates; the must-have-a-real-
+                             # dark-disk requirement (fiducial-snap) backstops FPs, so this can loosen
 
-# === fiducial-snap (v4's find_fiducial_local, run locally around each NCC peak) ===
+# === fiducial-snap (find the round dark disk near each NCC peak, snap to its white dot) ===
 fid_search_min: 50          # px — min half-window to search for the fiducial disk
-fid_search_factor: 1.5      # search window = this × disk radius
+fid_search_factor: 1.4      # search window = this × disk radius
 fid_min_area: 30            # px² — fiducial disk size band (local window)
 fid_max_area: 40000
 fid_min_radius: 3
-fid_min_circularity: 0.45   # round disk
-fid_min_solidity: 0.85      # solid/filled (arcs fail)
+fid_min_circularity: 0.45   # round disk (oblique view → ellipse, so keep this lenient)
+fid_min_solidity: 0.85      # solid/filled (crescent arcs have low fill → rejected)
+fid_max_center_offset: 1.6  # disk center must be within this × radius of the NCC peak (rejects far arcs)
 center_inner_frac: 0.45     # look for the white dot within this fraction of the disk radius
 
 # if a region has NO detectable fiducial disk: false → drop it (precision); true → keep NCC peak
 keep_without_fiducial: false
+
+# === post-snap dedup (collapse duplicates that snapped to the same fiducial) ===
+dedup_radius_factor: 3.5    # merge detections whose centers are within this × the larger radius
+                            # (markers sit on well-separated stakes, so a wide merge is safe)
 
 # --- run / output ---
 limit: 0

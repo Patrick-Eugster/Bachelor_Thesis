@@ -161,26 +161,53 @@ def find_fiducial_local(gray, cx, cy, search_r, cfg):
         sol = a / (cv2.contourArea(cv2.convexHull(c)) + 1e-9)
         if circ < cfg.fid_min_circularity or sol < cfg.fid_min_solidity:
             continue
-        gx, gy = int(lx), int(ly)
+        # reject blobs whose center is far from the NCC peak — the real-template peak is already on
+        # the fiducial, so the right disk is the NEAR one; a far dark blob is an arc/neighbor.
+        disk_dist = ((x0 + lx - cx) ** 2 + (y0 + ly - cy) ** 2) ** 0.5
+        if disk_dist > r * cfg.fid_max_center_offset:
+            continue
+        # ROBUST center: fit an ellipse to the disk contour and take its center. This handles a
+        # partly-occluded disk and a faint/missing white dot far better than a bright-pixel centroid
+        # (which a single bright occluding wheat edge could drag off-center). The white dot sits at
+        # the disk's geometric center by design, so the ellipse center IS the surveyed point.
+        if len(c) >= 5:
+            (ex, ey), _, _ = cv2.fitEllipse(c)
+            fx, fy = x0 + float(ex), y0 + float(ey)
+        else:
+            fx, fy = x0 + float(lx), y0 + float(ly)
+        # white-dot fraction near the center — kept only as a soft confidence for the JSON
         ri = max(2, int(r * cfg.center_inner_frac))
+        gx, gy = int(round(fx - x0)), int(round(fy - y0))
         px0 = max(0, gx - ri); py0 = max(0, gy - ri)
         patch = g[py0:gy + ri, px0:gx + ri]
-        if patch.size == 0:
-            continue
-        bright = patch > otsu_val          # white dot = brighter than the local split (relative)
-        wdot = float(bright.mean())
-        if bright.sum() > 0:
-            ys, xs = np.nonzero(bright)
-            fx = x0 + px0 + float(xs.mean()); fy = y0 + py0 + float(ys.mean())
-        else:
-            fx = x0 + float(lx); fy = y0 + float(ly)
-        dist = ((fx - cx) ** 2 + (fy - cy) ** 2) ** 0.5
-        cand = {"fx": fx, "fy": fy, "wdot": wdot, "dist": dist}
-        if best is None or (cand["wdot"] > 0.01 and cand["dist"] < best["dist"]):
+        wdot = float((patch > otsu_val).mean()) if patch.size else 0.0
+        # quality = how disk-like (round × solid); prefer the most disk-like blob near the peak
+        quality = circ * sol
+        cand = {"fx": fx, "fy": fy, "wdot": wdot, "quality": quality}
+        if best is None or cand["quality"] > best["quality"]:
             best = cand
     if best is None:
         return None
     return best["fx"], best["fy"], best["wdot"]
+
+
+def dedup_by_center(dets, factor):
+    """Merge detections whose FINAL (snapped) centers coincide — keep the higher-scoring one.
+    Needed because NMS runs on the raw NCC peaks (pre-snap): two peaks from different scales on the
+    same marker can survive NMS, then both snap onto the same fiducial → duplicate dots. This second
+    pass, run AFTER snapping, collapses them."""
+    dets = sorted(dets, key=lambda d: d["score"], reverse=True)
+    kept = []
+    for d in dets:
+        ok = True
+        for k in kept:
+            dd = ((d["center"][0] - k["center"][0]) ** 2 + (d["center"][1] - k["center"][1]) ** 2) ** 0.5
+            if dd < factor * max(d["fid_radius"], k["fid_radius"]):
+                ok = False
+                break
+        if ok:
+            kept.append(d)
+    return kept
 
 
 def detect_one(bgr, templates, work_scale, cfg):
@@ -227,7 +254,8 @@ def detect_one(bgr, templates, work_scale, cfg):
         dets.append({"center": [round(fx, 2), round(fy, 2)], "source": source,
                      "score": round(k["score"], 3), "fid_radius": round(k["radius"], 1),
                      "white_surround": round(wsurr, 3), "white_dot": round(wdot, 3)})
-    return dets
+    # collapse any duplicates that snapped to the same fiducial (NMS ran pre-snap)
+    return dedup_by_center(dets, cfg.dedup_radius_factor)
 
 
 def draw_overlay(bgr, dets, max_width):

@@ -1,19 +1,29 @@
-# Marker Localization — the four detector versions (v1 → v4)
+# Marker Localization — the detector versions (v1 → v6)
 
-How the Stage A marker **localizer** evolved across four versions, what changed in the
+How the Stage A marker **localizer** evolved across six versions, what changed in the
 algorithm each time, and what each produced. Each version was built to fix the *specific
 failure* of the previous one, so the clearest way to read this is top to bottom.
+
+**Bottom line up front:** v1–v4 were hand-tuned classical-CV heuristics (color/shape/contrast
+rules). v5–v6 switched to **template matching** (Option A): match a picture of the fiducial against
+the image. v6 (a **real** cropped fiducial + multi-scale NCC + fiducial-snap + ellipse-fit center +
+dedup) is clearly the best version — but it **still isn't good enough** (on cluttered frames only
+~1 of 5 proposed markers is correct). Conclusion: **template-matching has also hit a ceiling →
+next is Option B, a trained CNN/YOLO marker detector** (see the last section).
 
 Scripts/configs:
 - v1 — [`src/preprocessing/detect_markers.py`](../src/preprocessing/detect_markers.py)
 - v2 — [`src/preprocessing/detect_markers_v2.py`](../src/preprocessing/detect_markers_v2.py)
 - v3 — [`src/preprocessing/detect_markers_v3.py`](../src/preprocessing/detect_markers_v3.py)
 - v4 — [`src/preprocessing/detect_markers_v4.py`](../src/preprocessing/detect_markers_v4.py)
+- v5 — [`src/preprocessing/detect_markers_v5.py`](../src/preprocessing/detect_markers_v5.py) (synthetic-template NCC)
+- v6 — [`src/preprocessing/detect_markers_v6.py`](../src/preprocessing/detect_markers_v6.py) (real-template NCC + fiducial-snap) — **current best**
+- template maker — [`src/preprocessing/make_fiducial_template.py`](../src/preprocessing/make_fiducial_template.py) (crops the real fiducial v6 uses)
 
-Each writes overlays to its own folder (`marker_vis/`, `marker_vis_v2/`, `_v3/`, `_v4/`) and a
-JSON to `logs/`, so all four can be compared on the same images. All are **localization only**
-(no IDs, no triangulation) and **read-only** on the dataset. Benchmarks below are on
-`field_A/20250609` (119 phone images, 6 physical markers).
+Each writes overlays to its own folder (`marker_vis/`, `_v2/`…`_v6/`) and a JSON to `logs/`, so all
+can be compared on the same images. All are **localization only** (no IDs, no triangulation) and
+**read-only** on the dataset. Benchmarks below are on `field_A/20250609` (119 phone images, 6
+physical markers).
 
 ---
 
@@ -130,6 +140,81 @@ benefit is **cross-session robustness** (still to be validated on another sessio
 detection already used local Otsu. ("Local Otsu" = run Otsu's automatic threshold *inside a small
 window* so the dark/bright split adapts to that region's lighting, vs one global cutoff.)
 
+> **After v4 we stopped adding rules.** v1–v4 are all *hand-crafted* cues (white, ellipse, dark
+> disk, contrast). Every cue we add has *canopy lookalikes* that pass it and *marker exceptions*
+> (occluded/tilted/distant) that fail it — so tuning one knob just trades recall for precision.
+> v5–v6 change the *kind* of method: **template matching** (Option A).
+
+---
+
+## v5 — synthetic-template matching (NCC)
+
+**Cue:** instead of *describing* the fiducial with rules, *show* the computer a picture of it (a
+**template**) and slide it over the image measuring how well it lines up. Where the image looks
+like the fiducial, the match score spikes; canopy doesn't.
+
+**Algorithm:**
+1. **Build a synthetic bullseye template** (drawn in code): white plate → grey disk → white dot.
+   The coded ID ring is left out on purpose (it *varies* per marker; the fiducial core does not), so
+   one template matches all 6.
+2. **Multi-scale NCC** — a fiducial is bigger up close, smaller far away, and `cv2.matchTemplate`
+   is *not* scale-invariant, so match the template at a bank of disk radii. NCC = **Normalized
+   Cross-Correlation** (`TM_CCOEFF_NORMED`): score in [−1, 1], normalized so a correct pattern
+   scores high whether the spot is sunny or shaded (lighting-robust by construction).
+3. **Matching runs on a downscaled copy** (≈0.35×) for speed (matchTemplate cost ∝ pixels); refine
+   on full res. *(This was the fix for an 11-min/5-image first attempt.)*
+4. **NMS** → one peak per fiducial; **contrast guard** (disk darker than plate, relative) + a
+   **white-plate surround gate** to reject canopy.
+
+**Result — promising but weak separation.** It runs (2 s for 5 images after the downscale fix), and
+the white-plate gate cut most canopy. But the **synthetic template is crude**: real fiducials only
+reached NCC **~0.73** while canopy reached **~0.6** — a thin ~0.13 margin, so no threshold cleanly
+separates them. And the **center refine was wrong**: it snapped to the *brightest* pixels near the
+peak, but the plate is the brightest thing, so it dragged the center onto plate-white instead of the
+fiducial. Full run: mean 8.3 markers/image, but with many false positives and **multiple drifted
+dots per marker** (different scales' peaks landing on different bright plate spots, too far apart for
+NMS to merge).
+
+> **Drove v6:** the *idea* (template matching) is right, but a drawn template is too generic and the
+> centering is broken.
+
+---
+
+## v6 — real-template matching + fiducial-snap (current best)
+
+**Cue:** same as v5, but match a **real** cropped fiducial (actual pixels) instead of a drawn one,
+and fix the centering by locating the *dark disk* (not the bright plate).
+
+**Algorithm:**
+1. **Real template:** [`make_fiducial_template.py`](../src/preprocessing/make_fiducial_template.py)
+   crops one genuine fiducial (from a v4 detection — v4 centers are reliable) and saves it at a
+   canonical size. v6 resizes *that* to each radius in the bank. A patch of real pixels (true grey,
+   soft edges, partial ring, sensor noise) correlates **much** more strongly with real fiducials and
+   less with canopy — real scores now reach **0.85–0.98** (a wide margin, not 0.73).
+2. **Multi-scale NCC at 0.5×** (better far-marker recall than v5's 0.35×), NMS, contrast guard,
+   white-plate gate.
+3. **Fiducial-snap (fixes the center):** in a local window around each peak, find the round **solid
+   dark disk** (the *plate* is bright → excluded by construction; the opposite of v5's bug), require
+   it near the peak, and prefer the most disk-like blob (circularity × solidity) so **coded arcs
+   aren't grabbed**. A peak with **no real dark disk → dropped** (kills canopy FPs).
+4. **Ellipse-fit center:** fit an ellipse to the disk contour and take its center — the surveyed
+   point by design, robust to a faint dot or a partly-occluded disk (a bright-pixel centroid drifts).
+5. **Post-snap dedup:** NMS ran on the *raw* peaks, so two peaks that later snap to the **same**
+   fiducial both survived → duplicate dots. A second pass after snapping merges centers within
+   `3.5×radius`, keeping the higher score → duplicates gone.
+
+**Result — best version, but still not good enough.** On `field_A/20250609`: 0 duplicate clusters,
+**100% fiducial-snapped centers**, empty frames down to **2/119**, ~95% of *sampled* detections on
+real plates, ~2 clean unique markers/image. The real template + fiducial-snap genuinely fixed the
+v5 margin and centering problems. **But** on cluttered frames it still fails badly — e.g.
+`IMG_20250609_112223.jpg` proposes 5 markers of which **only 1 is correct** (rest canopy FPs, real
+markers missed where wheat occludes the plate), and some centers are still slightly off. The
+recall↔precision seesaw (relax the white gate to catch occluded plates → more canopy FPs) is
+**structural**, not a tuning bug.
+
+> **Drove the decision to stop:** even a real template + every gate + ellipse-fit can't get high
+> recall **and** precision **and** a correct center on a cluttered, variable canopy. **→ Option B.**
+
 ---
 
 ## Side-by-side
@@ -139,10 +224,14 @@ window* so the dark/bright split adapts to that region's lighting, vs one global
 | **v1** | white square plate | fuzzy (dark centroid) | many | misses tilted | bad |
 | **v2** | ellipses (rings) | ⚠️ sometimes on an arc | few | good | finds plates, wrong center |
 | **v3** | fiducial disk | ✅ exact | ✅ ~none | ❌ low | precise but can't find them |
-| **v4** | v2 find + v3 center | ✅ exact (100%) | ✅ dropped | ⚠️ moderate | **best** |
+| **v4** | v2 find + v3 center | ✅ exact (100%) | ✅ dropped | ⚠️ moderate | best heuristic |
+| **v5** | synthetic template (NCC) | ❌ drifts to plate-white | many | good | template idea right, too crude |
+| **v6** | real template + fiducial-snap | ✅ ellipse-fit (100%) | ⚠️ low but present | ⚠️ moderate | **best overall, still not enough** |
 
 Benchmarks on `field_A/20250609` (markers/image): v2 ≈ mean 2.1, v3 ≈ mean 0.8 (58 empty
-frames), v4 ≈ mean 1.5 (17 empty frames, 100% fiducial-snapped).
+frames), v4 ≈ mean 1.5 (17 empty frames), v5 ≈ mean 8.3 (FPs + duplicate dots), **v6 ≈ mean 2.0
+clean unique (2 empty frames, 0 duplicates, 100% fiducial-snapped, ~95% sampled precision)** — yet
+still ~1/5 correct on the worst cluttered frames.
 
 ---
 
@@ -159,36 +248,40 @@ total — so per-frame recall does not have to be perfect.
 
 ---
 
-## The heuristic ceiling — and what's next (Option A → Option B)
+## Two ceilings — and the decision to go learned (Option B)
 
-**Conclusion after v1–v4: hand-tuned heuristics have hit their ceiling.** Every cue we add (white,
-ellipse, dark disk, contrast, Otsu) has *canopy lookalikes* that pass it and *marker exceptions*
-(occluded/tilted/distant) that fail it. Tuning one knob trades recall for precision and back. On a
-cluttered, variable canopy, no hand-crafted rule set gets high recall **and** high precision **and**
-a correct center simultaneously. So the next step changes the *kind* of method, not the thresholds.
+This project hit the wall **twice**, and that's the whole story:
 
-**Option A — template-match the central bullseye (no training; try first).** The fiducial (solid
-dark disk + white center dot on white) is identical on every marker and **rotation-invariant**, so
-slide a small bullseye template over the image at a few **scales** and take the correlation peaks.
-Why it should beat the heuristics: it matches the *specific concentric pattern* (far more
-discriminating than "roundish dark thing on something white-ish"), the **correlation peak is the
-fiducial center by definition** (fixes the center drift), and a partly-occluded fiducial still
-correlates. Caveats: distant fiducials are only a few px (hard); extreme perspective tilt turns the
-disk into an ellipse and degrades the match (mild tilt is fine; rotation is free because circular).
-Mechanistically this is the **simplest ancestor of a CNN** — a single, fixed, hand-set convolution
-filter (cross-correlation with one template), with no learning, no depth, no nonlinearity.
+**Ceiling 1 — hand-tuned heuristics (v1–v4).** Every cue we add (white, ellipse, dark disk,
+contrast, Otsu) has *canopy lookalikes* that pass it and *marker exceptions* (occluded/tilted/
+distant) that fail it. Tuning one knob trades recall for precision and back. No hand-crafted rule
+set gets high recall **and** precision **and** a correct center at once. So we changed the *kind* of
+method → **Option A: template matching**.
 
-**Option B — train a small learned detector (most robust; if A falls short).** Repurpose the repo's
-existing **YOLO** pipeline: hand-label the 6 markers across ~30–40 images (bounded effort), train a
-marker detector, then use the fiducial trick *inside* each detected box for the sub-pixel center. A
-CNN is the **learned, deep, nonlinear generalization** of the same correlation idea — many filters
-learned from data, stacked in layers, so it tolerates lighting/tilt/occlusion/blur that a single
-rigid template can't. Cost: the manual labeling.
+**Ceiling 2 — template matching (v5–v6, Option A, now BUILT).** Option A genuinely helped: the
+**real** template (v6) widened the NCC margin (0.73 → 0.98), the **fiducial-snap** fixed the center,
+**ellipse-fit** stabilized it, and **dedup** removed duplicates — v6 is the best version by far.
+**But it still isn't good enough.** On cluttered frames it's ~1/5 correct (`IMG_..._112223.jpg`),
+because the underlying recall↔precision conflict is *structural*: a template can score a fiducial
+high, but a partly wheat-occluded plate loses the white-surround signal, and loosening the gate to
+catch it lets canopy back in. A single rigid template (one appearance, one tilt) can't represent the
+full range of marker appearances on a live canopy.
 
-**Plan: prototype A, escalate to B if needed.** A is no-label and instant to test (slide the
-template, overlay the peaks, look at whether the 6 fiducials light up vs canopy). If A's recall on
-distant/occluded plates is insufficient, that failure is exactly the signal that we need the learned
-version (B). v1–v4 scripts are kept for the record; A/B will be new versions.
+**Why a CNN is the answer (Option B — next).** A template is a *single, fixed* correlation filter. A
+CNN is the **learned, deep, nonlinear generalization** of that idea — *many* filters learned from
+data, stacked in layers, so it tolerates the lighting/tilt/occlusion/blur variation that breaks a
+rigid template. The repo already has a **YOLO** pipeline to repurpose: hand-label the 6 markers
+across ~30–40 images (bounded effort), train a marker detector, then run the **v6 fiducial-snap +
+ellipse-fit *inside* each predicted box** for the sub-pixel center — the snap is far more reliable
+there because the box already guarantees a marker is present, so canopy can't interfere. Cost: the
+manual labeling.
+
+**Status:** v1–v6 are kept for the record; **Option B (a trained CNN/YOLO marker detector) is the
+next approach.** Remember the downstream safety net (see [`MARKER_INTEGRATION_PLAN.md`](MARKER_INTEGRATION_PLAN.md)
+§11c): per-image perfection isn't required — multi-view triangulation rejects FPs (they don't
+intersect consistently) and recovers markers missed in some views from others (≥2-views rule). So
+"good per-view detections from a CNN" + "multi-view geometry" is the combination expected to close
+the gap.
 
 See [`MARKER_DETECTION_STAGE_A.md`](MARKER_DETECTION_STAGE_A.md) for the detailed v1 spec, and
 [`MARKER_INTEGRATION_PLAN.md`](MARKER_INTEGRATION_PLAN.md) for how localization feeds the rest of

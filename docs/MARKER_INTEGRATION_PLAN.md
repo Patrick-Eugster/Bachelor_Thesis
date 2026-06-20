@@ -2,13 +2,19 @@
 
 Plan for bringing the surveyed **coded ground markers** into our COLMAP pipeline.
 
-**Status (current):** Stage A (the marker *localizer*) is under active development — four heuristic
-versions built (v1 square → v2 ellipses → v3 fiducial → v4 hybrid; full write-up in
-[`MARKER_DETECTION_VERSIONS.md`](MARKER_DETECTION_VERSIONS.md)). Heuristics have **hit their ceiling**
-(recall/precision/center can't all be satisfied by hand-tuned rules on the canopy). **Next step:
-Option A = template-match the central bullseye (no training), escalating to Option B = a trained
-CNN/YOLO detector if needed.** Detection is the **prerequisite for everything below** — and for both
-the post-hoc *and* the in-SfM use of markers.
+**Status (current):** Stage A (the marker *localizer*) — **six** versions built and BOTH classical
+approaches have now hit a ceiling (full write-up in [`MARKER_DETECTION_VERSIONS.md`](MARKER_DETECTION_VERSIONS.md)):
+- **v1–v4** = hand-tuned heuristics (square → ellipses → fiducial disk → hybrid). Ceiling 1.
+- **v5–v6** = template matching (Option A): synthetic template (v5) → **real cropped fiducial +
+  multi-scale NCC + fiducial-snap + ellipse-fit center + dedup (v6, best version)**. v6 is clearly
+  the best (0 duplicates, 100% fiducial-snapped centers, 2/119 empty frames, ~95% sampled precision)
+  **but still not good enough** — ~1/5 correct on the worst cluttered frames (occlusion makes the
+  recall↔precision conflict structural). Ceiling 2.
+
+**Decision: go learned → Option B = a trained CNN/YOLO marker detector** (repurpose the repo's YOLO
+infra; label the 6 markers in ~30–40 images; run the v6 fiducial-snap inside each predicted box for
+the sub-pixel center). This is the **next approach**. Detection is the **prerequisite for everything
+below** — for both the post-hoc *and* the in-SfM use of markers.
 
 ---
 
@@ -101,7 +107,7 @@ STEP 4  Compare to GT distances (tape xlsx / survey)    → accuracy vs Agisoft'
 
 Everything except Step 1 already exists. **Detect on `images/`** (undistorted — matches our `sparse/0` poses). Outputs → `{source_path}/marker_vis*/*.png` + `{source_path}/logs/marker_detections*.json`. Read-only on the data, no pipeline changes.
 
-**Step 1 status:** four heuristic localizers built (v1–v4, see [`MARKER_DETECTION_VERSIONS.md`](MARKER_DETECTION_VERSIONS.md)); v4 (hybrid, contrast-relative thresholds) is best but still has poor recall + occasional FPs + center drift → **heuristics hit their ceiling**. **Immediate next step = Option A: template-match the central bullseye** (rotation-invariant; correlation peak = exact center; no training). If recall on distant/occluded plates is insufficient → **Option B: a trained CNN/YOLO marker detector** (repurpose the repo's YOLO infra; label 6 markers in ~30–40 images; fiducial-snap inside each box for sub-pixel center). Only after Step 1 is solid do we move to Stage B (IDs) + Step 2 (triangulate).
+**Step 1 status:** six localizers built (v1–v6, see [`MARKER_DETECTION_VERSIONS.md`](MARKER_DETECTION_VERSIONS.md)). v1–v4 heuristics hit ceiling 1; **Option A template matching (v5 synthetic → v6 real-template NCC + fiducial-snap + ellipse-fit + dedup) is now BUILT and is the best version** (0 duplicates, 100% fiducial-snapped centers, 2/119 empty frames, ~95% sampled precision) **but hit ceiling 2** — ~1/5 correct on the worst cluttered frames (occlusion → structural recall↔precision conflict). **Decided next = Option B: a trained CNN/YOLO marker detector** (repurpose the repo's YOLO infra; label 6 markers in ~30–40 images; run v6's fiducial-snap inside each predicted box for the sub-pixel center). Only after Step 1 is solid do we move to Stage B (IDs) + Step 2 (triangulate). Helper `make_fiducial_template.py` crops the real fiducial v6 matches.
 
 ## 9. Where markers actually help (honest)
 
