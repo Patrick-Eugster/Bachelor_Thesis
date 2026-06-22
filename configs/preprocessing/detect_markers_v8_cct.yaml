@@ -1,0 +1,89 @@
+# @package _global_
+# Config for src/preprocessing/detect_markers_v8_cct.py — v7 pipeline + CONCENTRIC-CONSENSUS
+# centre finding. v6 proposes centres -> find_center_concentric locates the disk OR reconstructs
+# it from the arcs (disk+arcs share one centre) -> CCTDecode forced-centre decode. Recovers the
+# marker when v6 lands on an arc and when the disk is occluded (>=2 arcs still pin the centre).
+# READ-ONLY: overlays -> marker_vis_v8/, detections+IDs -> logs/marker_detections_v8.json.
+# (arc/ring params live in cct_forced_decode.DEFAULT_CFG: arc_min_fill, arc_min_solidity,
+#  ring_to_disk_ratio.)
+#
+# Usage:
+#   python src/preprocessing/detect_markers_v8_cct.py field=field_A plot=20250609
+
+defaults:
+  - /dataset: phone
+  - override /hydra/job_logging: disabled
+  - override /hydra/hydra_logging: disabled
+  - _self_
+
+field: field_A
+plot: ???
+
+source_path: ${dataset.input_dir}/${field}/${plot}
+image_subdir: images
+output_vis_dir: marker_vis_v8
+output_json: logs/marker_detections_v8.json
+expected_markers: 6
+
+# === real fiducial template (v6 proposal stage) ===
+template_image: src/preprocessing/templates/fiducial_real.png
+canon_radius: 30
+template_margin: 1.35
+
+# === multi-scale matching (v6 proposal stage) ===
+disk_radius_min: 6
+disk_radius_max: 48
+disk_radius_num: 10
+match_max_width: 2016
+match_blur_ksize: 3
+ncc_threshold: 0.7
+top_k_per_scale: 400
+nms_suppress_radius: 40
+min_rel_contrast: 0.15
+surround_scale_inner: 1.2
+surround_scale_outer: 1.9
+white_s_max: 70
+min_white_surround: 0.65
+fid_search_min: 50
+fid_search_factor: 1.4
+fid_min_area: 30
+fid_max_area: 40000
+fid_min_radius: 3
+fid_min_circularity: 0.45
+fid_min_solidity: 0.85
+fid_max_center_offset: 1.6
+center_inner_frac: 0.45
+keep_without_fiducial: false
+dedup_radius_factor: 3.5
+
+# === CCTDecode forced-centre decode (validation + ID) ===
+n_bits: 12
+mark_color: black
+decode_search_factor: 4.5    # size-relative disk-search half-window (× fiducial radius)
+decode_search_min: 40
+decode_min_fill: 0.92        # disk vs arc gate (fill ratio)
+decode_require_valid_cct: false  # bypass CCTDecode's internal check (fill gate guards precision)
+
+# --- ID filter (drops junk / non-deployed codes; dropped dets kept with locations in JSON) ---
+# mode 'manifest' (default): keep ONLY the codes actually deployed in this plot. This is the
+#   principled filter — it drops wheat-junk AND near-neighbour misreads (e.g. 117 = 1-bit misread
+#   of 85). The manifest below is the 6 demoanlage markers, decoded from the Agisoft spec PDF
+#   (reference/agisoft/Coded_12bit_15cm-square_13cm-outer-circle_.pdf) = ground truth. Override
+#   plot_manifest=[...] per plot if a different marker set was used.
+# mode 'view': legacy heuristic — keep the keep_top_k most-seen IDs (fragile: a systematic misread
+#   seen in many views sneaks in). mode 'none': keep everything.
+# NOTE: a "legal 12-bit code" dictionary does NOT filter junk (all decoded codes are legal
+# necklaces) — the manifest is what works. See docs/MARKER_CODE_STRUCTURE.md.
+id_filter: manifest
+plot_manifest: [77, 85, 89, 101, 105, 113]
+keep_top_k: ${expected_markers}   # only used by mode 'view'
+min_views: 1                      # absolute floor (all modes)
+
+# --- run / output ---
+limit: 0
+overlay_max_width: 1600
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .

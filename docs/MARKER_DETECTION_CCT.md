@@ -115,37 +115,93 @@ killing false positives**, not disambiguating among the 6.
 
 ---
 
-## Status
+## Terminology (one marker)
 
-Decided next approach (supersedes the "go learned / Option B" note at the end of
-`MARKER_DETECTION_VERSIONS.md`). Plan is staged:
+- **plate** — the white square the target is printed on.
+- **disk** — the solid dark filled circle in the **middle** (an ellipse under perspective). The thing we
+  localise.
+- **white dot** — the tiny bright dot at the disk's **exact center** = the precise surveyed point.
+- **arcs** — the dark curved segments **around** the disk, on the **code ring** (≥2 per marker, encode the
+  ID). The code ring is **concentric with the disk** (same center). [from the spec PDF]
 
-- **Phase 0 — DONE ✅** (`src/preprocessing/test_cct_phase0.py`, vendored core in
-  `src/preprocessing/cctdecode/`). Three isolated checks:
-  - **A1** DrawCCT synthetic marker → decoded the expected id (`141`). Core runs in our env.
-  - **A2** Agisoft spec-PDF marker #1 → decoded cleanly, the fitted ellipses + code-sampling ring land
-    exactly on the marker. **This proves CCTDecode's algorithm is geometry-compatible with the Agisoft
-    12-bit targets** — the single biggest unknown, now answered *yes*. (Our decoded number ≠ Agisoft's
-    printed label, which is fine — we only need relative consistency.)
-  - **B** real field marker hand-cropped from `IMG_20250609_112223.jpg` → **partial**: the decode core
-    fired, but on the cluttered/tilted real marker CCTDecode's own contour step latched onto the **code-arc
-    segments instead of the true central disk**, and emitted degenerate codes (`4095`, `2047` =
-    nearly-all-bits-set). So the **decode core works; the real-image candidate-selection (front-end) is the
-    weak link** — exactly as predicted.
-  - **Two numpy-2.x / Python-3.12 port bugs fixed in the vendored copy** (see `ATTRIBUTION.md`): the
-    `from numpy import *` star-import shadowed builtin `max/min/round/sum` → `TypeError: 'float' object
-    cannot be interpreted as an integer`. Removed it (the module already uses `np.`/`math.` prefixes).
-- **Phase 1 — NEXT: a v6 × CCTDecode hybrid.** The two methods cover each other: **v6/fiducial-snap finds the
-  true center + radius** (v6's strength; its weakness was false positives + no IDs), then run **only
-  CCTDecode's rectify → ring-sample → decode around that known center** (CCTDecode's strength: IDs +
-  self-validation; its weakness here was *finding* the center). Plus a **valid-ID whitelist (only the 6 real
-  markers)** + **degenerate-code filter** (`0`, `4095`, `2047`). Wrapper `detect_markers_v7_cct.py`, v6-style
-  overlays + `logs/marker_detections_v7.json`.
-- **Phase 2** *(optional, deprioritized)* — recalibrate ring radius / bit order to match Agisoft IDs. Not
-  needed: relative ID consistency is sufficient.
-- **Phase 3** — emit per-image `(marker_id → pixel xy)` + 3D positions as **GCPs** into COLMAP's native GCP
-  bundle adjustment (see `MARKER_INTEGRATION_PLAN.md`, Option D). Validate against the Agisoft reference
-  marker projections (received for the phone data).
+---
 
-YOLO/CNN (the old Option B) is kept **in reserve** purely as a crop-proposer feeding the decode core, only if
-the v6-seeded front-end can't reach the markers under occlusion.
+## Files (all on branch `markers`, all READ-ONLY w.r.t. the dataset)
+
+| File | Role |
+|---|---|
+| `src/preprocessing/cctdecode/` | vendored [poxiao2/CCTDecode](https://github.com/poxiao2/CCTDecode) (+`ATTRIBUTION.md`); 2 numpy-2.x/py3.12 bugs fixed (removed `from numpy import *` which shadowed builtin `max/min/round/sum`; lazy `progress` import) |
+| `src/preprocessing/cct_forced_decode.py` | the decode engine: `find_disk_at` (fill-ratio disk finder), `find_center_concentric` (v8), `decode_at_center(...,finder=)` (forces decode onto a given center, no blob search) |
+| `src/preprocessing/detect_markers_v7_cct.py` + yaml | **v7 detector**: v6 proposes centers → `decode_at_center`(find_disk_at) |
+| `src/preprocessing/detect_markers_v8_cct.py` + yaml | **v8 detector**: same, but `finder=find_center_concentric` (handles v6-on-arc + occluded disk) |
+| `src/preprocessing/overlay_agisoft_markers.py` | draw Agisoft GT projections on the images → `marker_vis_agisoft_gt/` |
+| `src/preprocessing/compare_v7_vs_agisoft.py` | score any version vs Agisoft GT: recall + per-target ID map + misses CSVs (`--version v7|v8`) |
+| `src/preprocessing/debug_cct_window.py` | per-candidate debug crops: search window + every blob's fill ratio + chosen disk + decoded code |
+| `test_cct_phase0.py` / `test_cct_phase0b_gtcrops.py` / `test_cct_phase1_forced.py` | the staged validation tests below |
+
+---
+
+## What we learned, in order
+
+**Phase 0 (`test_cct_phase0.py`) — the approach is viable.** A1 synthetic marker decoded; **A2 the Agisoft
+spec-PDF marker decoded cleanly** (proves CCTDecode's algorithm is geometry-compatible with Agisoft 12-bit
+targets — the big unknown, answered yes); B a hand-cropped real marker → stock `CCT_extract` latched onto a
+**code arc** and emitted junk. ⇒ decode core works, its **own blob-search is the weak link**.
+
+**Phone GT arrived** — `demoanlage2025_v0_additions/<field>/<date>/processed/marker_projections.csv`
+(both fields × 19 sessions). Per-image 2D marker positions, **in our undistorted `images/` space**,
+sub-pixel. **Asymmetric**: Agisoft has ~zero false positives but **misses many visible plates** — so a
+detection we make that Agisoft lacks is **not wrong** (candidate extra); only a GT marker we *miss* is a
+problem. ⇒ score **recall + localization** rigorously, treat "extras" as candidates (confirmed by the decode).
+
+**Phase 0b (`test_cct_phase0b_gtcrops.py`) — stock decode at GT centers.** Decoding at the *correct* centers,
+stock `CCT_extract` was reliable on **only target 1** (→113); targets 2/3/6 collided on the **arc artifact
+"7"**. ⇒ the blob-search reads arcs; we must **force the decode onto the true disk**.
+
+**Phase 1 (`test_cct_phase1_forced.py`) — forced-center decode SOLVES it.** Forcing the decode onto the disk
+at the GT center: **all 6 markers decode to distinct, consistent IDs** (t1=113, t2=105, t3=89, t4=101, t5=85,
+t6=77), zero collisions. The "7" was purely blob-search grabbing arcs.
+
+**v7 (`detect_markers_v7_cct.py`) — the real detector.** v6 proposes candidate centers → `decode_at_center`
+finds the disk there and decodes. The decode self-validates (junk → no valid code → dropped), so v6's false
+positives vanish for free. Two fixes made it solid:
+- **Disk-vs-arc by FILL RATIO** = blob area ÷ fitted-ellipse area. A solid **disk ≈ 1.0**; a **code arc
+  ≤ 0.91**; canopy ≤ 0.65. This is a **shape ratio → SIZE-INDEPENDENT** (no hardcoded pixel distance, which
+  was rightly rejected — same lesson as v2's cluster-distance bug). The search window is size-relative
+  (× fiducial radius).
+- **Report the decoded disk's ellipse center** (not v6's proposal) → **0.7 px median, 97% within 3 px** of GT.
+- **Bypass CCTDecode's internal `CCT_or_not`** (`decode_require_valid_cct=false`) — with the fill gate
+  guarding precision, that check was redundant *and* rejected tilted/edge markers, costing recall.
+- **Result (field_A/20250609):** all 6 markers as the top IDs by view-count; **73% recall of Agisoft**
+  (93/127); centers pinpoint; tiny noise tail.
+
+**v8 (`detect_markers_v8_cct.py`) — concentric-consensus + re-centering.** Rejecting an arc threw away the
+whole marker; but disk+arcs are **concentric**, so `find_center_concentric` recovers the center from whatever
+survives: a solid disk if present (= v7), else **fit the ring to the ≥2 arcs and derive the disk** (works when
+the disk is occluded). Plus **re-centering**: if the estimated center is far from where we searched (v6 on an
+arc → disk clipped at the window edge), re-search centered on the estimate so the disk is captured cleanly.
+- **Result:** **76% recall (97/127)**, target 1 23→27 hits — **the arc-frames (112220–112223) now decode 113
+  on the disk** (the reported "id flips 113↔7" bug, fixed). Cost: more extras (65 vs v7's 33) — arc
+  reconstruction fires junk IDs at a few non-marker spots (1–5 views; removable by a min-views filter or
+  triangulation voting).
+
+**Diagnosis of the remaining ~24 misses** (decode-at-GT-center test): two kinds — (a) decode *fine* at the
+true center but the detector missed it because v6 was offset and the window clipped the disk (**fixed by v8's
+re-center**); (b) decode **fails even at the perfect center** (target 2/4 in far/small/tilted frames) —
+**decode-resolution limited, not center-findable**. Per-marker we are complete regardless (each marker hit in
+10–27 views, ≫ the ≥2 triangulation needs).
+
+**ID map (consistent across views, our-id ↔ Agisoft-target):** 113↔T1, 105↔T2, 89↔T3, 101↔T4, 85↔T5, 77↔T6.
+
+---
+
+## Status & next
+
+- **v7 = higher precision** (fewer extras); **v8 = higher recall + fixes the arc/occlusion bug**. Both coexist.
+- **Decided "consistent-only" IDs** — we do **not** match Agisoft's numbers; a one-time 6-row hand map covers
+  GT lookup if ever needed. So Phase-2 ring-ratio calibration is **dropped**.
+- **Next options:** (a) add a **min-views filter** to v8 to drop the noise-tail extras → strict win over v7;
+  (b) **triangulation** — fold the per-view detections into 6 3D markers, majority-vote IDs (removes the tail
+  *and* the per-view misses), then emit `(marker_id → pixel xy)` + 3D as **GCPs** into COLMAP's native GCP
+  bundle adjustment (`MARKER_INTEGRATION_PLAN.md`, Option D).
+- YOLO/CNN (old Option B) stays **in reserve** — only if a better proposer is needed; not required so far.

@@ -1,0 +1,52 @@
+# @package _global_
+# Config for src/preprocessing/triangulate_markers.py — lift per-image marker detections to ONE 3D
+# point per marker using COLMAP poses, snap near-neighbour misreads by location, recover missed
+# frames by reprojection. READ-ONLY on the data; writes logs/ + marker_vis_triangulated/.
+#
+# Usage:
+#   python src/preprocessing/triangulate_markers.py field=field_A plot=20250609
+
+defaults:
+  - /dataset: phone
+  - override /hydra/job_logging: disabled
+  - override /hydra/hydra_logging: disabled
+  - _self_
+
+field: field_A
+plot: ???
+
+source_path: ${dataset.input_dir}/${field}/${plot}
+sparse_dir: sparse/0
+# detector output to triangulate (default = the v8 manifest run). Manifest is read from this JSON's
+# id_filter.manifest; plot_manifest below is only a fallback.
+detections_json: logs/marker_detections_v8_manifest.json
+plot_manifest: [77, 85, 89, 101, 105, 113]
+
+# --- triangulation ---
+min_views: 2                 # a marker needs >= this many detected views to triangulate
+reproj_thresh_px: 6.0        # RANSAC inlier threshold (px reprojection error)
+ransac_iters: 200            # max minimal-pair samples per marker
+
+# --- snap: relabel a dropped misread (e.g. 117) to a manifest marker by LOCATION ---
+# A dropped detection is reassigned to marker M purely if it lands within snap_tol_px of M's 3D
+# reprojection (and survives RANSAC). This is robust to occlusion misreads of ANY bit-distance.
+# snap_hamming_max: optional code guard, 0 = OFF (pure geometry, recommended); set >0 to ALSO require
+# the decoded code within N bits of M (was 1; dropped because heavy occlusion can flip >1 bit).
+snap_enabled: true
+snap_tol_px: 12.0
+snap_hamming_max: 0
+
+# --- reprojection recovery of missed frames ---
+image_margin_px: 40          # allow a marker slightly outside the frame border
+
+# --- output ---
+points_json: marker_points3d.json
+obs_json: marker_triangulation.json
+output_vis_dir: marker_vis_triangulated
+write_overlays: true
+overlay_max_width: 1600
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .

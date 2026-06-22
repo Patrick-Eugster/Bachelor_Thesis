@@ -1,0 +1,80 @@
+# @package _global_
+# Config for src/preprocessing/detect_markers_v7_cct.py — Stage A+B marker DETECTOR.
+# v7 = v6's candidate proposal (real-template NCC + fiducial-snap) → CCTDecode forced-centre
+# decode at each candidate. The decode does two jobs at once: (1) VALIDATION — a real coded
+# marker yields a valid 12-bit code, wheat/arcs yield nothing → v6's false positives are dropped
+# for free; (2) ID — the decoded code is the marker's identity (consistent across views).
+# READ-ONLY: overlays → marker_vis_v7/, detections+IDs → logs/marker_detections_v7.json.
+#
+# Usage:
+#   python src/preprocessing/detect_markers_v7_cct.py field=field_A plot=20250609
+#   python src/preprocessing/detect_markers_v7_cct.py field=field_A plot=20250609 limit=5
+
+defaults:
+  - /dataset: phone
+  - override /hydra/job_logging: disabled
+  - override /hydra/hydra_logging: disabled
+  - _self_
+
+field: field_A
+plot: ???
+
+source_path: ${dataset.input_dir}/${field}/${plot}
+image_subdir: images
+output_vis_dir: marker_vis_v7
+output_json: logs/marker_detections_v7.json
+expected_markers: 6
+
+# === real fiducial template (v6 proposal stage) ===
+template_image: src/preprocessing/templates/fiducial_real.png
+canon_radius: 30
+template_margin: 1.35
+
+# === multi-scale matching (v6 proposal stage) ===
+disk_radius_min: 6
+disk_radius_max: 48
+disk_radius_num: 10
+match_max_width: 2016
+match_blur_ksize: 3
+ncc_threshold: 0.7
+top_k_per_scale: 400
+nms_suppress_radius: 40
+min_rel_contrast: 0.15
+surround_scale_inner: 1.2
+surround_scale_outer: 1.9
+white_s_max: 70
+min_white_surround: 0.65
+fid_search_min: 50
+fid_search_factor: 1.4
+fid_min_area: 30
+fid_max_area: 40000
+fid_min_radius: 3
+fid_min_circularity: 0.45
+fid_min_solidity: 0.85
+fid_max_center_offset: 1.6
+center_inner_frac: 0.45
+keep_without_fiducial: false
+dedup_radius_factor: 3.5
+
+# === CCTDecode forced-centre decode (v7 validation + ID stage) ===
+n_bits: 12
+mark_color: black           # coded marks are dark on a white plate
+# disk-search window is SIZE-RELATIVE (× fiducial radius), NOT a hardcoded distance. Wide enough
+# (×4.5) to also contain the true central disk when v6's proposal lands on a code arc ~2.5 r away;
+# the fill-ratio gate (size-independent) rejects the arcs inside the window so widening is safe.
+decode_search_factor: 4.5
+decode_search_min: 40       # tiny floor only for degenerate (near-zero) radii
+decode_min_fill: 0.92       # area/ellipse-area gate: solid disk ~1.0, code arc <=~0.91 -> arcs rejected
+decode_require_valid_cct: false  # bypass CCTDecode's internal structural check for more recall — the
+                                 # fill-ratio gate + degenerate-code filter already guard precision, and
+                                 # this check redundantly rejected tilted/edge markers we DID find
+                                 # (true = re-enable it for max precision at lower recall)
+
+# --- run / output ---
+limit: 0
+overlay_max_width: 1600
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .

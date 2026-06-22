@@ -2,19 +2,27 @@
 
 Plan for bringing the surveyed **coded ground markers** into our COLMAP pipeline.
 
-**Status (current):** Stage A (the marker *localizer*) — **six** versions built and BOTH classical
-approaches have now hit a ceiling (full write-up in [`MARKER_DETECTION_VERSIONS.md`](MARKER_DETECTION_VERSIONS.md)):
-- **v1–v4** = hand-tuned heuristics (square → ellipses → fiducial disk → hybrid). Ceiling 1.
-- **v5–v6** = template matching (Option A): synthetic template (v5) → **real cropped fiducial +
-  multi-scale NCC + fiducial-snap + ellipse-fit center + dedup (v6, best version)**. v6 is clearly
-  the best (0 duplicates, 100% fiducial-snapped centers, 2/119 empty frames, ~95% sampled precision)
-  **but still not good enough** — ~1/5 correct on the worst cluttered frames (occlusion makes the
-  recall↔precision conflict structural). Ceiling 2.
+**Status (current): Stage A + B SOLVED via Option C = CCTDecode (detect-and-decode).** Full write-up in
+[`MARKER_DETECTION_CCT.md`](MARKER_DETECTION_CCT.md); version history in
+[`MARKER_DETECTION_VERSIONS.md`](MARKER_DETECTION_VERSIONS.md).
+- **v1–v6** (heuristics → template matching) only *localised* and hit a ceiling (false positives, no IDs).
+- **Pivot to Option C — decode the 12-bit code.** The code self-validates (wheat can't form a valid
+  codeword → false positives vanish) **and gives the ID for free** (= the old "Stage B"). The earlier worry
+  that decoding is "fragile on oblique/occluded rings" was resolved: **forcing the decode onto the central
+  disk** (instead of CCTDecode's own blob search, which grabbed arcs) makes all 6 markers decode to distinct,
+  consistent IDs.
+- **v7** (`detect_markers_v7_cct.py`): v6 proposes centers → forced-center decode; **fill-ratio** disk-vs-arc
+  discriminator (size-independent); disk-center reported (0.7 px). **73% recall of Agisoft.**
+- **v8** (`detect_markers_v8_cct.py`): concentric-consensus + re-centering — recovers the center from the
+  arcs when v6 lands on an arc or the disk is occluded. **76% recall**; fixes the arc-vs-disk ID flips.
+- **GT validation in place:** Agisoft `marker_projections.csv` (phone) + `compare_v7_vs_agisoft.py` →
+  recall, per-target ID map (113↔T1 … 77↔T6), miss CSVs. Remaining misses are decode-resolution on far/small
+  markers (per-marker we have 10–27 views each — complete).
 
-**Decision: go learned → Option B = a trained CNN/YOLO marker detector** (repurpose the repo's YOLO
-infra; label the 6 markers in ~30–40 images; run the v6 fiducial-snap inside each predicted box for
-the sub-pixel center). This is the **next approach**. Detection is the **prerequisite for everything
-below** — for both the post-hoc *and* the in-SfM use of markers.
+**Next:** min-views cleanup (drop the noise-tail extras) and/or **triangulation** (vote IDs, get 6 3D
+markers), then feed `(marker_id → pixel xy)` + 3D as **GCPs** into COLMAP (§11b / Option D — now native in
+COLMAP). Detection is the **prerequisite for everything below**, and it's now done. (Option B trained
+CNN/YOLO kept in reserve, not needed.)
 
 ---
 
@@ -82,17 +90,21 @@ The **marker-to-marker** straight-line distance in meters (markers are physical 
 
 We make the pipeline solve it even though we already have the key **because we are testing the pipeline, not looking up the answer**. Using the given coordinates directly would teach us nothing about our pipeline's accuracy.
 
-## 7. Detector approach (decided)
+## 7. Detector approach (REVISED — Option C / CCTDecode won)
 
-**Identify by picking the best of the 6 KNOWN codes — not general decoding.**
+**The plan originally rejected full decoding as "fragile on oblique/occluded rings" and chose
+template-matching. That call was reversed** — see [`MARKER_DETECTION_CCT.md`](MARKER_DETECTION_CCT.md):
 
-| Option | Verdict |
+| Option | Verdict (updated) |
 |---|---|
-| Full 12-bit decode / **CCTDecode** | Rejected as primary — overkill (we have only 6 known codes) + risky (must reproduce Agisoft's exact bit scheme; **fragile on oblique/occluded rings** — decoding needs the *whole* ring clean). Kept as optional later upgrade. |
-| **Template-match the 6 PDF codes** ✅ | Robust, self-contained, inherits Agisoft's scheme via the rendered templates, works per-image (pre- *and* post-SfM), **degrades gracefully** under occlusion. **Chosen.** |
-| **Geometric-ID** (match 3D layout to the 6 GT points) ✅ | Occlusion-immune (reads no ring), but only labels *after* triangulation. **Chosen as cross-check.** |
+| **CCTDecode 12-bit decode** ✅ | **ADOPTED.** The fragility worry was about CCTDecode's *own blob search* grabbing arcs — not the decode itself. **Forcing the decode onto the central disk** (v7/v8) makes all 6 markers decode to distinct, consistent IDs. The decode **self-validates** (kills false positives) and **gives the ID for free**. We don't reproduce Agisoft's bit scheme — IDs are **consistent-only** (a 6-row hand map covers GT lookup). |
+| Template-match the 6 PDF codes | Superseded — v5/v6 template matching only localised and hit a ceiling. |
+| **Geometric-ID** (match 3D layout to GT) | Still useful as a **post-triangulation cross-check** of the decoded IDs. |
 
-**Localization** (the risky part on a green canopy): black disk + white center-dot + ellipse fit + white-square-backing test → **sub-pixel center**. Disk-based ⇒ **immune to ring occlusion**.
+**Localization** (the risky part on a green canopy): the **fill ratio** (blob area ÷ fitted-ellipse area)
+separates the solid **disk** (~1.0) from a code **arc** (≤0.91), size-independently; v8's concentric
+reconstruction recovers the center from the **arcs** when the disk is occluded ⇒ **robust to occlusion of
+either the disk or some arcs**.
 
 **Not all 6 markers are visible in every image — and that's fine:** per-marker methods just label whatever is found; each marker only needs to appear in **≥2 images total** (guaranteed across ~90–120 views) to be triangulated.
 
@@ -107,7 +119,54 @@ STEP 4  Compare to GT distances (tape xlsx / survey)    → accuracy vs Agisoft'
 
 Everything except Step 1 already exists. **Detect on `images/`** (undistorted — matches our `sparse/0` poses). Outputs → `{source_path}/marker_vis*/*.png` + `{source_path}/logs/marker_detections*.json`. Read-only on the data, no pipeline changes.
 
-**Step 1 status:** six localizers built (v1–v6, see [`MARKER_DETECTION_VERSIONS.md`](MARKER_DETECTION_VERSIONS.md)). v1–v4 heuristics hit ceiling 1; **Option A template matching (v5 synthetic → v6 real-template NCC + fiducial-snap + ellipse-fit + dedup) is now BUILT and is the best version** (0 duplicates, 100% fiducial-snapped centers, 2/119 empty frames, ~95% sampled precision) **but hit ceiling 2** — ~1/5 correct on the worst cluttered frames (occlusion → structural recall↔precision conflict). **Decided next = Option B: a trained CNN/YOLO marker detector** (repurpose the repo's YOLO infra; label 6 markers in ~30–40 images; run v6's fiducial-snap inside each predicted box for the sub-pixel center). Only after Step 1 is solid do we move to Stage B (IDs) + Step 2 (triangulate). Helper `make_fiducial_template.py` crops the real fiducial v6 matches.
+**Step 1 status: DONE (Stage A localize + Stage B ID together) via Option C / CCTDecode** — see
+[`MARKER_DETECTION_CCT.md`](MARKER_DETECTION_CCT.md). v1–v6 (heuristics → template matching, helper
+`make_fiducial_template.py`) only localised and hit a ceiling; we pivoted to **decoding the 12-bit code**.
+**v7** (`detect_markers_v7_cct.py`) = v6 proposes centers → forced-center CCTDecode (fill-ratio disk finder,
+disk-center 0.7 px) → **73% recall of Agisoft**; **v8** (`detect_markers_v8_cct.py`) = + concentric-consensus
++ re-centering (recovers center from arcs when v6 lands on an arc / disk occluded) → **76% recall**, fixes the
+arc-vs-disk ID flips. Decode gives the **ID for free** (Stage B done) and self-validates. Validated with
+`compare_v7_vs_agisoft.py` against Agisoft `marker_projections.csv`. **Next = Step 2 (triangulate + vote IDs),
+then GCPs into COLMAP (§11b).** (Remaining per-view misses are decode-resolution on far/small markers;
+per-marker coverage is 10–27 views each = complete.)
+
+**v8 + view-filter + cross-session (4 phone sessions).** Added a cross-image **view filter** to v8
+(`keep_top_k = expected_markers` IDs above a `min_views` floor; dropped detections kept in
+`per_image_dropped` with locations). v8-filtered beats v7 on both axes (118 vs 113 real obs, 0 vs 12 junk
+IDs on 20250609). Run on all 4 sessions — recall of Agisoft (localization, tol 25px): `field_A/20250609`
+**76%**, `field_A/20250618` **89%**, `field_D/20250523` **85%**, `field_D/20250530` **1%** (blurry — 3× less
+sharp, 22 imgs unregistered → **unusable for markers, excluded**). The `keep_top_k` heuristic proved fragile
+(pulled a junk ID into the top-6 on 20250618/20250523), which motivated the **code-structure findings** →
+see **[`MARKER_CODE_STRUCTURE.md`](MARKER_CODE_STRUCTURE.md)**: legal set = 352 of 4096, `B2I`
+rotation-canonicalization, **legal ≠ separated** (min Hamming 1). **Manifest = ground truth decoded from the
+spec PDF** (6 pages → target1=113 … target5=**85** … target6=77) → our 6 deployed codes
+`{77,85,89,101,105,113}`, all legal + mutually ≥2; **117 = 1-bit misread of 85 (target 5)** confirmed.
+Filter built: a **necklace "dictionary" does NOT filter junk** (decoded codes always canonical → always
+legal), so the real filter is the **plot manifest** — implemented as v8 `id_filter=manifest` (the default,
+PDF codes; dropped dets kept with locations in `per_image_dropped`). It cleanly drops both wheat-junk and
+near-neighbour misreads (117, 1535) → all 3 good sessions now keep exactly the 6 real codes. Re-run to
+`marker_vis_v8_manifest/` + `..._v8_manifest.json`; recall vs Agisoft 76/86/84% (20250618 89→86% is honest —
+the old number counted 117's 15 detections as location-hits; manifest keeps only the true 85). Final
+disambiguation (snap 117→85) is the **triangulation-by-location** step — majority vote / Hamming alone unsafe.
+
+**STEP 2 DONE — triangulation (`src/preprocessing/triangulate_markers.py` + yaml).** Modular standalone
+(reads any detector JSON + `sparse/0/`; reuses `colmap_loader` + scipy). Per marker: DLT + RANSAC + LM
+refine → 3D point; **snap** dropped near-neighbour misreads back by LOCATION (Hamming-guarded); **seed** an
+under-covered marker from its misreads (e.g. 85 rebuilt from the 117s — the chicken-and-egg fix);
+**reproject** each 3D point into every frame to recover missed/glared views. Outputs `logs/marker_points3d.json`
+(6 pts + reproj err + parallax) + `logs/marker_triangulation.json` (per-obs detected/snapped/reprojected) +
+`marker_vis_triangulated/`. **Result: all 3 good sessions solve 6/6 markers**, median reproj 0.5–3.1 px,
+parallax 37–112°. field_A/20250618 target5=85 recovered from 117s (15 views, 1.13px). **Validated vs Agisoft
+(20250609): detected pos 0.7px, reprojected pos 2.3px, and ALL 127 Agisoft GT observations now covered (0
+missed) — Agisoft's `Pinned` reprojection reproduced.** Caveat: reproject counts in-bounds+cheirality only
+(not occlusion) → the ~270–590 "reprojected" per session are CANDIDATE positions, not all truly visible; the
+GT-validated subset is accurate to ~2.3px. **NEXT = Step 3: marker-to-marker distances → metric scale / GCPs
+(§11b), validate vs GT distances (tape xlsx / survey).**
+
+**TODO (future, low priority):** a coded-target **generator tool** — given the 352 legal 12-bit codes, return
+K codes with **max-min Hamming ≥ 3** so future users deploy markers whose single-bit misreads are *uniquely*
+correctable (our current markers are only min-distance 2). Forward-looking only; can't re-place existing
+markers. Details in [`MARKER_CODE_STRUCTURE.md`](MARKER_CODE_STRUCTURE.md) §7.
 
 ## 9. Where markers actually help (honest)
 

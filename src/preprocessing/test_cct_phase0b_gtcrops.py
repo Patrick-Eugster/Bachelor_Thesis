@@ -47,17 +47,6 @@ def gt_path(field, plot):
                         field, plot, "processed", "marker_projections.csv")
 
 
-def classify(good_codes, consensus):
-    """Per-crop status vs the target's consensus code, so problems are browsable.
-    OK = decoded the consensus; WRONG = decoded a different real code;
-    DEGENERATE = only degenerate codes (disk/arc artifacts); NONE = nothing."""
-    if consensus is not None and consensus in good_codes:
-        return "ok"
-    if good_codes:
-        return "wrong"
-    return "none"   # nothing non-degenerate decoded (covers degenerate-only too)
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--field", default="field_A")
@@ -72,9 +61,7 @@ def main():
     out_dir = os.path.join(session, "marker_vis_cct_phase0b")
     if os.path.isdir(out_dir):
         shutil.rmtree(out_dir)
-    # one subfolder per status so the problem crops are easy to browse by eye
-    for sub in ("ok", "wrong", "none"):
-        os.makedirs(os.path.join(out_dir, sub), exist_ok=True)
+    os.makedirs(out_dir, exist_ok=True)
 
     csv_path = gt_path(args.field, args.plot)
     by_cam = defaultdict(list)
@@ -87,9 +74,9 @@ def main():
     print(f"GT crops from {csv_path}")
     print(f"crop half-width: {args.halfwidth}px   images: {len(cams)}\n")
 
-    # --- PASS 1: decode every GT crop, remember its result ---
+    # --- PASS 1: decode every GT crop, remember the decoded code(s) per marker ---
     hw = args.halfwidth
-    records = []   # (cam, mk, x, y, codes, good_codes, vis)
+    records = []   # (cam, mk, x, y, good_codes)
     codes_by_target = defaultdict(Counter)
     for cam in cams:
         img = cv2.imread(os.path.join(images_dir, cam + ".jpg"))
@@ -101,47 +88,95 @@ def main():
             crop = img[max(0, yi - hw):min(H, yi + hw),
                        max(0, xi - hw):min(W, xi + hw)]
             try:
-                table, vis = cct.CCT_extract(crop, N_BITS, CIRC_THRESH, COLOR)
+                table, _ = cct.CCT_extract(crop, N_BITS, CIRC_THRESH, COLOR)
             except Exception as e:
-                table, vis = [], crop.copy()
+                table = []
                 print(f"  {cam} {mk}: decode ERROR {type(e).__name__}")
-            codes = [int(c[0]) for c in table]
-            good = [c for c in codes if c not in DEGENERATE]
+            good = [int(c[0]) for c in table if int(c[0]) not in DEGENERATE]
             for c in good:
                 codes_by_target[mk][c] += 1
-            records.append((cam, mk, x, y, codes, good, vis))
+            records.append((cam, mk, x, y, good))
 
-    # consensus code per target = most common non-degenerate
-    consensus = {mk: (c.most_common(1)[0][0] if c else None)
-                 for mk, c in codes_by_target.items()}
+    # each target's "expected" ID = the most common code it decoded (its mode)
+    mode = {mk: (c.most_common(1)[0][0] if c else None)
+            for mk, c in codes_by_target.items()}
+    # a mode shared by >1 target is BOGUS (distinct markers must have distinct IDs)
+    mode_owners = defaultdict(list)
+    for mk, m in mode.items():
+        if m is not None:
+            mode_owners[m].append(mk)
+    collisions = {m: ts for m, ts in mode_owners.items() if len(ts) > 1}
 
-    # --- PASS 2: classify, save crops into status folders, write CSV ---
-    rep_csv = os.path.join(out_dir, "decode_report.csv")
-    status_count = Counter()
+    # pick the single decoded id we report per marker + an honest status:
+    #   unreliable = this target's mode is a COLLISION (shared id) -> no trustworthy id
+    #   consistent = decoded this target's unique mode id
+    #   inconsistent = decoded a different id
+    #   no-decode = decoded nothing
+    def reported_id(good, mk):
+        m = mode.get(mk)
+        if m is not None and m in collisions:
+            return (good[0] if good else m), "unreliable"
+        if m in good:
+            return m, "consistent"
+        if good:
+            return good[0], "inconsistent"
+        return None, "no-decode"
+
+    # --- write ONE flat CSV, sorted by marker then camera (all of a target together) ---
+    rep_csv = os.path.join(out_dir, "decode_per_image.csv")
     with open(rep_csv, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["Camera", "Marker", "GT_X", "GT_Y", "consensus",
-                    "decoded_codes", "status"])
-        for cam, mk, x, y, codes, good, vis in records:
-            st = classify(good, consensus.get(mk))
-            status_count[st] += 1
-            w.writerow([cam, mk, f"{x:.1f}", f"{y:.1f}", consensus.get(mk),
-                        "|".join(map(str, codes)) or "-", st])
-            tag = f"{cam}_{mk.replace(' ', '')}_{('-'.join(map(str, good)) or 'none')}.png"
-            cv2.imwrite(os.path.join(out_dir, st, tag), vis)
+        w.writerow(["Marker", "expected_id", "Camera", "decoded_id", "status"])
+        for cam, mk, x, y, good in sorted(records, key=lambda r: (r[1], r[0])):
+            rid, st = reported_id(good, mk)
+            w.writerow([mk, mode.get(mk), cam, rid if rid is not None else "-", st])
 
+    # --- ONE overlay per image: decoded id drawn on each marker, colour = status ---
+    by_cam_rec = defaultdict(list)
+    for rec in records:
+        by_cam_rec[rec[0]].append(rec)
+    COL = {"consistent": (0, 200, 0), "inconsistent": (0, 0, 255),
+           "unreliable": (0, 165, 255), "no-decode": (160, 160, 160)}  # green/red/orange/gray
+    for cam, recs in by_cam_rec.items():
+        img = cv2.imread(os.path.join(images_dir, cam + ".jpg"))
+        if img is None:
+            continue
+        rad = max(16, int(0.014 * max(img.shape[:2])))
+        for _, mk, x, y, good in recs:
+            rid, st = reported_id(good, mk)
+            col = COL[st]
+            p = (int(round(x)), int(round(y)))
+            cv2.circle(img, p, rad, col, 5)
+            txt = f"{mk.replace('target ','T')}={rid if rid is not None else '?'}"
+            org = (p[0] + rad + 4, p[1])
+            # draw a dark-grey outline first (thicker), then the colour on top -> readable
+            cv2.putText(img, txt, org, cv2.FONT_HERSHEY_SIMPLEX, 1.5, (50, 50, 50), 9,
+                        cv2.LINE_AA)
+            cv2.putText(img, txt, org, cv2.FONT_HERSHEY_SIMPLEX, 1.5, col, 4,
+                        cv2.LINE_AA)
+        cv2.imwrite(os.path.join(out_dir, cam + ".jpg"), img)
+
+    # --- the headline: a 6-line summary that flags the problem automatically ---
     n = len(records)
-    print(f"GT markers fed: {n}")
-    print(f"status: ok={status_count['ok']} ({100*status_count['ok']/max(1,n):.0f}%)  "
-          f"wrong={status_count['wrong']}  none={status_count['none']}")
-    print(f"\nproblem crops to eyeball (occlusion etc.):")
-    print(f"  WRONG (decoded a different code): {out_dir}/wrong/")
-    print(f"  NONE  (decoded nothing/degenerate): {out_dir}/none/")
-    print(f"per-crop report CSV: {rep_csv}")
-    print("\nCONSISTENCY — decoded codes per target (consensus = dominant):")
+    n_consistent = sum(1 for _, mk, _, _, g in records if reported_id(g, mk)[1] == "consistent")
+    print(f"GT markers decoded: {n}   trustworthy (green): {n_consistent} "
+          f"({100*n_consistent/max(1,n):.0f}%)   [only non-colliding IDs count]\n")
+    print("PER-TARGET SUMMARY (expected_id = most common decode):")
+    print(f"  {'target':>9} {'expected':>9} {'consistent':>11}   note")
     for mk in sorted(codes_by_target):
         c = codes_by_target[mk]
-        print(f"  {mk:>10}: consensus={consensus[mk]}   all={dict(c)}")
+        m = mode[mk]
+        same = c[m]
+        tot = sum(c.values())
+        note = ""
+        if m in collisions:
+            note = f"!! COLLISION: id {m} also claimed by {[t for t in collisions[m] if t!=mk]}"
+        print(f"  {mk:>9} {str(m):>9} {f'{same}/{tot}':>11}   {note}")
+    if collisions:
+        print("\n  -> colliding IDs are BOGUS: distinct physical markers can't share an ID,")
+        print("     so those targets are NOT being decoded reliably by stock CCTDecode.")
+    print(f"\noverlays (id drawn on each marker, red=inconsistent): {out_dir}/")
+    print(f"flat CSV (grouped by target): {rep_csv}")
 
 
 if __name__ == "__main__":
