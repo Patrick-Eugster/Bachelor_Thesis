@@ -73,6 +73,32 @@ def _read_summary(source_path, filename):
         return None
 
 
+def _tape_gate(cfg, source_path, read_summary):
+    """Decide whether to run Flavour 2 (GCP-BA) for this field, from the Step-3 tape↔survey agreement.
+    Returns True = run GCP-BA (survey trusted), False = skip it (survey suspect, keep Flavour 1).
+    When tape_gate is off, always True (current behaviour). Writes logs/metric_choice.json so a
+    downstream consumer (e.g. feeding 3DGS) knows which metric model was chosen and why."""
+    if not cfg.get("tape_gate", False):
+        return True
+    sc = read_summary(source_path, "marker_scale.json")
+    tvs = sc.get("tape_vs_survey_mean_abs_mm") if sc else None
+    thr = float(cfg.get("tape_gate_threshold_mm", 12.0))
+    if tvs is None:                       # no tape → can't gate, don't block
+        print(f"\n[tape gate] enabled but no tape↔survey data → not gating (running GCP-BA).")
+        return True
+    good = float(tvs) <= thr
+    chosen = "sparse_metric_gcp" if good else "sparse_metric"
+    print(f"\n[tape gate] tape↔survey {tvs:.1f} mm {'<=' if good else '>'} {thr:.1f} mm "
+          f"→ survey {'GOOD' if good else 'SUSPECT'} → chosen metric model: {chosen}/")
+    choice = {"chosen_model": chosen, "survey_quality": "good" if good else "suspect",
+              "tape_vs_survey_mm": round(float(tvs), 2), "threshold_mm": thr, "ran_gcp_ba": bool(good)}
+    try:
+        json.dump(choice, open(os.path.join(source_path, "logs", "metric_choice.json"), "w"), indent=1)
+    except OSError:
+        pass
+    return good
+
+
 def _count_solved_markers(source_path, read_summary):
     """How many markers got a valid 3D point in triangulation (reads marker_points3d.json).
     0 if the file is missing (triangulation skipped or failed) — the failsafe then skips metric steps."""
@@ -105,6 +131,10 @@ def _emit_marker_block(source_path, read_summary):
     if gcp:
         mb, ma = gcp["marker_reproj_px_before"], gcp["marker_reproj_px_after"]
         print(f"{'GCP marker reproj (px):':<28} {mb['mean']:.1f} → {ma['mean']:.1f}  (scene {gcp['scene_reproj_px_after']:.2f})")
+    choice = read_summary(source_path, "metric_choice.json")
+    if choice:
+        print(f"{'Tape gate → chosen model:':<28} {choice['chosen_model']}/  "
+              f"(survey {choice['survey_quality']}, tape↔survey {choice['tape_vs_survey_mm']} mm)")
     print("="*50)
 
 
@@ -208,10 +238,22 @@ def main(cfg: DictConfig):
                 "python", "src/preprocessing/apply_metric_transform.py", *common_args,
             ], timings, fatal=False)
 
+        # TAPE GATE: auto-decide whether Flavour 2 (GCP-BA) is trustworthy for this field. The LOMO
+        # experiment (docs/MARKER_COLMAP_RERUN_EXPERIMENT.md) showed anchoring markers HELPS when the
+        # survey is good and HURTS when it's off — and the Step-3 tape↔survey agreement tells us which
+        # IN ADVANCE. So: tape agrees (small) → survey trusted → run GCP-BA (Flavour 2 chosen); tape
+        # disagrees (large) → survey suspect → skip GCP-BA, keep Flavour 1 as the metric model.
+        # Default OFF (run whatever run_marker_gcp says). Writes logs/metric_choice.json for downstream.
+        gcp_allowed = _tape_gate(cfg, source_path, _read_summary) if markers_ok else False
+
         if markers_ok and cfg.get("run_marker_gcp", True):
-            run_step("8. GCP-BA (Flavour 2)", [
-                "python", "src/preprocessing/marker_gcp_ba.py", *common_args,
-            ], timings, fatal=False)
+            if gcp_allowed:
+                run_step("8. GCP-BA (Flavour 2)", [
+                    "python", "src/preprocessing/marker_gcp_ba.py", *common_args,
+                ], timings, fatal=False)
+            else:
+                print("  [tape gate] skipping step 8 (GCP-BA) — survey suspect; "
+                      "keeping Flavour 1 (sparse_metric/) as the metric model.")
 
     total = time.perf_counter() - t_start
 

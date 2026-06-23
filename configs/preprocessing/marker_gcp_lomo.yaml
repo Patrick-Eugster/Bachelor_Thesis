@@ -1,0 +1,35 @@
+# @package _global_
+# Config for src/preprocessing/marker_gcp_lomo.py — Arm A experiment (leave-one-marker-out).
+# Tests whether refining intrinsics in a marker-anchored bundle adjustment improves the camera model,
+# measured by held-out marker error (anchor 5, predict the 6th). Plan: docs/MARKER_COLMAP_RERUN_EXPERIMENT.md
+# DIAGNOSTIC only — reads sparse_metric/ + logs, writes logs/metric_gcp_lomo.json, touches nothing else.
+#
+# Usage:
+#   python src/preprocessing/marker_gcp_lomo.py field=field_A plot=20250609
+
+defaults:
+  - /dataset: phone
+  - override /hydra/job_logging: disabled
+  - override /hydra/hydra_logging: disabled
+  - _self_
+
+field: field_A
+plot: ???
+
+source_path: ${dataset.input_dir}/${field}/${plot}
+
+metric_model: sparse_metric                 # Flavour-1 metric model = the start point for every fold
+metric_frame_json: logs/metric_frame.json   # gives the local-frame origin (must match Flavour 1)
+triangulation_json: logs/marker_triangulation.json   # per-marker 2D observations
+survey_file: demoanlage2025_v0/metadata/markers/field_<L>_coordinates.txt
+
+# a marker needs >= this many real observations to be usable as an anchor / held-out target
+min_views: 2
+use_outliers: false   # include RANSAC-outlier detections too (default: inliers only)
+
+output_json: logs/metric_gcp_lomo.json
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .

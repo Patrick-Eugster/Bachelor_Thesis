@@ -36,6 +36,67 @@ Our COLMAP currently has **no metric scale** (it relies on a Umeyama transform o
 
 **Post-hoc vs in-SfM — both need the detector first.** Whether we triangulate markers *after* SfM (post-hoc, easy, validates the detector) or feed them *into* SfM (the goal, §11b), the prerequisite is identical: the 2D marker points from Stage A. So the detector is step one either way. Natural order: get detection solid → post-hoc validation → inject into SfM.
 
+**Which metric reference you need — three tiers (what unlocks "real metres").** COLMAP alone produces only *shape* (arbitrary units). You need SOME real-world length reference to recover *size*; how much you measure decides how much you get:
+
+| reference you have | what it unlocks | needed for steps |
+|---|---|---|
+| **Survey coordinates** (`field_<L>_coordinates.txt`) | full metric scale **+ absolute georeferencing** (exact CH1903 position) + orientation | metric scale (6), Flavour 1 (7), Flavour 2 (8), LOMO experiment |
+| **Tape distances only** (hand-measured marker-to-marker) | **scale/size only** (no absolute world position) — a cheaper manual fallback | could drive scale (6) without survey |
+| **Neither — but markers have a KNOWN printed size** (15 cm square / 13 cm circle, spec PDF) | **scale/size only**, with *zero* field measurement — a "free" ruler baked into the marker | not yet implemented (forward-looking) |
+| **No real-world reference at all** | nothing — stays arbitrary units; markers add nothing over COLMAP's natural feature points | — |
+
+So detect (4) + triangulate (5) need **no** measurements (markers come out in arbitrary units); only the metric steps (6–8) + the LOMO experiment need survey. Without survey but with tape → scale only. Without either, the markers' own known physical size *could* still give scale (not built yet).
+
+## 1b. Reference availability — cases, survey-quality detection, and the soft-GCP question
+
+> **Working assumption:** for the current demoanlage data we HAVE both survey + tape on every field. This
+> section records what happens when we don't, because future captures may lack one — and because the
+> answers changed our priorities. (Raised + discussed 2026-06-23.)
+
+**A. What actually runs in each case** (current code behaviour; marker steps are fail-soft, so a missing
+file warns + skips rather than crashing):
+
+| you have | runs | you get | georeferenced? |
+|---|---|---|---|
+| **survey + tape** (current) | all steps 4–8 + tape cross-check + LOMO | full metric model, validated two ways | ✅ yes |
+| **survey, no tape** | all steps 4–8 (tape compare skipped — coded optional) | full metric model; lose the independent tape check | ✅ yes |
+| **tape, no survey** | detect + triangulate run; metric steps **skip** TODAY | markers in arbitrary units — *but Tier-2 scale is possible*, see C | ❌ size-only even when built |
+| **neither** | detect + triangulate only | markers in arbitrary units, no metric scale | ❌ |
+
+**The metric MODEL needs the *survey* (absolute XYZ)** — `apply_metric_transform.py` + `marker_gcp_ba.py`
+use it. **The tape is never required to build the model** — it is a validation cross-check only
+(`marker_scale.py` tolerates a missing tape xlsx).
+
+**B. When do we know a field's survey is GOOD vs BAD?**
+- **Before re-running COLMAP-with-markers — IF we have the tape.** The Step-3 check
+  (`marker_scale.py`) runs on the *already-finished* reconstruction (post-hoc triangulation, no re-run)
+  and compares survey vs the **independent tape**. Disagreement = suspect survey. This is how we caught
+  field_A (tape↔survey 17 mm) vs field_D (8 mm) *without* any marker-anchored BA.
+- **Only after — if survey is our ONLY reference.** Then the **LOMO test** (which IS the marker-anchored
+  BA) is what exposes it: hold one marker out, see if anchoring the rest predicts it well. Verdict =
+  output of the run.
+- So: **tape (or Agisoft) ⇒ known in advance; survey-only ⇒ found out by running it.**
+
+**C. Tape-only metric scale (Tier 2) — possible, NOT yet wired.** With tape but no survey we *can* still
+get metres: marker distances in COLMAP units ÷ same distances from the tape = scale factor → multiply the
+model. Gives **size only**, not georeferencing — **but phenotyping (real-mm head sizes) only needs size**,
+so tape-alone would suffice for the thesis end-goal. `marker_scale.py` already computes a distance-ratio
+scale; what's missing is a Flavour-1 variant that applies a *pure scaling* (no absolute survey anchor).
+**TODO if a field ever lacks survey.**
+
+**D. The soft-GCP question (demoted by the tape gate).** The LOMO experiment showed hard-anchoring helps
+on good-survey fields and hurts on bad ones (§ see `MARKER_COLMAP_RERUN_EXPERIMENT.md`). Two ways to act:
+- **Tape gate (cheap, enough for now) — ✅ IMPLEMENTED** (`run_preprocessing.py`, `tape_gate=true`; see
+  §8): if tape agrees with survey (≤ 12 mm) → run the anchored BA (Flavour 2); if it disagrees → stay
+  post-hoc (Flavour 1). All-or-nothing per field. Works because our fields are cleanly good (field_D) or
+  bad (field_A). Writes `logs/metric_choice.json`.
+- **Soft/weighted GCPs (general, more work):** per-marker uncertainty so good markers pull and bad ones
+  are down-weighted. Needed only for (i) *mixed-quality within one field* (5 good + 1 bad — the gate
+  would discard the whole field) or (ii) *no-tape* sessions (no cheap pre-check). What Agisoft does
+  natively (marker "accuracy").
+- **Decision:** the tape gate handles our current data, so **soft GCPs drop from "next" to "later, if
+  needed"** — revisit when we hit a mixed-quality or tape-less field.
+
 ## 2. What the markers are
 
 Agisoft **12-bit coded circular targets**: a solid **black central disk** with a **white center dot** (the precise point), ringed by **12 angular sectors** (black/white) that encode the ID. White square backing. **6 per phone field** (`target 1`–`6`), **3 per FIP plot**. Mounted on **stakes at canopy height** → visible in side-view phone images for both May and June sessions. Spec: `reference/agisoft/Coded_12bit_15cm-square_13cm-outer-circle_.pdf`.
@@ -261,8 +322,21 @@ sub-toggles (`run_marker_detect/triangulate/scale/metric/gcp`). Run with
 instead of aborting; (2) a **failsafe** counts solved 3D markers after triangulation and **skips the metric steps
 6-8 if fewer than `min_markers` (default 4)** solved, so we never anchor metric size on 1-2 markers — the model
 just stays in relative scale. The orchestrator prints a `MARKER LAYER SUMMARY` recap + a per-step TIMING table.
-**Measured timing (field_A/20250609, markers-only):** detect 2:16 / triangulate 0:17 / scale+Flavour 1+Flavour 2
-≈ 1 s total → **CCT detection is ~88% of the cost; the only step worth optimising.**
+**Measured timing (FULL pipeline, field_A/20250609):** uniform 0s / COLMAP 1:55 / compare 1s / detect 2:08 /
+triangulate 0:16 / scale+Flavour 1+Flavour 2 ≈ 1s → total 4:24. **COLMAP SfM (~44%) + CCT detection (~48%) =
+~92%**; everything else negligible. Flavour 2 (GCP-BA) is **1 second** — it does NOT re-run COLMAP, just one
+pycolmap BA pass on the finished model. **CCT detection then parallelised → 2:08 → 0:22 (5.8×)** (see
+`MARKER_DETECTION_CCT.md`; `num_workers`, default 8).
+
+**TAPE GATE (`run_preprocessing.py`, default OFF — `tape_gate=true` to enable).** Auto-picks the metric model
+from survey trustworthiness, operationalising the Arm-A finding (anchoring HELPS on good survey, HURTS on bad).
+After Step 3 it reads `tape_vs_survey_mean_abs_mm` from `marker_scale.json`: **≤ `tape_gate_threshold_mm`
+(default 12) → survey GOOD → run Flavour 2 GCP-BA (step 8), chosen model = `sparse_metric_gcp/`; > threshold →
+survey SUSPECT → skip step 8, keep Flavour 1 (`sparse_metric/`)**. Writes `logs/metric_choice.json`
+(`chosen_model`, `survey_quality`, `tape_vs_survey_mm`, `ran_gcp_ba`) for a downstream consumer (e.g. which
+model to feed 3DGS) + shows the choice in the recap. Verified: field_D 8.2 mm → GOOD/`sparse_metric_gcp`,
+field_A 17.1 mm → SUSPECT/`sparse_metric`. Graceful: no tape data → warns + doesn't block (runs GCP-BA). This
+is the cheap binary alternative to soft GCPs (§1b D).
 
 **TODO (future, low priority):** a coded-target **generator tool** — given the 352 legal 12-bit codes, return
 K codes with **max-min Hamming ≥ 3** so future users deploy markers whose single-bit misreads are *uniquely*

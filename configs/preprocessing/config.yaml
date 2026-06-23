@@ -38,6 +38,15 @@ run_marker_gcp:        true   # step 8: Flavour 2 — GCP-constrained BA (pycolm
 # (3 is the mathematical minimum for a unique scale+rotation+translation; 4 leaves a safety margin.)
 min_markers: 4
 
+# TAPE GATE: auto-pick the metric model from survey trustworthiness. The LOMO experiment
+# (docs/MARKER_COLMAP_RERUN_EXPERIMENT.md) showed anchoring markers HELPS on good-survey fields and HURTS
+# on bad ones — and the Step-3 tape↔survey agreement reveals which in advance. When ON: tape agrees
+# (<= threshold) → survey trusted → run Flavour 2 GCP-BA (step 8); tape disagrees → survey suspect →
+# skip step 8, keep Flavour 1 (sparse_metric/). Writes logs/metric_choice.json. Needs tape + step 6.
+# Default OFF = run whatever run_marker_gcp says (no auto-gating).
+tape_gate: false
+tape_gate_threshold_mm: 12.0   # tape↔survey mean-abs <= this = good survey (field_D ~8 mm good, field_A ~17 mm bad)
+
 # clean COLMAP output folders (distorted/, sparse/, images/, stereo/) before running step 2.
 # Useful when re-running on the same plot — otherwise stale state from a previous (possibly broken)
 # run can confuse COLMAP's undistorter or the orchestrator's sub-model picker.
