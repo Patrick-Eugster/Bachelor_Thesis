@@ -1,7 +1,7 @@
 # @package _global_
 # Config for src/preprocessing/triangulate_markers.py — lift per-image marker detections to ONE 3D
 # point per marker using COLMAP poses, snap near-neighbour misreads by location, recover missed
-# frames by reprojection. READ-ONLY on the data; writes logs/ + marker_vis_triangulated/.
+# frames by reprojection. READ-ONLY on the data; writes logs/ + marker_vis_v8manifest_triangulated/.
 #
 # Usage:
 #   python src/preprocessing/triangulate_markers.py field=field_A plot=20250609
@@ -42,7 +42,7 @@ image_margin_px: 40          # allow a marker slightly outside the frame border
 # --- output ---
 points_json: marker_points3d.json
 obs_json: marker_triangulation.json
-output_vis_dir: marker_vis_triangulated
+output_vis_dir: marker_vis_v8manifest_triangulated
 write_overlays: true
 overlay_max_width: 1600
 

@@ -1,9 +1,17 @@
 """Orchestrator for the phone-image preprocessing pipeline.
 
-Runs the three preprocessing steps in order, with toggles to skip any of them:
+Base SfM steps (always available, toggle to skip any):
     1. preprocess_uniform_size.py — center-crop to one resolution (or symlink if already uniform)
     2. run_colmap.py             — COLMAP SfM: feature extraction → matching → mapper → undistortion
     3. compare_to_agisoft.py     — per-camera translation/rotation error vs Agisoft reference (optional)
+
+Marker layer (steps 4-8, only when run_markers=true; each is fail-soft — a missing survey file or
+local-only pycolmap warns and continues instead of aborting):
+    4. detect_markers_v8_cct.py    — CCT decode per image + manifest filter
+    5. triangulate_markers.py      — lift detections to one 3D point per marker
+    6. marker_scale.py             — metric scale check vs survey XYZ + tape   (needs survey)
+    7. apply_metric_transform.py   — Flavour 1: similarity → metric model      (needs survey)
+    8. marker_gcp_ba.py            — Flavour 2: GCP-constrained BA (pycolmap)   (needs survey)
 
 Each step is launched as a subprocess so it can be run individually too. Hydra config:
 configs/preprocessing/config.yaml.
@@ -12,6 +20,7 @@ Typical usage:
     python src/preprocessing/run_preprocessing.py field=field_D plot=20250523
     python src/preprocessing/run_preprocessing.py field=field_A plot=20250618 run_compare=true
     python src/preprocessing/run_preprocessing.py plot=20250523 run_uniform=false   # already uniform/symlinked
+    python src/preprocessing/run_preprocessing.py field=field_A plot=20250609 run_markers=true   # full marker layer
 """
 
 import json
@@ -64,6 +73,41 @@ def _read_summary(source_path, filename):
         return None
 
 
+def _count_solved_markers(source_path, read_summary):
+    """How many markers got a valid 3D point in triangulation (reads marker_points3d.json).
+    0 if the file is missing (triangulation skipped or failed) — the failsafe then skips metric steps."""
+    pts = read_summary(source_path, "marker_points3d.json")
+    if not pts:
+        return 0
+    return sum(1 for v in pts.get("points3d", {}).values() if v)
+
+
+def _emit_marker_block(source_path, read_summary):
+    """Re-print the headline marker numbers at the very end (scale, RMS, GCP residual).
+    Each value is pulled from the marker scripts' own JSONs and shown only if that step ran."""
+    pts   = read_summary(source_path, "marker_points3d.json")
+    scale = read_summary(source_path, "marker_scale.json")
+    gcp   = read_summary(source_path, "metric_gcp_ba.json")
+    if not any((pts, scale, gcp)):
+        print("\n[marker summary missing — marker steps may have been skipped or failed]")
+        return
+    print("\n" + "="*50)
+    print("      MARKER LAYER SUMMARY")
+    print("="*50)
+    if pts:
+        solved = sum(1 for v in pts.get("points3d", {}).values() if v)
+        print(f"{'Markers solved (3D):':<28} {solved} / {len(pts.get('manifest', []))}")
+        print(f"{'Snapped / reprojected:':<28} {pts.get('n_snapped', '-')} / {pts.get('n_reprojected', '-')}")
+    if scale:
+        print(f"{'Metric scale (m/unit):':<28} {scale['scale_umeyama']:.4f}  (CV {100*scale['scale_ratio_cv']:.2f}%)")
+        print(f"{'Umeyama RMS vs survey:':<28} {scale['umeyama_rms_mm']:.1f} mm")
+        print(f"{'Ours vs survey (dist):':<28} {scale['ours_vs_survey_mean_abs_mm']:.1f} mm")
+    if gcp:
+        mb, ma = gcp["marker_reproj_px_before"], gcp["marker_reproj_px_after"]
+        print(f"{'GCP marker reproj (px):':<28} {mb['mean']:.1f} → {ma['mean']:.1f}  (scene {gcp['scene_reproj_px_after']:.2f})")
+    print("="*50)
+
+
 def fmt_time(seconds):
     """Format seconds into h:mm:ss string."""
     h = int(seconds // 3600)
@@ -72,8 +116,10 @@ def fmt_time(seconds):
     return f"{h}:{m:02d}:{s:02d}"
 
 
-def run_step(name, cmd, timings):
-    """Run one pipeline step as a subprocess; abort the pipeline if it fails."""
+def run_step(name, cmd, timings, fatal=True):
+    """Run one pipeline step as a subprocess; returns True on success.
+    fatal=True aborts the whole pipeline on failure (base SfM steps); fatal=False just warns and
+    continues (marker steps — a missing survey file or local-only pycolmap shouldn't kill the run)."""
     print(f"\n{'='*60}\n  STEP: {name}\n{'='*60}")
     print(f">>> {' '.join(cmd)}\n")
     t0 = time.perf_counter()
@@ -82,8 +128,13 @@ def run_step(name, cmd, timings):
     timings[name] = elapsed
     print(f"\n>>> {name} finished in {fmt_time(elapsed)}")
     if result.returncode != 0:
-        print(f"!!! ERROR: {name} exited with code {result.returncode}. Aborting pipeline.")
-        sys.exit(result.returncode)
+        if fatal:
+            print(f"!!! ERROR: {name} exited with code {result.returncode}. Aborting pipeline.")
+            sys.exit(result.returncode)
+        print(f"!!! WARNING: {name} exited with code {result.returncode}. "
+              f"Continuing (marker step is non-fatal).")
+        return False
+    return True
 
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="preprocessing/config")
@@ -98,9 +149,11 @@ def main(cfg: DictConfig):
     timings = {}
     t_start = time.perf_counter()
 
+    # str() because numeric-looking plot names (e.g. 20250523) get parsed by Hydra/YAML as int
+    source_path = os.path.join(cfg.dataset.input_dir, str(cfg.field), str(cfg.plot))
+
     # optional cleanup: nuke previous COLMAP output before step 2 so re-runs start fresh
     if cfg.run_colmap and cfg.get("clean_before_colmap", False):
-        source_path = os.path.join(cfg.dataset.input_dir, str(cfg.field), str(cfg.plot))
         print(f"\n[clean_before_colmap=true] cleaning previous COLMAP output...")
         _clean_colmap_outputs(source_path)
 
@@ -118,6 +171,47 @@ def main(cfg: DictConfig):
         run_step("3. compare to Agisoft", [
             "python", "src/preprocessing/compare_to_agisoft.py", *common_args,
         ], timings)
+
+    # --- marker layer (steps 4-8) — only when run_markers=true; each step is fail-soft so a missing
+    # survey file or local-only pycolmap warns and continues instead of aborting the whole run ---
+    if cfg.get("run_markers", False):
+        if cfg.get("run_marker_detect", True):
+            run_step("4. marker detect (CCT v8)", [
+                "python", "src/preprocessing/detect_markers_v8_cct.py", *common_args,
+            ], timings, fatal=False)
+
+        if cfg.get("run_marker_triangulate", True):
+            run_step("5. marker triangulate", [
+                "python", "src/preprocessing/triangulate_markers.py", *common_args,
+            ], timings, fatal=False)
+
+        # FAILSAFE: the metric steps (6-8) fit a similarity to the survey, which needs enough solved
+        # 3D markers to be reliable (>= 3 non-degenerate points for a unique scale+R+t; we default to
+        # a stricter min_markers). Too few solved → skip 6-8 and keep the model in relative scale,
+        # rather than anchor metric size on 1-2 markers and silently produce a wrong metric frame.
+        min_markers = int(cfg.get("min_markers", 4))
+        solved = _count_solved_markers(source_path, _read_summary)
+        markers_ok = solved >= min_markers
+        if not markers_ok:
+            print(f"\n!!! MARKER FAILSAFE: only {solved} marker(s) solved (need >= {min_markers}). "
+                  f"Skipping metric steps 6-8 — reconstruction stays in relative (non-metric) scale.")
+        else:
+            print(f"\n[marker failsafe] {solved} markers solved (>= {min_markers}) — metric steps enabled.")
+
+        if markers_ok and cfg.get("run_marker_scale", True):
+            run_step("6. marker metric scale", [
+                "python", "src/preprocessing/marker_scale.py", *common_args,
+            ], timings, fatal=False)
+
+        if markers_ok and cfg.get("run_marker_metric", True):
+            run_step("7. metric model (Flavour 1)", [
+                "python", "src/preprocessing/apply_metric_transform.py", *common_args,
+            ], timings, fatal=False)
+
+        if markers_ok and cfg.get("run_marker_gcp", True):
+            run_step("8. GCP-BA (Flavour 2)", [
+                "python", "src/preprocessing/marker_gcp_ba.py", *common_args,
+            ], timings, fatal=False)
 
     total = time.perf_counter() - t_start
 
@@ -203,6 +297,11 @@ def main(cfg: DictConfig):
 
     if s_compare: _emit_compare_block(s_compare)
     elif cfg.run_compare: print("\n[compare summary missing — step may have failed before writing JSON]")
+
+    # marker recap — light block (the marker scripts already print their own boxes; this just pulls
+    # the headline numbers from their JSONs so the metric result is visible at the very end too)
+    if cfg.get("run_markers", False):
+        _emit_marker_block(source_path, _read_summary)
 
     # final pipeline-wide timing table
     print("\n" + "="*60)

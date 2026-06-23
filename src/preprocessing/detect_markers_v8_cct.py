@@ -19,7 +19,9 @@ Usage:
 """
 
 import json
+import multiprocessing as mp
 import os
+import shutil
 import time
 
 import cv2
@@ -55,6 +57,89 @@ def detect_and_decode(bgr, templates, work_scale, cfg):
     return list(best.values())
 
 
+# --- parallel pass-1 helpers -------------------------------------------------
+# Each image decodes fully independently, so we split the work across N worker PROCESSES (not threads —
+# the decode is CPU-bound Python, the GIL would serialise threads). The shared read-only inputs
+# (template bank, work scale, cfg, image dir) are handed to each worker ONCE via the pool initializer
+# so the big template bank isn't re-pickled per image.
+_WORKER = {}
+
+
+def _init_worker(image_dir, templates, work_scale, cfg):
+    """Runs once when a worker process starts: stash the shared read-only inputs as module globals.
+    Also pins OpenCV to 1 thread per process so N processes don't each spawn their own OpenCV threads
+    and oversubscribe the cores."""
+    cv2.setNumThreads(1)
+    _WORKER["image_dir"] = image_dir
+    _WORKER["templates"] = templates
+    _WORKER["work_scale"] = work_scale
+    _WORKER["cfg"] = cfg
+
+
+def _decode_one(f):
+    """Worker task: decode ONE image, return (filename, dets) — or (filename, None) if unreadable.
+    Module-level so multiprocessing can pickle and ship it to a worker."""
+    bgr = cv2.imread(os.path.join(_WORKER["image_dir"], f))
+    if bgr is None:
+        return f, None
+    return f, detect_and_decode(bgr, _WORKER["templates"], _WORKER["work_scale"], _WORKER["cfg"])
+
+
+def _iter_decode_results(files, image_dir, templates, work_scale, cfg, num_workers):
+    """Yield (filename, dets) for every image. num_workers<=1 → serial (current behaviour, easiest to
+    debug / fully deterministic); else a process Pool of num_workers decodes images in parallel."""
+    if num_workers <= 1:
+        _init_worker(image_dir, templates, work_scale, cfg)
+        for f in files:
+            yield _decode_one(f)
+    else:
+        ctx = mp.get_context("fork")
+        with ctx.Pool(num_workers, initializer=_init_worker,
+                      initargs=(image_dir, templates, work_scale, cfg)) as pool:
+            # imap keeps file order so the progress print stays sensible; chunksize amortises IPC
+            yield from pool.imap(_decode_one, files, chunksize=4)
+
+
+# --- parallel pass-2 helpers (overlay drawing + PNG saving) ------------------
+# Same idea as pass 1: drawing each overlay + writing its PNG is fully independent per image, so split
+# it across the same N worker processes. The per-image detections travel with the task (small dicts),
+# the rest (dirs, overlay width) is handed once via the initializer.
+_DRAW = {}
+
+
+def _init_draw_worker(image_dir, vis_dir, overlay_max_width):
+    """Runs once per draw-worker process: stash the shared paths + overlay width; 1 OpenCV thread each."""
+    cv2.setNumThreads(1)
+    _DRAW["image_dir"] = image_dir
+    _DRAW["vis_dir"] = vis_dir
+    _DRAW["overlay_max_width"] = overlay_max_width
+
+
+def _draw_one(item):
+    """Worker task: read one image, draw its overlay, save the PNG. item = (filename, dets).
+    Returns (filename, n_dets) or (filename, None) if unreadable."""
+    f, dets = item
+    bgr = cv2.imread(os.path.join(_DRAW["image_dir"], f))
+    if bgr is None:
+        return f, None
+    cv2.imwrite(os.path.join(_DRAW["vis_dir"], f), draw_overlay(bgr, dets, _DRAW["overlay_max_width"]))
+    return f, len(dets)
+
+
+def _iter_draw_results(items, image_dir, vis_dir, overlay_max_width, num_workers):
+    """Yield (filename, n_dets) for every (filename, dets) item. num_workers<=1 → serial; else a Pool.
+    Order doesn't matter here (we only tally counts), so imap_unordered is fine."""
+    if num_workers <= 1:
+        _init_draw_worker(image_dir, vis_dir, overlay_max_width)
+        for it in items:
+            yield _draw_one(it)
+    else:
+        ctx = mp.get_context("fork")
+        with ctx.Pool(num_workers, initializer=_init_draw_worker,
+                      initargs=(image_dir, vis_dir, overlay_max_width)) as pool:
+            yield from pool.imap_unordered(_draw_one, items, chunksize=4)
+
+
 @hydra.main(version_base=None, config_path="../../configs",
             config_name="preprocessing/detect_markers_v8_cct")
 def main(cfg: DictConfig):
@@ -83,18 +168,24 @@ def main(cfg: DictConfig):
     print(f"Built {len(templates)} template scales; matching at {work_scale:.3f}×.")
 
     vis_dir = os.path.join(cfg.source_path, cfg.output_vis_dir)
+    # wipe the overlay folder first so a re-run on a SMALLER image set can't leave stale PNGs from a
+    # previous (larger) run lying around — we want the folder to mirror exactly this run's images.
+    shutil.rmtree(vis_dir, ignore_errors=True)
     os.makedirs(vis_dir, exist_ok=True)
     print(f"v8 detect+decode (concentric centre) over {len(files)} images from {image_dir}")
     print(f"Overlays → {vis_dir}/")
 
-    # pass 1: decode every image, tally how many views each ID is seen in
+    # pass 1: decode every image (in parallel across worker processes), tally ID view counts.
+    # num_workers default 8 (≈ physical cores on the Ryzen 7700X3D; the 16 SMT threads add little on
+    # this FP-heavy NCC/decode work and just thrash cache). Capped to the image count.
+    num_workers = max(1, min(int(cfg.get("num_workers", 8)), len(files)))
+    print(f"v8 pass 1: decoding {len(files)} images with {num_workers} worker(s)")
     per_image = {}
     id_views = {}
-    for i, f in enumerate(files):
-        bgr = cv2.imread(os.path.join(image_dir, f))
-        if bgr is None:
+    for i, (f, dets) in enumerate(
+            _iter_decode_results(files, image_dir, templates, work_scale, cfg, num_workers)):
+        if dets is None:            # unreadable image
             continue
-        dets = detect_and_decode(bgr, templates, work_scale, cfg)
         per_image[f] = dets
         for d in dets:
             id_views[d["id"]] = id_views.get(d["id"], 0) + 1
@@ -123,17 +214,12 @@ def main(cfg: DictConfig):
             print(f"  dropped {len(dropped)} non-manifest/junk ID(s): "
                   f"{[(i, id_views_raw[i]) for i in drp]}")
 
-    # pass 2: draw overlays from the filtered detections only
+    # pass 2: draw overlays from the filtered detections only (parallel, same worker count as pass 1)
+    items = [(f, per_image[f]) for f in files if f in per_image]
     counts = []
-    for f in files:
-        if f not in per_image:
-            continue
-        bgr = cv2.imread(os.path.join(image_dir, f))
-        if bgr is None:
-            continue
-        dets = per_image[f]
-        counts.append(len(dets))
-        cv2.imwrite(os.path.join(vis_dir, f), draw_overlay(bgr, dets, cfg.overlay_max_width))
+    for f, n in _iter_draw_results(items, image_dir, vis_dir, cfg.overlay_max_width, num_workers):
+        if n is not None:                 # skip unreadable images
+            counts.append(n)
 
     counts = np.array(counts) if counts else np.array([0])
     elapsed = time.time() - t_start

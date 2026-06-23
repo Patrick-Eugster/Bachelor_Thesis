@@ -1,0 +1,42 @@
+# @package _global_
+# Config for src/preprocessing/marker_gcp_ba.py — Level B / Flavour 2 (GCP-constrained BA, pycolmap).
+# Adds the 6 markers as CONSTANT 3D points at the surveyed positions + their real 2D observations,
+# then bundle-adjusts so camera poses & scene points re-optimise to honour the survey. Starts from the
+# Flavour-1 metric model. Writes a refined sparse_metric_gcp/ + logs/metric_gcp_ba.json.
+#
+# Usage:
+#   python src/preprocessing/marker_gcp_ba.py field=field_A plot=20250609
+
+defaults:
+  - /dataset: phone
+  - override /hydra/job_logging: disabled
+  - override /hydra/hydra_logging: disabled
+  - _self_
+
+field: field_A
+plot: ???
+
+source_path: ${dataset.input_dir}/${field}/${plot}
+
+metric_model: sparse_metric                 # Flavour-1 output (start point, already ~18mm)
+metric_frame_json: logs/metric_frame.json   # gives the local-frame origin (must match Flavour 1)
+triangulation_json: logs/marker_triangulation.json   # per-marker 2D observations
+survey_file: demoanlage2025_v0/metadata/markers/field_<L>_coordinates.txt
+
+# --- marker observation selection ---
+min_views: 2          # a marker needs >= this many real obs to be a usable GCP
+use_outliers: false   # include RANSAC-outlier detections too (default: inliers only)
+
+# --- what BA refines (markers are always constant; poses + scene points always refined) ---
+refine_focal_length: false      # scale is pinned by the GCPs; refining focal just adds wobble
+refine_principal_point: false
+refine_extra_params: false
+
+# --- output ---
+output_dir: sparse_metric_gcp
+output_json: logs/metric_gcp_ba.json
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .

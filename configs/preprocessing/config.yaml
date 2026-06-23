@@ -23,6 +23,21 @@ run_uniform: true   # step 1: center-crop to uniform size (creates symlink if al
 run_colmap:  true   # step 2: COLMAP SfM (feature extraction → matching → mapper → undistortion)
 run_compare: false  # step 3: compare our sparse/0/ to agisoft/sparse/0/ (only if Agisoft reference exists)
 
+# --- marker layer (phone coded-target pipeline; needs the survey file for the metric steps) ---
+# master switch: when false the whole marker block below is skipped (base pipeline unchanged).
+run_markers: false
+# sub-toggles, only consulted when run_markers=true — skip individual marker steps:
+run_marker_detect:     true   # step 4: CCT decode per image + manifest filter   → marker_detections_v8_manifest.json
+run_marker_triangulate: true  # step 5: lift detections to one 3D point/marker    → marker_points3d.json + overlays
+run_marker_scale:      true   # step 6: metric scale check vs survey XYZ + tape    → marker_scale.json   (needs survey)
+run_marker_metric:     true   # step 7: Flavour 1 — similarity → metric model      → sparse_metric/      (needs survey)
+run_marker_gcp:        true   # step 8: Flavour 2 — GCP-constrained BA (pycolmap)   → sparse_metric_gcp/  (needs survey + local pycolmap)
+# marker steps are fail-soft: a failure (e.g. missing survey file) warns and continues, it does not abort the pipeline.
+# FAILSAFE: the metric steps (6-8) only run if triangulation solved at least this many 3D markers.
+# Too few → skip 6-8 and keep the model in relative scale instead of anchoring metric size on 1-2 markers.
+# (3 is the mathematical minimum for a unique scale+rotation+translation; 4 leaves a safety margin.)
+min_markers: 4
+
 # clean COLMAP output folders (distorted/, sparse/, images/, stereo/) before running step 2.
 # Useful when re-running on the same plot — otherwise stale state from a previous (possibly broken)
 # run can confuse COLMAP's undistorter or the orchestrator's sub-model picker.

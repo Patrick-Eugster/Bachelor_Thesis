@@ -25,6 +25,11 @@ output_vis_dir: marker_vis_v8
 output_json: logs/marker_detections_v8.json
 expected_markers: 6
 
+# pass-1 parallelism: how many worker PROCESSES decode images at once. 8 ≈ the Ryzen 7700X3D's
+# physical cores (the 16 SMT threads add little on this FP-heavy decode + thrash cache). Set 1 to
+# force the old serial path (deterministic, easiest to debug).
+num_workers: 8
+
 # === real fiducial template (v6 proposal stage) ===
 template_image: src/preprocessing/templates/fiducial_real.png
 canon_radius: 30

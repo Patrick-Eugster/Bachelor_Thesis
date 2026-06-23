@@ -12,7 +12,7 @@ the rays (DLT + RANSAC outlier rejection + least-squares refine). Then it:
 Outputs (READ-ONLY on the data, writes into the plot's logs/ + a vis folder):
   logs/marker_points3d.json         the 6 3D points + per-marker quality (reproj err, parallax, #views)
   logs/marker_triangulation.json    every observation per marker (detected / snapped / reprojected)
-  marker_vis_triangulated/*.png     overlays: detected (green) / snapped (orange) / reprojected (blue)
+  marker_vis_v8manifest_triangulated/*.png  overlays: detected (green) / snapped (orange) / reprojected (blue)
 
 Theory + the manifest/Hamming background: docs/MARKER_CODE_STRUCTURE.md, docs/MARKER_INTEGRATION_PLAN.md.
 
@@ -23,6 +23,7 @@ Usage:
 
 import json
 import os
+import shutil
 import sys
 import time
 
@@ -319,6 +320,8 @@ def main(cfg: DictConfig):
 
     if cfg.write_overlays:
         vis_dir = os.path.join(cfg.source_path, cfg.output_vis_dir)
+        # wipe first so a re-run on a smaller image set can't leave stale overlays from a previous run
+        shutil.rmtree(vis_dir, ignore_errors=True)
         os.makedirs(vis_dir, exist_ok=True)
         col = {"detected": (0, 200, 0), "snapped": (0, 165, 255), "reprojected": (255, 100, 0)}
         by_cam = {}

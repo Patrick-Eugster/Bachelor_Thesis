@@ -1,0 +1,36 @@
+# @package _global_
+# Config for src/preprocessing/marker_scale.py — Step 3 of the marker pipeline.
+# Recovers metric scale (COLMAP units -> metres) from the triangulated 3D markers by comparing
+# marker-to-marker geometry against the surveyed XYZ (primary) and the tape-measure xlsx (check).
+# READ-ONLY on the data; writes logs/marker_scale.json.
+#
+# Usage:
+#   python src/preprocessing/marker_scale.py field=field_A plot=20250609
+
+defaults:
+  - /dataset: phone
+  - override /hydra/job_logging: disabled
+  - override /hydra/hydra_logging: disabled
+  - _self_
+
+field: field_A
+plot: ???
+
+source_path: ${dataset.input_dir}/${field}/${plot}
+
+# triangulated 3D points (output of triangulate_markers.py), relative to source_path
+points_json: logs/marker_points3d.json
+
+# --- ground-truth references (live in the gitignored demoanlage metadata, repo-root relative) ---
+# PRIMARY: surveyed XYZ in CH1903+/LV95 metres. <L> is replaced by the plot letter (field_A -> A).
+survey_file: demoanlage2025_v0/metadata/markers/field_<L>_coordinates.txt
+# CHECK: hand-measured tape distances; sheet 'plot <L>' inside this workbook.
+tape_xlsx: demoanlage2025_v0/metadata/markers/Demoanlage-2025-markers-manual-distances.xlsx
+
+# --- output ---
+output_json: logs/marker_scale.json
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .

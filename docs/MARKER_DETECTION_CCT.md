@@ -205,3 +205,12 @@ re-center**); (b) decode **fails even at the perfect center** (target 2/4 in far
   *and* the per-view misses), then emit `(marker_id → pixel xy)` + 3D as **GCPs** into COLMAP's native GCP
   bundle adjustment (`MARKER_INTEGRATION_PLAN.md`, Option D).
 - YOLO/CNN (old Option B) stays **in reserve** — only if a better proposer is needed; not required so far.
+- **PERF — both passes parallelised (`num_workers`, default 8).** v8's per-image work is independent, so
+  **pass 1** (decode) and **pass 2** (draw + write overlay PNGs) each run across N worker **processes**
+  (`multiprocessing.Pool`, fork; shared inputs handed once via the initializer + `cv2.setNumThreads(1)` so the
+  processes don't oversubscribe cores; pass 1 uses ordered `imap` for sensible progress prints, pass 2 uses
+  `imap_unordered` since it only tallies counts). `num_workers=1` = old serial path. **field_A/20250609:
+  128 s → 37 s (pass 1 only) → 22 s (both passes) = 5.8×, detections byte-identical, all 119 PNGs written.**
+  Peak RAM +1.2 GB (≈150 MB/worker — trivial on 35 GB). The remaining ~22 s is the irreducible serial floor
+  (template-bank build, worker startup/pickle, JSON write). Default 8 = the Ryzen 7700X3D's physical cores
+  (the 16 SMT threads add little on this FP-heavy work).

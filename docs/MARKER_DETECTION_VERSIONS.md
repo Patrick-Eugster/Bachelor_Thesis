@@ -1,15 +1,20 @@
-# Marker Localization — the detector versions (v1 → v6)
+# Marker Localization — the detector versions (v1 → v8)
 
-How the Stage A marker **localizer** evolved across six versions, what changed in the
+How the Stage A marker **localizer** evolved across eight versions, what changed in the
 algorithm each time, and what each produced. Each version was built to fix the *specific
 failure* of the previous one, so the clearest way to read this is top to bottom.
 
 **Bottom line up front:** v1–v4 were hand-tuned classical-CV heuristics (color/shape/contrast
 rules). v5–v6 switched to **template matching** (Option A): match a picture of the fiducial against
 the image. v6 (a **real** cropped fiducial + multi-scale NCC + fiducial-snap + ellipse-fit center +
-dedup) is clearly the best version — but it **still isn't good enough** (on cluttered frames only
-~1 of 5 proposed markers is correct). Conclusion: **template-matching has also hit a ceiling →
-next is Option B, a trained CNN/YOLO marker detector** (see the last section).
+dedup) is the best *recognition*-based version — but it **still isn't good enough** (on cluttered
+frames only ~1 of 5 proposed markers is correct). The recognition ceiling drove the decisive switch
+to **Option C — CCT decode (v7/v8):** stop *recognizing* the marker by appearance and instead
+**decode** its self-validating 12-bit codeword. That collapses both the false-positive problem (wheat
+can't produce a legal codeword) and the ID problem (a valid decode hands the marker ID for free).
+**v8 is the production detector the whole marker pipeline uses today** (`marker_detections_v8_manifest.json`
+→ triangulate → metric scale → Flavour 1/2). The old "next = trained CNN/YOLO (Option B)" plan was
+**not** taken — Option C solved it. Full v7/v8 write-up: [`MARKER_DETECTION_CCT.md`](MARKER_DETECTION_CCT.md).
 
 Scripts/configs:
 - v1 — [`src/preprocessing/detect_markers.py`](../src/preprocessing/detect_markers.py)
@@ -17,8 +22,11 @@ Scripts/configs:
 - v3 — [`src/preprocessing/detect_markers_v3.py`](../src/preprocessing/detect_markers_v3.py)
 - v4 — [`src/preprocessing/detect_markers_v4.py`](../src/preprocessing/detect_markers_v4.py)
 - v5 — [`src/preprocessing/detect_markers_v5.py`](../src/preprocessing/detect_markers_v5.py) (synthetic-template NCC)
-- v6 — [`src/preprocessing/detect_markers_v6.py`](../src/preprocessing/detect_markers_v6.py) (real-template NCC + fiducial-snap) — **current best**
+- v6 — [`src/preprocessing/detect_markers_v6.py`](../src/preprocessing/detect_markers_v6.py) (real-template NCC + fiducial-snap) — best *recognition*-based version
+- v7 — [`src/preprocessing/detect_markers_v7_cct.py`](../src/preprocessing/detect_markers_v7_cct.py) (**CCT decode**: v6 proposes centers → `decode_at_center` with a fill-ratio disk finder; higher precision)
+- v8 — [`src/preprocessing/detect_markers_v8_cct.py`](../src/preprocessing/detect_markers_v8_cct.py) (**CCT decode + concentric re-centering**: handles v6-on-arc + occluded disk; higher recall; `id_filter=manifest`) — **current best / production**
 - template maker — [`src/preprocessing/make_fiducial_template.py`](../src/preprocessing/make_fiducial_template.py) (crops the real fiducial v6 uses)
+- CCT decode engine — [`src/preprocessing/cct_forced_decode.py`](../src/preprocessing/cct_forced_decode.py) + vendored `cctdecode/` (used by v7/v8; see [`MARKER_DETECTION_CCT.md`](MARKER_DETECTION_CCT.md))
 
 Each writes overlays to its own folder (`marker_vis/`, `_v2/`…`_v6/`) and a JSON to `logs/`, so all
 can be compared on the same images. All are **localization only** (no IDs, no triangulation) and
@@ -212,8 +220,70 @@ markers missed where wheat occludes the plate), and some centers are still sligh
 recall↔precision seesaw (relax the white gate to catch occluded plates → more canopy FPs) is
 **structural**, not a tuning bug.
 
-> **Drove the decision to stop:** even a real template + every gate + ellipse-fit can't get high
-> recall **and** precision **and** a correct center on a cluttered, variable canopy. **→ Option B.**
+> **Drove the decision to stop recognizing:** even a real template + every gate + ellipse-fit can't
+> get high recall **and** precision **and** a correct center on a cluttered, variable canopy. Instead of
+> a *better recognizer* (Option B, a CNN), we switched to a *different question* — **decode the code**
+> (Option C). **→ v7.**
+
+---
+
+## v7 — CCT decode (stop recognizing, start decoding)
+
+**Cue:** the markers are **coded** — each carries a self-validating **12-bit number**. So instead of
+judging "does this *look* like a marker," actually **read the code**. A wheat blob cannot produce a
+legal 12-bit codeword (false positives collapse), and a successful decode returns the **marker ID for
+free** (the separate ID-assignment step disappears). Adopts the decode core of
+[poxiao2/CCTDecode](https://github.com/poxiao2/CCTDecode) (pure Python + OpenCV, no torch).
+
+**Algorithm:**
+1. **Center proposals from v6** — reuse v6's template-match + fiducial-snap to say *where* to look
+   (v6 is good at *finding* candidate fiducials, just not at deciding/IDing them).
+2. **Forced decode at each center** (`decode_at_center` in [`cct_forced_decode.py`](../src/preprocessing/cct_forced_decode.py)):
+   skip CCTDecode's own blob search and force the decode onto the proposed center — ellipse-fit →
+   **affine-rectify** the tilt to a frontal circle (the step v1–v6 never had) → sample the 12-bit ring
+   → read the code.
+3. **Fill-ratio disk finder** (`find_disk_at`): a size-independent test of "is there a solid dark disk
+   here?" that discriminates the real central **disk** from a coded **arc**, so the decode reads off
+   the disk, not a ring fragment.
+4. **Bypass `CCT_or_not`** (`decode_require_valid_cct=false`) — with the fill gate doing the validation,
+   CCTDecode's stricter internal gate (built for close-up/drone shots) would needlessly reject our
+   small, lower-contrast field markers.
+
+**Result — false positives gone, IDs for free, higher precision.** Every kept detection is a legal
+codeword, so canopy FPs essentially vanish and each marker arrives labelled. Disk-center reporting
+gives ~**0.7 px** centers. Recall ≈ **73% of Agisoft's** GT markers, with very few extras.
+
+> **Drove v8:** v7 *rejects* a candidate whenever v6's center lands on a coded **arc** instead of the
+> disk, or the disk is occluded — throwing away real markers. The fix is to *recover* the true center
+> rather than reject.
+
+---
+
+## v8 — CCT decode + concentric re-centering (production)
+
+**Cue:** same decode core as v7, but don't give up when the proposed center is off the disk. **Recover**
+the true center from whatever marker structure survives in the window.
+
+**Algorithm:**
+1. **Concentric-consensus center** (`find_center_concentric`): use a solid disk if present (= v7's
+   path), **else fit the marker's ring to the ≥2 visible coded arcs and derive the disk center from
+   it** — works when the central disk is occluded or when v6 landed on an arc.
+2. **Re-center, then decode** at the recovered center (same affine-rectify → ring-sample → 12-bit
+   decode). This fixes the reported **"id flips 113↔7"** arc bug: reading off an arc produced the
+   spurious `7`; decoding off the recovered disk yields the correct ID.
+3. **`id_filter=manifest`** — keep only the deployed spec codes `{77,85,89,101,105,113}`, dropping junk
+   IDs before the overlays/JSON (the principled filter, not a top-k heuristic).
+
+**Result — production detector.** Higher **recall** (~**76%**) than v7 and the arc/occlusion bug fixed,
+at the cost of a few more extras (≈65 vs v7's 33) — which the downstream **multi-view triangulation**
+safely rejects (FPs don't intersect consistently). On `field_A/20250609` v8 carries all **6/6 markers**
+through triangulation → metric scale. This is the detector the whole marker pipeline now reads
+(`marker_detections_v8_manifest.json`).
+
+> **v7 vs v8:** v7 = higher precision (fewer extras); v8 = higher recall + arc-bug fix. v8 is the
+> default because the ≥2-view geometry cleans up its extra detections anyway. Full decode internals,
+> the data-fit caveats (Otsu vs adaptive, the 2.5× ring assumption), and per-target ID map:
+> [`MARKER_DETECTION_CCT.md`](MARKER_DETECTION_CCT.md).
 
 ---
 
@@ -226,12 +296,18 @@ recall↔precision seesaw (relax the white gate to catch occluded plates → mor
 | **v3** | fiducial disk | ✅ exact | ✅ ~none | ❌ low | precise but can't find them |
 | **v4** | v2 find + v3 center | ✅ exact (100%) | ✅ dropped | ⚠️ moderate | best heuristic |
 | **v5** | synthetic template (NCC) | ❌ drifts to plate-white | many | good | template idea right, too crude |
-| **v6** | real template + fiducial-snap | ✅ ellipse-fit (100%) | ⚠️ low but present | ⚠️ moderate | **best overall, still not enough** |
+| **v6** | real template + fiducial-snap | ✅ ellipse-fit (100%) | ⚠️ low but present | ⚠️ moderate | best *recognition*-based version, still not enough |
+| **v7** | **CCT decode** (v6 centers → decode 12-bit code, fill-ratio disk finder) | ✅ ellipse-fit | ✅ ~none (legal codeword required) | ⚠️ moderate | decode kills FPs + gives ID for free; higher precision |
+| **v8** | **CCT decode + concentric re-centering** (fit ring to ≥2 arcs when disk occluded; `id_filter=manifest`) | ✅ ✅ (fixes v6-on-arc) | ✅ ~none | ✅ higher | **production — fixes arc/occlusion bug, used by whole pipeline** |
 
 Benchmarks on `field_A/20250609` (markers/image): v2 ≈ mean 2.1, v3 ≈ mean 0.8 (58 empty
 frames), v4 ≈ mean 1.5 (17 empty frames), v5 ≈ mean 8.3 (FPs + duplicate dots), **v6 ≈ mean 2.0
 clean unique (2 empty frames, 0 duplicates, 100% fiducial-snapped, ~95% sampled precision)** — yet
-still ~1/5 correct on the worst cluttered frames.
+still ~1/5 correct on the worst cluttered frames. **v7/v8 (CCT decode)** then changed the game: a
+valid 12-bit decode is self-validating, so false positives collapse and each detection arrives with
+its marker ID. On this session v8 solves all **6/6 markers** through to triangulation (manifest-filtered;
+v7 = higher precision / fewer extras, v8 = higher recall + fixes the 113↔7 arc/occlusion bug). Full
+numbers and the decode internals: [`MARKER_DETECTION_CCT.md`](MARKER_DETECTION_CCT.md).
 
 ---
 
@@ -248,7 +324,7 @@ total — so per-frame recall does not have to be perfect.
 
 ---
 
-## Two ceilings — and the decision to go learned (Option B)
+## Two ceilings — and why the answer was Option C (CCT decode), not Option B
 
 This project hit the wall **twice**, and that's the whole story:
 
@@ -267,21 +343,27 @@ high, but a partly wheat-occluded plate loses the white-surround signal, and loo
 catch it lets canopy back in. A single rigid template (one appearance, one tilt) can't represent the
 full range of marker appearances on a live canopy.
 
-**Why a CNN is the answer (Option B — next).** A template is a *single, fixed* correlation filter. A
-CNN is the **learned, deep, nonlinear generalization** of that idea — *many* filters learned from
-data, stacked in layers, so it tolerates the lighting/tilt/occlusion/blur variation that breaks a
-rigid template. The repo already has a **YOLO** pipeline to repurpose: hand-label the 6 markers
-across ~30–40 images (bounded effort), train a marker detector, then run the **v6 fiducial-snap +
-ellipse-fit *inside* each predicted box** for the sub-pixel center — the snap is far more reliable
-there because the box already guarantees a marker is present, so canopy can't interfere. Cost: the
-manual labeling.
+**The option we considered (Option B — a CNN/YOLO detector).** A template is a *single, fixed*
+correlation filter; a CNN is the learned, nonlinear generalization — many filters from data, tolerant
+of lighting/tilt/occlusion/blur. It would have worked, but it costs **manual labeling** of the 6
+markers across ~30–40 images and a training loop, and it still only *recognizes* appearance.
 
-**Status:** v1–v6 are kept for the record; **Option B (a trained CNN/YOLO marker detector) is the
-next approach.** Remember the downstream safety net (see [`MARKER_INTEGRATION_PLAN.md`](MARKER_INTEGRATION_PLAN.md)
-§11c): per-image perfection isn't required — multi-view triangulation rejects FPs (they don't
-intersect consistently) and recovers markers missed in some views from others (≥2-views rule). So
-"good per-view detections from a CNN" + "multi-view geometry" is the combination expected to close
-the gap.
+**The option we took (Option C — CCT decode, v7/v8).** Both earlier ceilings share one root cause: we
+were *recognizing* the marker by how it **looks**. But these are **coded** targets — each carries a
+self-validating **12-bit number**. The moment you **decode** instead of recognize, both failures
+collapse at once: a wheat blob **cannot** produce a legal 12-bit codeword (false positives gone, no
+training needed), and a valid decode **hands you the marker ID for free** (the separate "Stage B" ID
+problem disappears). No labeling, no CNN, pure OpenCV. v7 wraps the [poxiao2/CCTDecode](https://github.com/poxiao2/CCTDecode)
+decode core (ellipse-fit → affine-rectify → validate → ring-sample → bit-decode) behind v6's center
+proposals; v8 adds concentric re-centering for the occluded-disk / v6-on-arc cases. This is what made
+the pipeline work end-to-end, so **Option B was never needed.**
+
+**Status:** v1–v6 kept for the record; **v8 (CCT decode) is the production detector.** The downstream
+safety net still applies (see [`MARKER_INTEGRATION_PLAN.md`](MARKER_INTEGRATION_PLAN.md) §11c): per-image
+perfection isn't required — multi-view triangulation rejects FPs (they don't intersect consistently)
+and recovers markers missed in some views from others (≥2-views rule). "Good per-view decodes (v8)" +
+"multi-view geometry" is the combination that closed the gap. Full v7/v8 internals, the data-fit
+caveats, and benchmarks: [`MARKER_DETECTION_CCT.md`](MARKER_DETECTION_CCT.md).
 
 See [`MARKER_DETECTION_STAGE_A.md`](MARKER_DETECTION_STAGE_A.md) for the detailed v1 spec, and
 [`MARKER_INTEGRATION_PLAN.md`](MARKER_INTEGRATION_PLAN.md) for how localization feeds the rest of

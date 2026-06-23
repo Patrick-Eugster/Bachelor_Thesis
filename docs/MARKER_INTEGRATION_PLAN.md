@@ -155,13 +155,114 @@ refine → 3D point; **snap** dropped near-neighbour misreads back by LOCATION (
 under-covered marker from its misreads (e.g. 85 rebuilt from the 117s — the chicken-and-egg fix);
 **reproject** each 3D point into every frame to recover missed/glared views. Outputs `logs/marker_points3d.json`
 (6 pts + reproj err + parallax) + `logs/marker_triangulation.json` (per-obs detected/snapped/reprojected) +
-`marker_vis_triangulated/`. **Result: all 3 good sessions solve 6/6 markers**, median reproj 0.5–3.1 px,
+`marker_vis_v8manifest_triangulated/`. **Result: all 3 good sessions solve 6/6 markers**, median reproj 0.5–3.1 px,
 parallax 37–112°. field_A/20250618 target5=85 recovered from 117s (15 views, 1.13px). **Validated vs Agisoft
 (20250609): detected pos 0.7px, reprojected pos 2.3px, and ALL 127 Agisoft GT observations now covered (0
 missed) — Agisoft's `Pinned` reprojection reproduced.** Caveat: reproject counts in-bounds+cheirality only
 (not occlusion) → the ~270–590 "reprojected" per session are CANDIDATE positions, not all truly visible; the
-GT-validated subset is accurate to ~2.3px. **NEXT = Step 3: marker-to-marker distances → metric scale / GCPs
-(§11b), validate vs GT distances (tape xlsx / survey).**
+GT-validated subset is accurate to ~2.3px.
+
+**We MATCH Agisoft fully and BEAT it slightly on detection recall (20250609):** of our 118 detected
+manifest observations, 96 coincide with an Agisoft pin and **22 are EXTRA** (real markers Agisoft chose not to
+pin — Agisoft is deliberately low-recall; the extras decode to manifest codes AND are triangulation inliers,
+so they're genuine). The 31 Agisoft pins we didn't detect are recovered by reprojection → 127/127. So
+defensible claim = **all 127 covered + 22 genuine extras**; the ~590 reprojections are an unvalidated superset,
+not a "found more" claim.
+
+**Snap/seed = PURE GEOMETRY (Hamming guard dropped, `snap_hamming_max=0`):** a misread can flip >1 bit under
+occlusion, so a Hamming≤1 guard wrongly excludes real recoveries; assignment is by 3D-reprojection location +
+RANSAC, code-agnostic. Pure-geometry recovered MORE (snapped 6/18/10 vs the guarded 4/11/5), all 6/6 still
+solved.
+
+**STEP 3 DONE — metric scale (`src/preprocessing/marker_scale.py` + yaml).** Recovers the COLMAP→metres scale
+from the 6 triangulated points against TWO independent references: **PRIMARY = surveyed XYZ**
+(`demoanlage2025_v0/metadata/markers/field_<L>_coordinates.txt`, CH1903+/LV95 metres — dependency-free, plain
+text; target→code map in §5 of MARKER_CODE_STRUCTURE.md), **CHECK = tape-measure xlsx**
+(`Demoanlage-2025-markers-manual-distances.xlsx`, sheet `plot <L>`, an upper-triangular 6×6 cm matrix — parsed
+straight from the zipped XML, **no openpyxl needed**). Computes scale two ways (median distance-ratio + rigorous
+**Umeyama** similarity fit) and reports a per-marker mm residual after alignment + a survey-vs-tape-vs-ours
+per-pair table. Output `logs/marker_scale.json`.
+
+**Results (all 3 good sessions):**
+
+| session | scale (m/unit) | ratio CV | Umeyama RMS | ours vs survey (15 pairs) | tape vs survey |
+|---|---|---|---|---|---|
+| field_A/20250609 | 0.5590 | 1.37% | 19.3 mm | 13.8 mm | 17.1 mm |
+| field_A/20250618 | 0.4773 | 1.51% | 21.0 mm | 15.2 mm | 17.1 mm |
+| field_D/20250523 | 0.4627 | 1.46% | 18.1 mm | 15.3 mm | 8.2 mm |
+
+Per-session scales differ (each COLMAP run has its own arbitrary unit — expected). **Headline: phone-COLMAP
+markers recover metric scale to ~14–15 mm distance accuracy / ~18–21 mm RMS after alignment — comparable to
+Agisoft's ~5–15 mm.** The two refs agree: the ratio CV ≈ 1.4–1.5% everywhere = rigid geometry (good
+triangulation, no warp). On field_A our distances actually match the survey *better* (13.8 mm) than the **tape**
+does (17.1 mm) → the hand tape is the coarser reference, not us (its one gross outlier, pair (85,113) at +82 mm,
+is a tape entry error; our value is +34 mm). The per-field survey/sheet selection is verified correct: field_D
+distances differ from field_A (e.g. (77,85) 0.94 m vs 0.73 m).
+
+**LEVEL B / FLAVOUR 1 DONE — metric model (`src/preprocessing/apply_metric_transform.py` + `marker_metric.yaml`).**
+Applies the Step-3 similarity transform to the whole `sparse/0/` model → a metric `sparse_metric/` (real
+metres). Geometry unchanged (rigid+scale, no re-optimisation); the point is metric units for **phenotyping**
+(length/width/volume in mm) + a native survey self-check. **GOTCHA (recorded): `colmap model_transformer`'s
+`--transform_path` did NOT apply a plain `[sR|t]` 4×4** — it produced a scrambled rotation + 30 m translation
+(caught by a built-in camera-centre convention check; 3×4 segfaults, 4×4 misparses). So we **rewrite the COLMAP
+TEXT model in Python** instead: transform only the numeric coords (poses in `images.txt` AND COLMAP-4.1's
+`frames.txt` RIG_FROM_WORLD; XYZ in `points3D.txt`), copy tracks/2D-obs/IDs/`cameras`/`rigs` verbatim, text-only
+output (no stale `.bin`). Pose map under world similarity X'=sRX+t: `R_wc'=R_wc Rᵀ`, `t_wc'=s·t_wc − R_wc Rᵀ t`
+(⇒ camera centre C'=sRC+t, verified to 1e-11 mm). **LOCAL origin** = survey centroid (coords near 0) so 3DGS
+float32 stays precise — would be ~0.25 m ulp at CH1903's 2.69e6 m; the CH1903 origin is saved in
+`logs/metric_frame.json` for georeferencing. **Result (3 sessions): valid metric models, pose write-back exact,
+marker RMS 19.3/21.0/18.1 mm; sanity extents real** (field_A/20250609 cameras 4.3×4.1×0.24 m handheld
+walk-around, cloud 12.9×10.7×1.0 m). Feeds 3DGS as a text model (FIP path already reads text).
+
+**LEVEL B / FLAVOUR 2 DONE — GCP-constrained BA (`src/preprocessing/marker_gcp_ba.py` + `marker_gcp_ba.yaml`,
+via pycolmap).** The COLMAP CLI exposes NO marker-GCP BA (only `pose_prior_mapper` = camera-GPS priors;
+`model_aligner` = a 7-DOF similarity = Flavour 1), and pycolmap 4.0.4 has no dedicated GCP class — but its
+general `BundleAdjuster` + `BundleAdjustmentConfig` build it: load the Flavour-1 metric model, add the 6 markers
+as 3D points AT THE SURVEY positions with their real 2D obs (detected/snapped inliers, NOT reprojected),
+`add_constant_point` them (= the GCP), `add_variable_point` every scene point, `add_image` all, run BA → poses +
+scene re-optimise to honour the survey. Intrinsics fixed (scale is pinned by the GCPs). (`pip install pycolmap`,
+4.0.4 — standalone wheel, torch untouched; `image.points2D` supports in-place `.append()` though whole-list set
+is locked.) Output: refined `sparse_metric_gcp/` (binary) + `logs/metric_gcp_ba.json`.
+
+**RESULTS — two robust facts + a revealing split:**
+
+| session | scene reproj (px) | marker reproj px (before→after) | cam shift | reads as |
+|---|---|---|---|---|
+| field_A/20250609 | 1.24 → 1.24 | 30.7 → **18.6** | 23 mm | residual STAYS |
+| field_A/20250618 | 1.32 → 1.32 | 37.4 → **22.7** | 28 mm | residual STAYS |
+| field_D/20250523 | 1.29 → 1.29 | 26.4 → **3.8**  | 28 mm | residual ABSORBED |
+
+(1) **Scene reprojection is byte-identical before/after on every session** — anchoring never harmed the
+reconstruction. (2) BA always reduced marker reprojection by shifting cameras ~23–28 mm. **The split lines up
+with the earlier tape-vs-survey agreement:** field_D (tape agreed with survey to 8 mm) → BA drives markers to
+**3.8 px ≈ scene level** = survey FULLY consistent with imagery → here GCP-BA genuinely improves on Flavour 1.
+field_A (tape disagreed 17 mm) → markers plateau at ~18–23 px ≫ the 1.3 px scene = a REAL, irreducible
+survey↔imagery disagreement BA can't absorb without distorting the self-consistent scene (it refused). At
+~2.5 m phone range 18 px ≈ 18 mm, matching the Flavour-1 residual.
+
+**CONCLUSION (honest):** GCP integration WORKS (field_D is the proof); where a residual remains (field_A) it is
+**survey/data-limited, not a pipeline fault** — the scene stays internally consistent at 1.3 px throughout. So on
+field_A the ~18 mm is most likely the SURVEY's own RTK-GPS-level error (or a small marker-detection bias), not
+our phone reconstruction. **PROVISIONAL (3 sessions only — field_A/20250609+20250618, field_D/20250523):**
+Flavour 1 (post-hoc similarity) *looks* sufficient for accuracy on these, and Flavour 2 didn't beat it; but this
+is NOT a final verdict — all three happened to agree, and Flavour 2 (a properly bundle-adjusted metric model +
+the diagnostic that pinpoints where the residual lives) could still earn its keep on a session where survey and
+imagery disagree more, or where COLMAP's scale drifts. **Re-evaluate when more phone dates are added.** Matches
+the prediction that 6 near-coplanar markers anchor scale/datum but can't improve internal geometry. **OPEN Q for supervisor:
+which instrument produced `field_<L>_coordinates.txt` (RTK-GPS ~cm vs total-station ~mm)? — it decides whether
+the field_A ~18 mm is survey-limited (likely) or reconstruction-limited.** Both metric models (`sparse_metric/`
+Flavour 1, `sparse_metric_gcp/` Flavour 2) are available to feed 3DGS for metric phenotyping.
+
+**ORCHESTRATOR-WIRED (`run_preprocessing.py`):** the whole marker layer is now steps 4-8 of the preprocessing
+orchestrator, behind a master `run_markers` toggle (default OFF → base SfM pipeline unchanged) plus per-step
+sub-toggles (`run_marker_detect/triangulate/scale/metric/gcp`). Run with
+`python src/preprocessing/run_preprocessing.py field=field_A plot=20250609 run_markers=true`. Two safety nets:
+(1) every marker step is **fail-soft** — a crash (missing survey file, local-only pycolmap) warns and continues
+instead of aborting; (2) a **failsafe** counts solved 3D markers after triangulation and **skips the metric steps
+6-8 if fewer than `min_markers` (default 4)** solved, so we never anchor metric size on 1-2 markers — the model
+just stays in relative scale. The orchestrator prints a `MARKER LAYER SUMMARY` recap + a per-step TIMING table.
+**Measured timing (field_A/20250609, markers-only):** detect 2:16 / triangulate 0:17 / scale+Flavour 1+Flavour 2
+≈ 1 s total → **CCT detection is ~88% of the cost; the only step worth optimising.**
 
 **TODO (future, low priority):** a coded-target **generator tool** — given the 352 legal 12-bit codes, return
 K codes with **max-min Hamming ≥ 3** so future users deploy markers whose single-bit misreads are *uniquely*
