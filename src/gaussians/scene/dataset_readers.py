@@ -24,6 +24,7 @@ from pathlib import Path
 from plyfile import PlyData, PlyElement
 from gaussians.utils.sh_utils import SH2RGB
 from gaussians.scene.gaussian_model import BasicPointCloud
+from wheat_utils import split_utils
 
 np.set_printoptions(precision=10, suppress=True)
 
@@ -200,29 +201,32 @@ def readColmapSceneInfo(path, images, eval, llffhold=8, normalize=False, seg_dir
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
     if eval:
-        # FIP image names end with "_cam_NN" (e.g. "FPWW036_SR0461_FIP2_cam_11") → cam-index split
-        # (cam_11, cam_12 = test). Anything else (phone COLMAP IMG_..., phone Agisoft IMG_..._<seq>)
-        # → llffhold=8 fallback.
-        # NOTE: the previous startswith('cam_') predicate returned False for actual FIP filenames
-        # (they don't start with 'cam_', they contain it in the middle) — that misrouted every FIP
-        # plot into the llffhold path and silently inflated PSNR by testing on too-easy interpolated
-        # views instead of held-out cam_11/cam_12. Use a tail regex so the check is robust against
-        # Agisoft's sequential "_<N>" suffix (small N still parses fine but the cam_ marker isn't there).
-        fip_pat = re.compile(r'_cam_\d+$')
-        is_fip_naming = all(fip_pat.search(c.image_name) for c in cam_infos)
-        train_cam_infos = []
-        test_cam_infos = []
-        if is_fip_naming:
-            for cam_info in cam_infos:
-                cam_idx = int(cam_info.image_name.split('_')[-1])
-                if cam_idx > 10:
-                    test_cam_infos.append(cam_info)
-                else:
-                    train_cam_infos.append(cam_info)
-        else:
-            llffhold = 8
-            train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]
-            test_cam_infos  = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 0]
+        # The split rule lives in ONE place (wheat_utils.split_utils.compute_eval_split) so the
+        # standalone checker (preprocessing/check_split.py) can never drift from what training does.
+        # Priority: a PINNED test list (FIP transforms.json `test_filenames`, or phone
+        # phone_split.json `test_views`) → split by name identity → robust to registration drift and
+        # to image-count differences across methods. No pin → FIP cam-index (cam_11/cam_12 = test)
+        # else llffhold-8. Pinning by name also removes the old positional-llffhold fragility where a
+        # different registered set silently shifted which phone views were held out.
+        pin_test = split_utils.load_pin_test(path)
+        names = [c.image_name for c in cam_infos]
+        # Safety: if a pin is found but matches NONE of the registered names, the naming convention
+        # differs (e.g. Agisoft renames IMG_..._<seq>) — applying it would silently empty the test
+        # set. Ignore the pin and fall back rather than train with no held-out views.
+        if pin_test and not (pin_test & {split_utils._stem(n) for n in names}):
+            print(f"  NOTE: split pin found but 0/{len(names)} names match it (different naming?) — "
+                  f"ignoring pin, using {split_utils.split_method_label(names, None)}")
+            pin_test = None
+        _, test_names = split_utils.compute_eval_split(names, pin_test=pin_test)
+        test_set = set(test_names)
+        train_cam_infos = [c for c in cam_infos if c.image_name not in test_set]
+        test_cam_infos  = [c for c in cam_infos if c.image_name in test_set]
+        print(f"Eval split: {split_utils.split_method_label(names, pin_test)}"
+              + (f" — pin lists {len(pin_test)} test view(s)" if pin_test else ""))
+        if pin_test:
+            missing = sorted(pin_test - {split_utils._stem(n) for n in names})
+            if missing:
+                print(f"  WARNING: {len(missing)} pinned test view(s) NOT registered — split shrank: {missing}")
         print(f"Train Cam list with {len(train_cam_infos)} cams: {[cam.image_name for cam in train_cam_infos]}")
         print(f"Test Cam list with {len(test_cam_infos)} cams: {[cam.image_name for cam in test_cam_infos]}")
     else:

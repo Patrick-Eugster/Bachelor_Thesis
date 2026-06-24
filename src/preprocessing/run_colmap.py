@@ -49,6 +49,18 @@ def _pick_largest_submodel(distorted_sparse_dir):
     return best[1], best[2], [(c[0], c[2]) for c in candidates]
 
 
+def _registered_image_names(sparse0_dir):
+    """Read the names of the images COLMAP actually registered, as stems (no extension).
+    Prefers images.txt (export_text writes it); the non-comment lines alternate header/points2D,
+    so every 2nd line's last token is the image filename. Returns a set; empty if unreadable."""
+    txt = os.path.join(sparse0_dir, "images.txt")
+    if os.path.isfile(txt):
+        with open(txt) as f:
+            nonc = [l for l in f if l.strip() and not l.startswith("#")]
+        return {os.path.basename(nonc[i].split()[-1]).split(".")[0] for i in range(0, len(nonc), 2)}
+    return set()
+
+
 @hydra.main(version_base=None, config_path="../../configs", config_name="preprocessing/colmap")
 def main(cfg: DictConfig):
     """Run COLMAP SfM on phone images: feature_extractor -> matcher -> mapper -> image_undistorter.
@@ -238,9 +250,17 @@ def main(cfg: DictConfig):
 
     # input image count (what we fed to feature_extractor) — symlinks are followed by os.listdir
     try:
-        n_input = sum(1 for f in os.listdir(image_path) if f.lower().endswith((".jpg", ".jpeg", ".png")))
+        input_files = [f for f in os.listdir(image_path) if f.lower().endswith((".jpg", ".jpeg", ".png"))]
     except OSError:
-        n_input = 0
+        input_files = []
+    n_input = len(input_files)
+
+    # Which input images did COLMAP FAIL to register? Mark them explicitly: a missing image silently
+    # drops out of the downstream train/test split, so two methods that register different sets are
+    # no longer comparable. We list the names so the drift is visible (and check_split.py can flag it).
+    input_stems = {f.split(".")[0] for f in input_files}
+    registered_stems = _registered_image_names(os.path.join(source_path, "sparse", "0"))
+    missing = sorted(input_stems - registered_stems) if registered_stems else []
 
     minutes, seconds = divmod(int(elapsed), 60)
     print("\n" + "="*50)
@@ -257,6 +277,10 @@ def main(cfg: DictConfig):
     print(f"{'Registered in largest:':<28} {undistorted_count} / {n_input}")
     if n_input > 0:
         print(f"{'Registration rate:':<28} {100.0*undistorted_count/n_input:.1f}%")
+    if missing:
+        print("-" * 50)
+        print(f"WARNING: {len(missing)} input image(s) NOT registered (excluded from the model + split):")
+        print(f"  {missing}")
     print("-" * 50)
     print(f"{'TOTAL TIME:':<28} {minutes}m {seconds}s  ({elapsed:.0f}s)")
     print("="*50 + "\n")
@@ -273,6 +297,7 @@ def main(cfg: DictConfig):
         "input_images": n_input,
         "submodels": [{"name": n, "images": c} for n, c in mapper_submodels],
         "registered": undistorted_count,
+        "missing_images": missing,
         "camera": cfg.camera,
         "single_camera": cfg.single_camera,
         "matcher": cfg.matcher,

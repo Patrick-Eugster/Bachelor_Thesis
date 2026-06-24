@@ -32,6 +32,7 @@ Quick map of every doc in this folder, grouped by topic. Each line is a one-sent
 | [PIXEL_SHIFT_BUG.md](PIXEL_SHIFT_BUG.md) | ✅ | Vanilla 3DGS silently drops `cx, cy` → render/GT misalignment. The bug, per-plot offset table, why phone is unaffected, and three fix paths (`use_principal_point` is implemented). |
 | [CAMERA_INTRINSICS_EXPLAINED.md](CAMERA_INTRINSICS_EXPLAINED.md) | 🔒 | Beginner primer on `fx/fy/cx/cy`, focal length, FoV, principal point, projection matrices and symmetric vs asymmetric frustums. Companion to `PIXEL_SHIFT_BUG.md`. |
 | [FIP_PAPER_BENCH_RESULTS.md](FIP_PAPER_BENCH_RESULTS.md) | ✅ | 7-plot 30k PSNR/SSIM/LPIPS benchmark: the **+7.79 dB** jump from the pixel-shift fix, the eval-split regression diagnosis, and the head-to-head vs the original Wheat3DGS paper (we beat it). |
+| [EVAL_SPLIT.md](EVAL_SPLIT.md) | ✅ | **Train/test split — keeping it comparable across methods.** One source of truth (`split_utils.compute_eval_split`); FIP auto-pins to the paper's `transforms.json` (cam_11/12, 30/6); phone pins by name via `make_phone_split.py` → `phone_split.json` (else positional llffhold-8 drifts when COLMAP registers a different set). `check_split.py` gate (exit 0/1/2), `run_colmap.py` now names unregistered images, Agisoft zero-match guard, and which steps use test vs train. |
 
 ### ⚡ Render engine — gsplat port
 | Doc | | What it's about |

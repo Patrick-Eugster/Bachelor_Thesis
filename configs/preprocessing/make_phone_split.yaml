@@ -1,0 +1,35 @@
+# @package _global_
+# Config for src/preprocessing/make_phone_split.py — writes phone_split.json (the phone analog of
+# FIP's transforms.json split) so every method (COLMAP, sparse_metric, ...) of a session tests on the
+# SAME held-out views, regardless of how many images each reconstruction registered.
+# Derive the split from the FULL intended image set (input_uniform/), NOT from any one reconstruction,
+# so it is method-independent. Run once per session, before/independently of COLMAP.
+# Typical usage:   python src/preprocessing/make_phone_split.py field=field_A plot=20250609
+
+defaults:
+  - /dataset: phone
+  - override /hydra/job_logging: disabled
+  - override /hydra/hydra_logging: disabled
+  - _self_
+
+field: field_A
+plot: ???
+
+# folder whose image NAMES define the canonical set (default input_uniform/ — the full pre-COLMAP set)
+image_subdir: input_uniform
+
+# every Nth sorted image is held out as test (standard llffhold). Resolution must stay 1; this only
+# picks which views, not their size.
+llffhold: 8
+
+# output file, written at the session root so dataset_readers picks it up as the pin.
+output: phone_split.json
+
+# refuse to overwrite an existing phone_split.json unless true (protects a split you've already
+# committed to comparing against). Override on CLI: overwrite=true
+overwrite: false
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .

@@ -1,0 +1,77 @@
+"""Write phone_split.json — the canonical train/test split for a phone session.
+
+Phone has no transforms.json (FIP's split file), and the default llffhold-8 split is POSITIONAL:
+every 8th sorted image. So two methods that register a different image subset end up testing on
+different views → their PSNR/SSIM/LPIPS aren't comparable. This script fixes that by pinning the
+split BY NAME, derived from the full intended image set (input_uniform/) before COLMAP drops anything.
+Once phone_split.json exists at the session root, dataset_readers.py honors it for every method
+(COLMAP, sparse_metric, ...), so they all hold out the same physical views.
+
+Read-only except for the one JSON it writes. Run once per session.
+"""
+import json
+import os
+
+import hydra
+from omegaconf import DictConfig, OmegaConf
+
+from wheat_utils import split_utils
+
+IMG_EXTS = (".jpg", ".jpeg", ".png")
+
+
+@hydra.main(version_base=None, config_path="../../configs", config_name="preprocessing/make_phone_split")
+def main(cfg: DictConfig):
+    """Build the canonical split from {source}/{image_subdir} names and write phone_split.json."""
+    print("--- make_phone_split config ---")
+    print(OmegaConf.to_yaml(cfg))
+    print("-------------------------------")
+
+    source_path = os.path.join(cfg.dataset.input_dir, str(cfg.field), str(cfg.plot))
+    img_dir = os.path.join(source_path, cfg.image_subdir)
+    if not os.path.isdir(img_dir):
+        raise SystemExit(f"image dir not found: {img_dir} (run preprocess_uniform_size.py first?)")
+
+    files = [f for f in os.listdir(img_dir) if f.lower().endswith(IMG_EXTS)]
+    if not files:
+        raise SystemExit(f"no images in {img_dir}")
+    names = sorted(split_utils._stem(f) for f in files)
+
+    # No pin here — we are CREATING the pin. compute_eval_split picks FIP cam-index if these happen to
+    # be FIP-named, else llffhold (the phone case). Same function training uses → guaranteed identical.
+    train, test = split_utils.compute_eval_split(names, pin_test=None, llffhold=cfg.llffhold)
+    method = split_utils.split_method_label(names, None)
+
+    out_path = os.path.join(source_path, cfg.output)
+    if os.path.exists(out_path) and not cfg.overwrite:
+        raise SystemExit(f"{out_path} already exists — pass overwrite=true to replace it "
+                         f"(protects a split you may already be comparing against).")
+
+    payload = {
+        "field": str(cfg.field),
+        "plot": str(cfg.plot),
+        "image_subdir": cfg.image_subdir,
+        "split_method": method,
+        "llffhold": cfg.llffhold,
+        "n_images": len(names),
+        "train_views": train,
+        "test_views": test,
+    }
+    with open(out_path, "w") as f:
+        json.dump(payload, f, indent=2)
+
+    print("\n" + "=" * 56)
+    print("      PHONE SPLIT WRITTEN")
+    print("=" * 56)
+    print(f"{'Session:':<22} {cfg.field}/{cfg.plot}")
+    print(f"{'Source images:':<22} {len(names)}  (from {cfg.image_subdir}/)")
+    print(f"{'Split method:':<22} {method}")
+    print(f"{'Train / Test:':<22} {len(train)} / {len(test)}")
+    print(f"{'Test views:':<22} {test}")
+    print(f"{'Written to:':<22} {out_path}")
+    print("=" * 56 + "\n")
+    return payload
+
+
+if __name__ == "__main__":
+    main()

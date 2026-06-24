@@ -1,0 +1,31 @@
+# @package _global_
+# Config for src/preprocessing/check_split.py — verifies a reconstruction's train/test split.
+# Uses the SAME split logic as training (wheat_utils.split_utils) so the report can't drift from
+# what 3DGS actually does. Reports: registered images, the pinned test list (FIP transforms.json /
+# phone phone_split.json), whether every pinned test view registered, and the resulting split.
+# Exits non-zero if pinned test views are missing (registration drift) so it can act as a gate/test.
+# Typical usage:
+#   python src/preprocessing/check_split.py dataset=fip plot=plot_461                 # FIP vs paper
+#   python src/preprocessing/check_split.py field=field_A plot=20250609              # phone COLMAP
+#   python src/preprocessing/check_split.py field=field_A plot=20250609 sfm_subdir=agisoft
+
+defaults:
+  - /dataset: phone
+  - override /hydra/job_logging: disabled
+  - override /hydra/hydra_logging: disabled
+  - _self_
+
+field: field_A
+plot: ???
+
+# subfolder under the session holding the reconstruction to check ("" = session root = our COLMAP).
+# Use sfm_subdir=agisoft to check the Agisoft reconstruction.
+sfm_subdir: ""
+
+# folder defining the FULL intended image set, used to report which inputs failed to register.
+image_subdir: input_uniform
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .
