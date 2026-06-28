@@ -115,9 +115,14 @@ def passes_contrast_guard(gray, cx, cy, radius, cfg):
 
 
 def white_surround_frac(hsv, gray, cx, cy, radius, cfg):
-    """Fraction of WHITE (bright + desaturated) pixels in a ring just outside the disk — is the
-    fiducial on the white plate? The strong canopy rejector. 'Bright' is a local-Otsu split
-    (contrast-relative); only the saturation ceiling is absolute."""
+    """Fraction of PLATE pixels in a ring just outside the disk — is the fiducial on the marker
+    plate? The strong canopy rejector. Two modes (cfg.plate_gate):
+      "white"  (default, legacy): plate = BRIGHT (local-Otsu split, contrast-relative) AND
+                desaturated (S <= white_s_max). Brittle in late season — a grey/shaded plate next
+                to bright sunlit straw fails the brightness test because Otsu locks onto the straw.
+      "lowsat" (brightness-invariant): plate = ACHROMATIC (S <= plate_s_max), no brightness test.
+                The marker plate is neutral grey/white at ANY light level; wheat is golden/saturated.
+                Recovers the late-season misses the white test drops (see config note)."""
     H, W = gray.shape[:2]
     r_out = radius * cfg.surround_scale_outer
     x0 = max(0, int(cx - r_out)); y0 = max(0, int(cy - r_out))
@@ -132,6 +137,10 @@ def white_surround_frac(hsv, gray, cx, cy, radius, cfg):
     n = int(ring.sum())
     if n == 0:
         return 0.0
+    if str(cfg.get("plate_gate", "white")) == "lowsat":
+        # brightness-invariant: plate is just the low-saturation (achromatic) region, no Otsu bar
+        plate = sub[:, :, 1] <= cfg.get("plate_s_max", 110)
+        return float((plate & ring).sum()) / float(n)
     otsu, _ = cv2.threshold(sub_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     white = (sub_gray > otsu) & (sub[:, :, 1] <= cfg.white_s_max)
     return float((white & ring).sum()) / float(n)

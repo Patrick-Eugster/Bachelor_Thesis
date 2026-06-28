@@ -1,28 +1,32 @@
 """Step 3 of the marker pipeline: turn the triangulated 3D markers into a METRIC scale.
 
 The triangulated points (`logs/marker_points3d.json` from triangulate_markers.py) live in COLMAP's
-arbitrary-scale world frame. This script recovers the scale factor (COLMAP units -> metres) by
-comparing our marker-to-marker geometry against two independent real-world references:
+arbitrary-scale world frame. This script recovers the scale factor (COLMAP units -> metres). It has
+two modes (config `scale_source`):
 
-  PRIMARY  surveyed XYZ      demoanlage2025_v0/metadata/markers/field_<L>_coordinates.txt
+  survey  (default)  surveyed XYZ  demoanlage2025_v0/metadata/markers/field_<L>_coordinates.txt
            (total-station / RTK coords in CH1903+/LV95, metres) -> all 15 pairwise distances +
-           a rigorous Umeyama similarity fit (scale + R + t) giving a per-marker residual in mm.
-  CHECK    tape-measure xlsx  demoanlage2025_v0/metadata/markers/Demoanlage-2025-markers-manual-
-           distances.xlsx, sheet "plot <L>" -> a second, hand-measured set of the 15 distances we
-           cross-check the survey (and our scaled output) against.
+           a rigorous Umeyama similarity fit (scale + R + t) giving a per-marker residual in mm. The
+           tape xlsx is loaded as an independent CROSS-CHECK.
+
+  tape               TAPE distances ONLY  Demoanlage-2025-markers-manual-distances.xlsx, sheet
+           "plot <L>" -> scale = median(tape_dist / our_recon_dist) over the measured pairs. NO survey
+           needed (survey is loaded only as an optional extra check if the file happens to be present).
+           This gives SIZE only (a uniform scale, no absolute world frame) — which is all phenotyping
+           needs — and sidesteps the RTK-GPS ~2 cm survey error. See docs/MARKER_INTEGRATION_PLAN.md.
 
 Marker target<->code map (from the spec PDF, see docs/MARKER_CODE_STRUCTURE.md):
     target 1->113  target 2->105  target 3->89  target 4->101  target 5->85  target 6->77
 
 Output (READ-ONLY on the data, writes into the plot's logs/):
-    logs/marker_scale.json   scale factor, per-pair distances (ours/survey/tape), per-marker mm
-                             residual after Umeyama, and the survey-vs-tape agreement.
+    logs/marker_scale.json   scale factor, per-pair distances, residuals, and the cross-check.
 
 The scale + the survey XYZ are exactly what a later GCP step would feed COLMAP; this step both gives
 metric output now and validates the markers are good enough to anchor it. See MARKER_INTEGRATION_PLAN.md.
 
 Usage:
     python src/preprocessing/marker_scale.py field=field_A plot=20250609
+    python src/preprocessing/marker_scale.py field=field_A plot=20250609 scale_source=tape
 """
 
 import itertools
@@ -120,9 +124,84 @@ def _col_index(letters):
 
 
 def load_ours(points_json):
-    """Read triangulate_markers.py's marker_points3d.json -> {code(int): np.array([x,y,z])}."""
+    """Read triangulate_markers.py's marker_points3d.json -> {code(int): np.array([x,y,z])}.
+    Skips unsolved markers (None) so it doesn't crash on a partial reconstruction."""
     d = json.load(open(points_json))
-    return {int(code): np.array(p["xyz"], dtype=np.float64) for code, p in d["points3d"].items()}
+    return {int(code): np.array(p["xyz"], dtype=np.float64)
+            for code, p in d["points3d"].items() if p}
+
+
+# --- marker quality guard --------------------------------------------------------------------
+# A triangulated marker must clear ALL of these to be trusted as a metric-scale anchor. Weak
+# markers (low triangulation parallax, few inlier views, high reprojection error) have unreliable
+# 3D positions that poison the distance-ratio scale — empirically the ~5deg-parallax markers in a
+# bad Route-2 run blew the tape CV up to 196%. On every good run all 6 markers clear these (lowest
+# seen: parallax 36.7deg, inliers 6, max-reproj 6.0px) so the guard is a NO-OP on good data.
+# Set any threshold to 0 to disable that gate. See docs/MARKER_INTEGRATION_PLAN.md open item (a).
+QUALITY_DEFAULTS = {
+    "quality_min_parallax_deg": 10.0,  # triangulation angle; < this = depth poorly constrained
+    "quality_min_inlier_views": 4,     # inlier views backing the 3D point
+    "quality_max_reproj_px": 8.0,      # max per-view reprojection error of the 3D point
+}
+
+
+def quality_thresholds(cfg):
+    """Pull the three guard thresholds from cfg (DictConfig or dict), falling back to QUALITY_DEFAULTS.
+    Single place that reads the knobs so marker_scale, apply, and the orchestrator failsafe agree."""
+    def g(k):
+        return cfg.get(k, QUALITY_DEFAULTS[k]) if cfg is not None else QUALITY_DEFAULTS[k]
+    return (float(g("quality_min_parallax_deg")),
+            int(g("quality_min_inlier_views")),
+            float(g("quality_max_reproj_px")))
+
+
+def marker_quality_ok(q, min_par, min_inl, max_rep):
+    """Does one marker's quality dict (from marker_points3d.json) clear the guard?
+    Returns (ok, reasons) — reasons lists each failed gate for the log. A threshold of 0 = gate off."""
+    reasons = []
+    if min_par > 0 and q.get("parallax_deg", 0.0) < min_par:
+        reasons.append(f"parallax {q.get('parallax_deg', 0.0):.1f}<{min_par:g}")
+    if min_inl > 0 and q.get("n_inliers", 0) < min_inl:
+        reasons.append(f"inliers {q.get('n_inliers', 0)}<{min_inl}")
+    if max_rep > 0 and q.get("max_reproj_px", 1e9) > max_rep:
+        reasons.append(f"reproj {q.get('max_reproj_px', 0.0):.1f}>{max_rep:g}")
+    return (len(reasons) == 0), reasons
+
+
+def load_ours_full(points_json):
+    """Read marker_points3d.json -> {code(int): quality dict with 'xyz' as np.array}. Skips unsolved."""
+    d = json.load(open(points_json))
+    out = {}
+    for code, p in d["points3d"].items():
+        if not p:
+            continue
+        q = dict(p)
+        q["xyz"] = np.array(p["xyz"], dtype=np.float64)
+        out[int(code)] = q
+    return out
+
+
+def filter_ours(cfg, points_json):
+    """Load triangulated markers AND apply the quality guard. Returns (ours_xyz, report).
+
+    SINGLE SOURCE OF TRUTH: marker_scale.py (the report), apply_metric_transform.py (the applied
+    transform) and run_preprocessing.py (the failsafe count) all call this, so they agree on exactly
+    which markers anchor the metric scale. report = {thresholds, kept, dropped[{code,reasons}]}."""
+    full = load_ours_full(points_json)
+    min_par, min_inl, max_rep = quality_thresholds(cfg)
+    kept, dropped = {}, []
+    for code in sorted(full):
+        ok, reasons = marker_quality_ok(full[code], min_par, min_inl, max_rep)
+        if ok:
+            kept[code] = full[code]["xyz"]
+        else:
+            dropped.append({"code": code, "reasons": reasons})
+    report = {
+        "thresholds": {"min_parallax_deg": min_par, "min_inlier_views": min_inl,
+                       "max_reproj_px": max_rep},
+        "kept": sorted(kept), "dropped": dropped,
+    }
+    return kept, report
 
 
 def pairwise(points):
@@ -155,16 +234,151 @@ def umeyama(src, dst):
     return s, R, t
 
 
+def tape_scale(ours, tape, mad_k=0.0):
+    """Tape-only scale = median(tape_dist / our_recon_dist) over pairs measured by BOTH.
+
+    Returns (scale, ratio_cv, shared_pairs, dropped_pairs). Pure SIZE — no orientation/position,
+    since tape gives no world frame. Median makes it robust to a single bad pair. Single source of
+    truth, reused by apply_metric_transform.py so the model uses the exact same scale this report
+    computes. When mad_k>0 a robust outlier reject drops any pair whose ratio is > mad_k MADs from the
+    median (catches a wrong-distance pair, e.g. the known tape entry error) before the final median;
+    mad_k=0 (default) → no rejection and the first three returns are byte-identical to before."""
+    d_ours = pairwise(ours)
+    shared_pairs = sorted(p for p in d_ours if p in tape)
+    if not shared_pairs:
+        raise SystemExit("tape-only: no marker pair is both triangulated and tape-measured")
+    ratios = np.array([tape[p] / d_ours[p] for p in shared_pairs])
+    dropped_pairs = []
+    if mad_k and len(ratios) >= 4:
+        med = np.median(ratios)
+        mad = float(np.median(np.abs(ratios - med)))
+        if mad > 0:
+            keep = np.abs(ratios - med) <= mad_k * 1.4826 * mad  # 1.4826 = MAD→sigma for normal
+            if keep.sum() >= 2 and not keep.all():
+                dropped_pairs = [shared_pairs[i] for i in range(len(keep)) if not keep[i]]
+                shared_pairs = [shared_pairs[i] for i in range(len(keep)) if keep[i]]
+                ratios = ratios[keep]
+    return float(np.median(ratios)), float(ratios.std() / ratios.mean()), shared_pairs, dropped_pairs
+
+
+def run_tape_only(cfg, src, letter, ours, qreport=None):
+    """Tape-only metric scale: scale = median(tape_dist / our_recon_dist) over the measured pairs.
+
+    Needs NO survey XYZ — gives SIZE only (a uniform scale, no absolute world frame), which is all
+    phenotyping needs, and avoids the RTK-GPS error. Survey is loaded ONLY as an optional cross-check
+    when the file is present. Writes the same logs/marker_scale.json (with scale_source='tape').
+    `ours` is already quality-filtered upstream; qreport records which markers the guard dropped."""
+    tape = load_tape(cfg.tape_xlsx, f"plot {letter}")  # REQUIRED in this mode
+    print(f"tape distances loaded: {len(tape)} pairs from sheet 'plot {letter}'")
+
+    mad_k = float(cfg.get("quality_ratio_mad_k", 3.5))
+    d_ours = pairwise(ours)
+    scale, ratio_cv, shared_pairs, dropped_pairs = tape_scale(ours, tape, mad_k=mad_k)
+    codes = sorted({c for p in shared_pairs for c in p})
+
+    # optional survey cross-check — never required, just printed if the file exists
+    survey = {}
+    try:
+        survey = load_survey(cfg.survey_file.replace("<L>", letter))
+    except Exception as e:  # noqa: BLE001
+        print(f"(no survey cross-check: {e})")
+    d_survey = pairwise({c: survey[c] for c in codes if c in survey}) if survey else {}
+
+    pair_rows, ours_vs_tape, ours_vs_survey = [], [], []
+    for p in shared_pairs:
+        ours_m = d_ours[p] * scale
+        row = {
+            "pair": list(p),
+            "ours_m": round(ours_m, 4),
+            "tape_m": round(tape[p], 4),
+            "survey_m": round(d_survey[p], 4) if p in d_survey else None,
+            "ours_minus_tape_mm": round((ours_m - tape[p]) * 1000, 1),
+        }
+        ours_vs_tape.append(abs(ours_m - tape[p]) * 1000)
+        if p in d_survey:
+            row["ours_minus_survey_mm"] = round((ours_m - d_survey[p]) * 1000, 1)
+            ours_vs_survey.append(abs(ours_m - d_survey[p]) * 1000)
+        pair_rows.append(row)
+
+    warn_cv = float(cfg.get("quality_warn_cv", 0.05))
+    result = {
+        "field": cfg.field,
+        "plot": cfg.plot,
+        "scale_source": "tape",
+        "shared_markers": codes,
+        "scale_metric": scale,                  # the applied scale (m / colmap-unit)
+        "scale_tape_ratio_median": scale,
+        "scale_ratio_cv": ratio_cv,
+        "n_tape_pairs": len(shared_pairs),
+        "ours_vs_tape_mean_abs_mm": round(float(np.mean(ours_vs_tape)), 2),
+        "ours_vs_survey_mean_abs_mm": round(float(np.mean(ours_vs_survey)), 2) if ours_vs_survey else None,
+        # quality guard: which markers/pairs the guard removed before scaling (open item (a))
+        "quality_guard": qreport or {},
+        "mad_dropped_pairs": [list(p) for p in dropped_pairs],
+        "ratio_cv_warn_threshold": warn_cv,
+        "scale_reliable": bool(ratio_cv <= warn_cv),
+        "pairs": pair_rows,
+    }
+    out_path = os.path.join(src, cfg.output_json)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    json.dump(result, open(out_path, "w"), indent=1)
+
+    print("\n" + "=" * 70)
+    print(f"  METRIC SCALE (TAPE-ONLY)  {cfg.field}/{cfg.plot}   "
+          f"(markers: {len(codes)}, pairs: {len(shared_pairs)})")
+    print("=" * 70)
+    if qreport and qreport.get("dropped"):
+        for d in qreport["dropped"]:
+            print(f"  [quality guard] dropped marker {d['code']}: {', '.join(d['reasons'])}")
+    if dropped_pairs:
+        print(f"  [quality guard] MAD reject (k={mad_k:g}) dropped pair(s): "
+              + ", ".join(str(tuple(p)) for p in dropped_pairs))
+    print(f"  scale (tape ratio)     : {scale:.6f}  m / colmap-unit   (CV {ratio_cv*100:.2f}%)")
+    if ratio_cv > warn_cv:
+        print(f"  !!! WARNING: ratio CV {ratio_cv*100:.2f}% > {warn_cv*100:.1f}% — scale is UNRELIABLE "
+              f"(markers/tape disagree on size). Treat the metric model with caution.")
+    print(f"  ours vs tape (dist)    : {np.mean(ours_vs_tape):.2f} mm mean-abs over "
+          f"{len(shared_pairs)} pairs")
+    if ours_vs_survey:
+        print(f"  ours vs survey (dist)  : {np.mean(ours_vs_survey):.2f} mm mean-abs  "
+              f"[survey present — cross-check only, NOT used for scale]")
+    print("-" * 70)
+    print(f"  {'pair':>12}  {'ours_m':>8}  {'tape_m':>8}  {'survey_m':>9}  {'o-t_mm':>7}")
+    for r in pair_rows:
+        sv = f"{r['survey_m']:.4f}" if r["survey_m"] is not None else "   -   "
+        print(f"  {str(tuple(r['pair'])):>12}  {r['ours_m']:>8.4f}  {r['tape_m']:>8.4f}  "
+              f"{sv:>9}  {r['ours_minus_tape_mm']:>7.1f}")
+    print("=" * 70)
+    print(f"wrote {out_path}")
+
+
 @hydra.main(version_base=None, config_path="../../configs/preprocessing", config_name="marker_scale")
 def main(cfg: DictConfig):
-    """Recover metric scale from triangulated markers vs surveyed XYZ, cross-checked with tape."""
+    """Recover metric scale from triangulated markers — survey (default) or tape-only mode."""
     src = cfg.source_path
     letter = field_letter(cfg.field)
     points_json = os.path.join(src, cfg.points_json)
-    survey_path = cfg.survey_file.replace("<L>", letter)
     print(OmegaConf.to_yaml(cfg))
 
-    ours = load_ours(points_json)
+    # quality guard: drop weak markers (low parallax / few views / high reproj) BEFORE scaling so
+    # they can't poison the scale — single source of truth shared with apply + the orchestrator.
+    ours, qreport = filter_ours(cfg, points_json)
+    if qreport["dropped"]:
+        print("[quality guard] dropped weak markers before scaling:")
+        for d in qreport["dropped"]:
+            print(f"   {d['code']}: {', '.join(d['reasons'])}")
+    print(f"[quality guard] markers anchoring the scale: {qreport['kept']}")
+    if len(ours) < 2:
+        raise SystemExit(f"quality guard left < 2 usable markers ({qreport['kept']}); "
+                         f"cannot recover scale. Loosen quality_* thresholds or improve the capture.")
+
+    # tape-only mode: scale straight from the tape distances, no survey needed
+    if str(cfg.get("scale_source", "survey")) == "tape":
+        run_tape_only(cfg, src, letter, ours, qreport)
+        return
+
+    # --- survey mode (default, unchanged) ---
+    survey_path = cfg.survey_file.replace("<L>", letter)
     survey = load_survey(survey_path)
     codes = sorted(set(ours) & set(survey))
     print(f"markers in both ours+survey: {codes}")
@@ -226,6 +440,7 @@ def main(cfg: DictConfig):
         "ours_vs_survey_mean_abs_mm": round(float(np.mean(ours_vs_survey)), 2),
         "tape_vs_survey_mean_abs_mm": round(float(np.mean(tape_vs_survey)), 2) if tape_vs_survey else None,
         "n_tape_pairs": len(tape_vs_survey),
+        "quality_guard": qreport,
         "pairs": pair_rows,
     }
     out_path = os.path.join(src, cfg.output_json)

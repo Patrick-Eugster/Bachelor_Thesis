@@ -1,9 +1,15 @@
 """Flavour 1 of Level B: rewrite the COLMAP model into a METRIC frame using the marker transform.
 
-Step 3 (marker_scale.py) found the similarity transform (scale + R + t) that maps our COLMAP world
-onto the surveyed marker XYZ. This script applies that SAME transform to the whole `sparse/0/` model
-and writes a metric `sparse_metric/`. The reconstruction geometry is unchanged (rigid+scale map, no
-re-optimisation) — it just gets real metres, which is what phenotyping (length/width/volume in mm) needs.
+Applies the marker similarity transform X' = sRX + t to the whole `sparse/0/` model and writes a metric
+`sparse_metric/`. Reconstruction geometry is unchanged (rigid+scale map, no re-optimisation) — it just
+gets real metres, which is what phenotyping (length/width/volume in mm) needs. Two modes (`scale_source`):
+
+  survey (default)  rigorous Umeyama onto the surveyed XYZ → scale + rotation + translation, so the model
+                    is metric AND georeferenced (local origin = survey centroid; CH1903 origin saved).
+  tape              SCALE only from the tape distances (marker_scale.tape_scale, the same number the
+                    report uses) → R = identity, origin = marker centroid. Metric SIZE but NOT
+                    georeferenced (no orientation/position), which is all phenotyping needs, and needs
+                    no survey/GPS. See docs/MARKER_INTEGRATION_PLAN.md.
 
 Why a hand-written rewrite (not `colmap model_transformer`): the tool's `--transform_path` matrix
 convention did not match a plain `[sR|t]` 4x4 (it produced a scrambled rotation + 30 m translation,
@@ -135,17 +141,40 @@ def main(cfg: DictConfig):
             raise SystemExit(f"need a TEXT COLMAP model; missing {fn} in {in_dir} "
                              f"(re-run run_colmap.py with export_text=true)")
 
-    # --- same transform as Step 3, into a LOCAL metric frame (origin = survey centroid) ---
-    ours = marker_scale.load_ours(os.path.join(src, cfg.points_json))
-    survey = marker_scale.load_survey(cfg.survey_file.replace("<L>", letter))
-    codes = sorted(set(ours) & set(survey))
-    if len(codes) < 3:
-        raise SystemExit(f"need >= 3 shared markers, have {codes}")
-    P_ours = np.array([ours[c] for c in codes])
-    P_survey_abs = np.array([survey[c] for c in codes])
-    origin = P_survey_abs.mean(0)
-    P_survey_local = P_survey_abs - origin
-    s, R, t = marker_scale.umeyama(P_ours, P_survey_local)
+    # --- build the metric transform X' = sRX + t, into a LOCAL frame (coords near 0) ---
+    # quality guard FIRST (same single source of truth as marker_scale.py) so the applied transform
+    # is anchored on exactly the markers the report trusted — weak ones never reach the fit.
+    ours, qreport = marker_scale.filter_ours(cfg, os.path.join(src, cfg.points_json))
+    if qreport["dropped"]:
+        print("[quality guard] dropped weak markers before the transform: "
+              + ", ".join(f"{d['code']}({';'.join(d['reasons'])})" for d in qreport["dropped"]))
+    scale_source = str(cfg.get("scale_source", "survey"))
+
+    if scale_source == "tape":
+        # TAPE-ONLY: scale = median(tape/ours) gives SIZE only — no rotation, no absolute position.
+        # So R = identity and we just recenter on the marker centroid (origin = scaled marker centroid)
+        # to keep coords near 0 for 3DGS float32 safety. The model is metric but NOT georeferenced.
+        tape = marker_scale.load_tape(cfg.tape_xlsx, f"plot {letter}")
+        s, ratio_cv, shared_pairs, _dropped = marker_scale.tape_scale(
+            ours, tape, mad_k=float(cfg.get("quality_ratio_mad_k", 3.5)))
+        codes = sorted({c for p in shared_pairs for c in p})
+        if len(codes) < 3:
+            raise SystemExit(f"tape-only: need >= 3 markers in tape-measured pairs, have {codes}")
+        R = np.eye(3)
+        P_ours = np.array([ours[c] for c in codes])
+        origin = P_ours.mean(0)            # marker centroid in COLMAP units
+        t = -s * origin                    # X' = s(X - centroid): scaled centroid lands at 0
+    else:
+        # SURVEY: rigorous Umeyama (scale + R + t) onto the surveyed XYZ in a local frame.
+        survey = marker_scale.load_survey(cfg.survey_file.replace("<L>", letter))
+        codes = sorted(set(ours) & set(survey))
+        if len(codes) < 3:
+            raise SystemExit(f"need >= 3 shared markers, have {codes}")
+        P_ours = np.array([ours[c] for c in codes])
+        P_survey_abs = np.array([survey[c] for c in codes])
+        origin = P_survey_abs.mean(0)
+        P_survey_local = P_survey_abs - origin
+        s, R, t = marker_scale.umeyama(P_ours, P_survey_local)
 
     # --- rewrite the model (text) ---
     if os.path.isdir(out_dir):
@@ -166,32 +195,49 @@ def main(cfg: DictConfig):
     pose_err = [np.linalg.norm((s * (R @ Cin[n]) + t) - Cout[n]) for n in Cin if n in Cout]
     pose_max_mm = float(np.max(pose_err) * 1000) if pose_err else float("nan")
 
-    # --- VERIFY 2: our markers land on the (local) survey within the Step-3 residual ---
-    fitted = (s * (R @ P_ours.T)).T + t
-    resid_mm = np.linalg.norm(fitted - P_survey_local, axis=1) * 1000
-    rms_mm = float(np.sqrt((resid_mm ** 2).mean()))
-
+    # --- VERIFY 2: marker fit quality (mode-specific) ---
+    fitted = (s * (R @ P_ours.T)).T + t                 # markers in the metric frame
     meta = {
         "field": cfg.field, "plot": cfg.plot, "shared_markers": codes,
-        "scale": s, "frame": "local metres (origin = survey centroid)",
-        "survey_origin_ch1903_lv95": origin.tolist(),
-        "note": "add survey_origin_ch1903_lv95 back to get absolute CH1903+/LV95 coordinates",
-        "umeyama_rms_mm": round(rms_mm, 2),
+        "scale_source": scale_source, "scale": s,
         "pose_writeback_max_mm": round(pose_max_mm, 6),
+        "quality_guard": qreport,
         "input_model": in_dir, "output_model": out_dir,
     }
+    if scale_source == "tape":
+        # tape gives only distances → check the SCALED marker distances reproduce the tape ones
+        fitted_pts = {c: fitted[i] for i, c in enumerate(codes)}
+        dd = marker_scale.pairwise(fitted_pts)
+        dist_err_mm = [abs(dd[p] - tape[p]) * 1000 for p in shared_pairs]
+        fit_mm = float(np.mean(dist_err_mm))
+        meta["frame"] = "local metres (origin = marker centroid; tape scale, NO georeference)"
+        meta["tape_dist_mean_abs_mm"] = round(fit_mm, 2)
+        meta["n_tape_pairs"] = len(shared_pairs)
+    else:
+        # survey gives absolute XYZ → markers land on the local survey within the Step-3 residual
+        resid_mm = np.linalg.norm(fitted - P_survey_local, axis=1) * 1000
+        fit_mm = float(np.sqrt((resid_mm ** 2).mean()))
+        meta["frame"] = "local metres (origin = survey centroid)"
+        meta["survey_origin_ch1903_lv95"] = origin.tolist()
+        meta["note"] = "add survey_origin_ch1903_lv95 back to get absolute CH1903+/LV95 coordinates"
+        meta["umeyama_rms_mm"] = round(fit_mm, 2)
+
     meta_path = os.path.join(src, cfg.output_meta)
     os.makedirs(os.path.dirname(meta_path), exist_ok=True)
     json.dump(meta, open(meta_path, "w"), indent=1)
 
     print("\n" + "=" * 66)
-    print(f"  METRIC MODEL  {cfg.field}/{cfg.plot}")
+    print(f"  METRIC MODEL  {cfg.field}/{cfg.plot}   (scale source: {scale_source})")
     print("=" * 66)
     print(f"  scale applied          : {s:.6f}  m / colmap-unit")
     print(f"  output model           : {out_dir}  (text)")
-    print(f"  CH1903+ origin (subtr.): {[round(float(o),3) for o in origin]}")
-    print(f"  marker fit RMS         : {rms_mm:.2f} mm  (per-marker: "
-          + ", ".join(f'{c}:{r:.1f}' for c, r in zip(codes, resid_mm)) + ")")
+    if scale_source == "tape":
+        print(f"  frame                  : local metres, origin = marker centroid (NO georeference)")
+        print(f"  marker dist vs tape    : {fit_mm:.2f} mm mean-abs over {len(shared_pairs)} pairs")
+    else:
+        print(f"  CH1903+ origin (subtr.): {[round(float(o),3) for o in origin]}")
+        print(f"  marker fit RMS         : {fit_mm:.2f} mm  (per-marker: "
+              + ", ".join(f'{c}:{r:.1f}' for c, r in zip(codes, resid_mm)) + ")")
     print(f"  pose write-back check  : {pose_max_mm:.4g} mm max  "
           f"{'OK' if pose_max_mm < 0.001 else 'CHECK!'}")
     print("=" * 66)

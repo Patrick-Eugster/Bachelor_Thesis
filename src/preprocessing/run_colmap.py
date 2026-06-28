@@ -73,6 +73,20 @@ def main(cfg: DictConfig):
     magick_command = f'"{cfg.magick_executable}"' if len(cfg.magick_executable) > 0 else "magick"
     use_gpu = 0 if cfg.no_gpu else 1
     source_path = cfg.source_path
+    front_end = str(cfg.get("front_end", "sift")).lower()   # "sift" (default) or "aliked"
+
+    # ALIKED's ONNX provider in this COLMAP build was compiled against CUDA 12; on a CUDA-13 box it
+    # aborts (libcublasLt.so.12 missing). Prepend a user-supplied CUDA-12 lib dir to LD_LIBRARY_PATH so
+    # it loads. Harmless when front_end=sift or aliked_cuda12_libdir is empty. See docs/PHONE_SFM_FRONTEND.md.
+    if front_end == "aliked" and cfg.get("aliked_cuda12_libdir", ""):
+        libdirs = [dp for dp, _dn, _fn in os.walk(cfg.aliked_cuda12_libdir)
+                   if os.path.basename(dp) == "lib"]
+        if libdirs:
+            os.environ["LD_LIBRARY_PATH"] = ":".join(libdirs) + ":" + os.environ.get("LD_LIBRARY_PATH", "")
+            print(f"[aliked] prepended {len(libdirs)} CUDA-12 lib dir(s) to LD_LIBRARY_PATH")
+        else:
+            print(f"WARNING: aliked_cuda12_libdir={cfg.aliked_cuda12_libdir} has no */lib subdirs — "
+                  f"ALIKED GPU may fail to load its CUDA-12 onnxruntime provider.")
     # full path to the folder COLMAP reads images from
     image_path = os.path.join(source_path, cfg.image_subdir)
 
@@ -101,16 +115,27 @@ def main(cfg: DictConfig):
         os.makedirs(source_path + "/distorted/sparse", exist_ok=True)
 
         # 1. Feature extraction
-        print("Step 1/3: Feature extraction...")
+        print(f"Step 1/3: Feature extraction (front_end={front_end})...")
         t0 = time.time()
         single_camera_flag = "1" if cfg.single_camera else "0"
+        # ALIKED = learned features (type ALIKED_N16ROT); its CPU-side image decode pins all cores by
+        # default, so use a tighter thread cap, and optionally downscale to bound the ~15GB extraction VRAM.
+        if front_end == "aliked":
+            extract_threads = cfg.get("aliked_extract_threads", 4)
+            extra_extract = (" --FeatureExtraction.type ALIKED_N16ROT"
+                             f" --AlikedExtraction.max_num_features {cfg.get('aliked_max_num_features', 4096)}")
+            if int(cfg.get("aliked_max_image_size", 0)) > 0:
+                extra_extract += f" --FeatureExtraction.max_image_size {cfg.aliked_max_image_size}"
+        else:
+            extract_threads = cfg.num_threads
+            extra_extract = " --FeatureExtraction.type SIFT"
         feat_extracton_cmd = colmap_command + " feature_extractor "\
             "--database_path " + source_path + "/distorted/database.db \
             --image_path " + image_path + " \
             --ImageReader.camera_model " + cfg.camera + " \
             --ImageReader.single_camera " + single_camera_flag + " \
             --FeatureExtraction.use_gpu " + str(use_gpu) + " \
-            --FeatureExtraction.num_threads " + str(cfg.num_threads)
+            --FeatureExtraction.num_threads " + str(extract_threads) + extra_extract
         exit_code = run_cmd(feat_extracton_cmd)
         if exit_code != 0:
             print(f"ERROR: Feature extraction failed with code {exit_code}. Exiting.")
@@ -118,18 +143,23 @@ def main(cfg: DictConfig):
             exit(exit_code)
         print(f"  Feature extraction done in {time.time() - t0:.1f}s")
 
-        # 2. Feature matching
-        print(f"Step 2/3: Feature matching ({cfg.matcher})...")
+        # 2. Feature matching. ALIKED descriptors need the matching LightGlue matcher; SIFT uses the
+        # classic brute-force matcher. The matcher TYPE is independent of the matcher TOPOLOGY
+        # (sequential vs exhaustive), so both front-ends work with both topologies.
+        match_type = "ALIKED_LIGHTGLUE" if front_end == "aliked" else "SIFT_BRUTEFORCE"
+        print(f"Step 2/3: Feature matching ({cfg.matcher}, type={match_type})...")
         t0 = time.time()
         if cfg.matcher == "sequential":
             feat_matching_cmd = colmap_command + " sequential_matcher \
                 --database_path " + source_path + "/distorted/database.db \
+                --FeatureMatching.type " + match_type + " \
                 --FeatureMatching.use_gpu " + str(use_gpu) + " \
                 --FeatureMatching.num_threads " + str(cfg.num_threads) + " \
                 --SequentialMatching.overlap " + str(cfg.sequential_overlap)
         else:
             feat_matching_cmd = colmap_command + " exhaustive_matcher \
                 --database_path " + source_path + "/distorted/database.db \
+                --FeatureMatching.type " + match_type + " \
                 --FeatureMatching.use_gpu " + str(use_gpu) + " \
                 --FeatureMatching.num_threads " + str(cfg.num_threads)
         exit_code = run_cmd(feat_matching_cmd)
@@ -138,6 +168,21 @@ def main(cfg: DictConfig):
             log_file.close()
             exit(exit_code)
         print(f"  Feature matching done in {time.time() - t0:.1f}s")
+
+        # 2b. Route 2 (opt-in): inject decoded markers as tie-points into the database BEFORE the
+        # mapper, so the markers are triangulated INSIDE the SfM (survey-free). Default off ("") =
+        # byte-identical to the normal run. The detections must be on the same image space the
+        # extractor used (input_uniform) — run detect_markers_v8 image_subdir=input_uniform first.
+        if cfg.get("inject_markers_json", ""):
+            import inject_markers_to_db
+            det_json = os.path.join(source_path, cfg.inject_markers_json)
+            db_path = source_path + "/distorted/database.db"
+            print(f"Step 2b/3: Injecting marker tie-points from {cfg.inject_markers_json} ...")
+            if not os.path.isfile(det_json):
+                print(f"WARNING: inject_markers_json not found ({det_json}); skipping injection.")
+            else:
+                summ = inject_markers_to_db.inject(db_path, det_json)
+                print(f"  injected: {summ}")
 
         # 3. Bundle adjustment / mapper. The default Mapper tolerance is unnecessarily large;
         # decreasing it speeds up bundle adjustment.
@@ -267,6 +312,7 @@ def main(cfg: DictConfig):
     print("      COLMAP SUMMARY")
     print("="*50)
     print(f"{'Plot:':<28} {cfg.field}/{cfg.plot}")
+    print(f"{'Front-end:':<28} {front_end}" + (f"  (ALIKED + LightGlue)" if front_end == "aliked" else "  (SIFT)"))
     print(f"{'Camera model:':<28} {cfg.camera}  (single_camera={cfg.single_camera})")
     print(f"{'Matcher:':<28} {cfg.matcher}")
     print(f"{'GPU enabled (SIFT+match):':<28} {not cfg.no_gpu}")
@@ -298,6 +344,7 @@ def main(cfg: DictConfig):
         "submodels": [{"name": n, "images": c} for n, c in mapper_submodels],
         "registered": undistorted_count,
         "missing_images": missing,
+        "front_end": front_end,
         "camera": cfg.camera,
         "single_camera": cfg.single_camera,
         "matcher": cfg.matcher,

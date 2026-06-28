@@ -18,6 +18,14 @@ plot: ???
 
 source_path: ${dataset.input_dir}/${field}/${plot}
 
+# WHERE the metric scale comes from:
+#   survey  (default) = surveyed XYZ -> rigorous Umeyama (scale + R + t); tape is a cross-check.
+#   tape              = TAPE distances ONLY -> scale = median(tape_dist / our_recon_dist). No survey
+#                       needed (survey loaded only as an optional extra check if the file is present).
+#                       Gives SIZE only (no absolute world frame) — which is all phenotyping needs, and
+#                       it sidesteps the RTK-GPS ~2 cm survey error. See docs/MARKER_INTEGRATION_PLAN.md.
+scale_source: survey
+
 # triangulated 3D points (output of triangulate_markers.py), relative to source_path
 points_json: logs/marker_points3d.json
 
@@ -26,6 +34,17 @@ points_json: logs/marker_points3d.json
 survey_file: demoanlage2025_v0/metadata/markers/field_<L>_coordinates.txt
 # CHECK: hand-measured tape distances; sheet 'plot <L>' inside this workbook.
 tape_xlsx: demoanlage2025_v0/metadata/markers/Demoanlage-2025-markers-manual-distances.xlsx
+
+# --- marker quality guard (open item (a)) ---
+# Drop weak markers BEFORE computing the scale so they can't poison it. A marker must clear ALL three
+# gates to anchor the metric scale; set a threshold to 0 to disable that gate. Defaults are a NO-OP on
+# every good run (lowest seen: parallax 36.7deg, inliers 6, max-reproj 6.0px) and only bite the
+# ~5deg-parallax markers from a bad SfM that blew the tape CV to 196%. See docs/MARKER_INTEGRATION_PLAN.md.
+quality_min_parallax_deg: 10.0   # triangulation angle; < this = depth poorly constrained
+quality_min_inlier_views: 4      # inlier views backing the 3D point
+quality_max_reproj_px: 8.0       # max per-view reprojection error of the 3D point
+quality_ratio_mad_k: 3.5         # tape mode: drop any pair whose ratio is > k MADs from median (0=off)
+quality_warn_cv: 0.05            # warn + flag scale_reliable=false if the final ratio CV exceeds this
 
 # --- output ---
 output_json: logs/marker_scale.json

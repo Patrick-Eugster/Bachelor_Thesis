@@ -29,14 +29,35 @@ run_markers: false
 # sub-toggles, only consulted when run_markers=true — skip individual marker steps:
 run_marker_detect:     true   # step 4: CCT decode per image + manifest filter   → marker_detections_v8_manifest.json
 run_marker_triangulate: true  # step 5: lift detections to one 3D point/marker    → marker_points3d.json + overlays
-run_marker_scale:      true   # step 6: metric scale check vs survey XYZ + tape    → marker_scale.json   (needs survey)
-run_marker_metric:     true   # step 7: Flavour 1 — similarity → metric model      → sparse_metric/      (needs survey)
+run_marker_scale:      true   # step 6: metric scale (survey XYZ or tape)          → marker_scale.json
+run_marker_metric:     true   # step 7: Flavour 1 — similarity → metric model      → sparse_metric/
 run_marker_gcp:        true   # step 8: Flavour 2 — GCP-constrained BA (pycolmap)   → sparse_metric_gcp/  (needs survey + local pycolmap)
+# WHERE metric scale comes from (steps 6+7): 'survey' = Umeyama onto surveyed XYZ (metric + georeferenced,
+# needs the survey file); 'tape' = TAPE distances only (metric SIZE, no GPS/survey, not georeferenced).
+# tape mode also auto-SKIPS step 8 (GCP-BA is survey-anchored). See docs/MARKER_INTEGRATION_PLAN.md.
+marker_scale_source: survey
+
+# ROUTE 2 (experiment): bake markers INTO the SfM. When true, a pre-COLMAP detection runs on
+# input_uniform (the distorted space the database keypoints use) and run_colmap injects those markers
+# as tie-points between matcher and mapper → a full second SfM with markers built in (survey-free).
+# Default false = normal single-SfM (Route 1). Smooth one-command Route-2 run:
+#   run_markers=true markers_in_sfm=true marker_scale_source=tape
+markers_in_sfm: false
+marker_inputspace_json: logs/marker_det_inputspace.json   # where the input_uniform detections go
 # marker steps are fail-soft: a failure (e.g. missing survey file) warns and continues, it does not abort the pipeline.
 # FAILSAFE: the metric steps (6-8) only run if triangulation solved at least this many 3D markers.
 # Too few → skip 6-8 and keep the model in relative scale instead of anchoring metric size on 1-2 markers.
 # (3 is the mathematical minimum for a unique scale+rotation+translation; 4 leaves a safety margin.)
 min_markers: 4
+
+# QUALITY GUARD (open item (a)): the failsafe above counts only markers that pass these gates, and
+# steps 6+7 drop weak markers before scaling. A marker must clear ALL three to anchor the metric scale.
+# These MUST match marker_scale.yaml / marker_metric.yaml (the orchestrator passes nothing — each step
+# reads its own config — but the failsafe count here uses these, so keep them in sync). NO-OP on good
+# runs; only the ~5deg-parallax poisoners get cut. See docs/MARKER_INTEGRATION_PLAN.md.
+quality_min_parallax_deg: 10.0   # triangulation angle; < this = depth poorly constrained
+quality_min_inlier_views: 4      # inlier views backing the 3D point
+quality_max_reproj_px: 8.0       # max per-view reprojection error of the 3D point
 
 # TAPE GATE: auto-pick the metric model from survey trustworthiness. The LOMO experiment
 # (docs/MARKER_COLMAP_RERUN_EXPERIMENT.md) showed anchoring markers HELPS on good-survey fields and HURTS

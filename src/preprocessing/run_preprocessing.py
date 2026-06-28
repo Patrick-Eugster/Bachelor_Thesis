@@ -9,9 +9,9 @@ Marker layer (steps 4-8, only when run_markers=true; each is fail-soft — a mis
 local-only pycolmap warns and continues instead of aborting):
     4. detect_markers_v8_cct.py    — CCT decode per image + manifest filter
     5. triangulate_markers.py      — lift detections to one 3D point per marker
-    6. marker_scale.py             — metric scale check vs survey XYZ + tape   (needs survey)
-    7. apply_metric_transform.py   — Flavour 1: similarity → metric model      (needs survey)
-    8. marker_gcp_ba.py            — Flavour 2: GCP-constrained BA (pycolmap)   (needs survey)
+    6. marker_scale.py             — metric scale: survey XYZ or tape (marker_scale_source)
+    7. apply_metric_transform.py   — Flavour 1: similarity → metric model (same scale source)
+    8. marker_gcp_ba.py            — Flavour 2: GCP-constrained BA (pycolmap)   (survey only; skipped in tape mode)
 
 Each step is launched as a subprocess so it can be run individually too. Hydra config:
 configs/preprocessing/config.yaml.
@@ -99,13 +99,28 @@ def _tape_gate(cfg, source_path, read_summary):
     return good
 
 
-def _count_solved_markers(source_path, read_summary):
-    """How many markers got a valid 3D point in triangulation (reads marker_points3d.json).
-    0 if the file is missing (triangulation skipped or failed) — the failsafe then skips metric steps."""
+def _count_quality_markers(source_path, read_summary, cfg):
+    """How many markers pass the QUALITY guard (parallax / inlier-views / reproj) — the ones that can
+    actually anchor the metric scale. Reads marker_points3d.json and applies the exact same gate as
+    marker_scale.py (single source of truth), so the failsafe doesn't green-light metric steps on weak
+    markers that would poison the scale. Returns (n_quality, weak) where weak = [(code, reasons)].
+    (0, []) if the file is missing (triangulation skipped or failed)."""
     pts = read_summary(source_path, "marker_points3d.json")
     if not pts:
-        return 0
-    return sum(1 for v in pts.get("points3d", {}).values() if v)
+        return 0, []
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import marker_scale  # same dir; reuse the guard so thresholds + logic never drift
+    min_par, min_inl, max_rep = marker_scale.quality_thresholds(cfg)
+    n_quality, weak = 0, []
+    for code, v in pts.get("points3d", {}).items():
+        if not v:
+            continue
+        ok, reasons = marker_scale.marker_quality_ok(v, min_par, min_inl, max_rep)
+        if ok:
+            n_quality += 1
+        else:
+            weak.append((code, reasons))
+    return n_quality, weak
 
 
 def _emit_marker_block(source_path, read_summary):
@@ -125,9 +140,16 @@ def _emit_marker_block(source_path, read_summary):
         print(f"{'Markers solved (3D):':<28} {solved} / {len(pts.get('manifest', []))}")
         print(f"{'Snapped / reprojected:':<28} {pts.get('n_snapped', '-')} / {pts.get('n_reprojected', '-')}")
     if scale:
-        print(f"{'Metric scale (m/unit):':<28} {scale['scale_umeyama']:.4f}  (CV {100*scale['scale_ratio_cv']:.2f}%)")
-        print(f"{'Umeyama RMS vs survey:':<28} {scale['umeyama_rms_mm']:.1f} mm")
-        print(f"{'Ours vs survey (dist):':<28} {scale['ours_vs_survey_mean_abs_mm']:.1f} mm")
+        # tape-mode marker_scale.json has scale_metric / ours_vs_tape_*; survey-mode has
+        # scale_umeyama / umeyama_rms_mm / ours_vs_survey_*. Read whichever applies.
+        ssrc = scale.get("scale_source", "survey")
+        sval = scale.get("scale_metric", scale.get("scale_umeyama"))
+        print(f"{'Metric scale (m/unit):':<28} {sval:.4f}  (CV {100*scale.get('scale_ratio_cv', 0):.2f}%)  [{ssrc}]")
+        if ssrc == "tape":
+            print(f"{'Ours vs tape (dist):':<28} {scale.get('ours_vs_tape_mean_abs_mm', float('nan')):.1f} mm")
+        else:
+            print(f"{'Umeyama RMS vs survey:':<28} {scale['umeyama_rms_mm']:.1f} mm")
+            print(f"{'Ours vs survey (dist):':<28} {scale['ours_vs_survey_mean_abs_mm']:.1f} mm")
     if gcp:
         mb, ma = gcp["marker_reproj_px_before"], gcp["marker_reproj_px_after"]
         print(f"{'GCP marker reproj (px):':<28} {mb['mean']:.1f} → {ma['mean']:.1f}  (scene {gcp['scene_reproj_px_after']:.2f})")
@@ -192,9 +214,23 @@ def main(cfg: DictConfig):
             "python", "src/preprocessing/preprocess_uniform_size.py", *common_args,
         ], timings)
 
+    # ROUTE 2 (markers_in_sfm=true): detect markers on the DISTORTED input_uniform — the space the
+    # database keypoints live in — BEFORE colmap, then have run_colmap inject them between matcher and
+    # mapper so the second SfM bakes markers in (survey-free). Needs run_uniform to have made
+    # input_uniform first. Default off → normal single-SfM run. See docs/MARKER_INTEGRATION_PLAN.md.
+    inject_arg = []
+    if cfg.get("markers_in_sfm", False) and cfg.run_colmap:
+        det_json = cfg.get("marker_inputspace_json", "logs/marker_det_inputspace.json")
+        run_step("1b. marker detect (input_uniform → SfM injection)", [
+            "python", "src/preprocessing/detect_markers_v8_cct.py", *common_args,
+            "image_subdir=input_uniform", f"output_json={det_json}",
+            "output_vis_dir=marker_vis_inputspace",
+        ], timings, fatal=False)
+        inject_arg = [f"inject_markers_json={det_json}"]
+
     if cfg.run_colmap:
-        run_step("2. COLMAP SfM", [
-            "python", "src/preprocessing/run_colmap.py", *common_args,
+        run_step("2. COLMAP SfM" + (" + marker inject" if inject_arg else ""), [
+            "python", "src/preprocessing/run_colmap.py", *common_args, *inject_arg,
         ], timings)
 
     if cfg.run_compare:
@@ -206,8 +242,11 @@ def main(cfg: DictConfig):
     # survey file or local-only pycolmap warns and continues instead of aborting the whole run ---
     if cfg.get("run_markers", False):
         if cfg.get("run_marker_detect", True):
+            # write the manifest-named JSON that triangulate (step 5) reads by default — detect's own
+            # default is logs/marker_detections_v8.json, which wouldn't match the downstream name.
             run_step("4. marker detect (CCT v8)", [
                 "python", "src/preprocessing/detect_markers_v8_cct.py", *common_args,
+                "output_json=logs/marker_detections_v8_manifest.json",
             ], timings, fatal=False)
 
         if cfg.get("run_marker_triangulate", True):
@@ -220,22 +259,30 @@ def main(cfg: DictConfig):
         # a stricter min_markers). Too few solved → skip 6-8 and keep the model in relative scale,
         # rather than anchor metric size on 1-2 markers and silently produce a wrong metric frame.
         min_markers = int(cfg.get("min_markers", 4))
-        solved = _count_solved_markers(source_path, _read_summary)
-        markers_ok = solved >= min_markers
+        n_quality, weak = _count_quality_markers(source_path, _read_summary, cfg)
+        if weak:
+            print("\n[quality guard] solved but TOO WEAK to anchor scale (excluded from the count): "
+                  + "; ".join(f"{c} ({', '.join(r)})" for c, r in weak))
+        markers_ok = n_quality >= min_markers
         if not markers_ok:
-            print(f"\n!!! MARKER FAILSAFE: only {solved} marker(s) solved (need >= {min_markers}). "
+            print(f"\n!!! MARKER FAILSAFE: only {n_quality} quality marker(s) (need >= {min_markers}). "
                   f"Skipping metric steps 6-8 — reconstruction stays in relative (non-metric) scale.")
         else:
-            print(f"\n[marker failsafe] {solved} markers solved (>= {min_markers}) — metric steps enabled.")
+            print(f"\n[marker failsafe] {n_quality} quality markers (>= {min_markers}) — metric steps enabled.")
+
+        # scale source for steps 6+7: 'survey' (Umeyama onto GPS) or 'tape' (tape distances only, no
+        # survey/GPS). Passed to both so the report and the applied model agree.
+        marker_scale_source = str(cfg.get("marker_scale_source", "survey"))
+        scale_arg = [f"scale_source={marker_scale_source}"]
 
         if markers_ok and cfg.get("run_marker_scale", True):
             run_step("6. marker metric scale", [
-                "python", "src/preprocessing/marker_scale.py", *common_args,
+                "python", "src/preprocessing/marker_scale.py", *common_args, *scale_arg,
             ], timings, fatal=False)
 
         if markers_ok and cfg.get("run_marker_metric", True):
             run_step("7. metric model (Flavour 1)", [
-                "python", "src/preprocessing/apply_metric_transform.py", *common_args,
+                "python", "src/preprocessing/apply_metric_transform.py", *common_args, *scale_arg,
             ], timings, fatal=False)
 
         # TAPE GATE: auto-decide whether Flavour 2 (GCP-BA) is trustworthy for this field. The LOMO
@@ -246,7 +293,12 @@ def main(cfg: DictConfig):
         # Default OFF (run whatever run_marker_gcp says). Writes logs/metric_choice.json for downstream.
         gcp_allowed = _tape_gate(cfg, source_path, _read_summary) if markers_ok else False
 
-        if markers_ok and cfg.get("run_marker_gcp", True):
+        # GCP-BA is survey-ANCHORED (needs the surveyed XYZ as GCPs) → it makes no sense in tape-only
+        # mode. Skip it entirely when scale_source=tape, regardless of run_marker_gcp / the tape gate.
+        if markers_ok and marker_scale_source == "tape":
+            print("  [tape-only] skipping step 8 (GCP-BA) — it is survey-anchored; "
+                  "Flavour 1 (sparse_metric/, tape-scaled) is the metric model.")
+        elif markers_ok and cfg.get("run_marker_gcp", True):
             if gcp_allowed:
                 run_step("8. GCP-BA (Flavour 2)", [
                     "python", "src/preprocessing/marker_gcp_ba.py", *common_args,

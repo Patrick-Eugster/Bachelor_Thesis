@@ -1,0 +1,30 @@
+# @package _global_
+# Config for src/preprocessing/inject_markers_to_db.py — Route 2 marker tie-point injection.
+# Adds the decoded marker pixels into distorted/database.db as extra keypoints + guaranteed matches,
+# AFTER feature_extractor + matcher and BEFORE the mapper, so the mapper triangulates markers inside
+# the SfM. Survey-free (tie-points only). The detections MUST be on the same image space COLMAP
+# extracted from (input_uniform) — run detect_markers_v8_cct.py image_subdir=input_uniform first.
+#
+# Usage:
+#   python src/preprocessing/inject_markers_to_db.py field=field_A plot=20250609
+
+defaults:
+  - /dataset: phone
+  - override /hydra/job_logging: disabled
+  - override /hydra/hydra_logging: disabled
+  - _self_
+
+field: field_A
+plot: ???
+
+source_path: ${dataset.input_dir}/${field}/${plot}
+
+database_path: distorted/database.db          # COLMAP db (after feature_extractor + matcher)
+# marker detections on input_uniform space (NOT images/). Run detect with image_subdir=input_uniform
+# and a distinct output_json so it doesn't clash with the post-hoc (images/) detections.
+detections_json: logs/marker_detections_v8_inputspace.json
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .

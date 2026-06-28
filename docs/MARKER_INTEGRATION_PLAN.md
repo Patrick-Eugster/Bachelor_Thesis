@@ -2,6 +2,158 @@
 
 Plan for bringing the surveyed **coded ground markers** into our COLMAP pipeline.
 
+---
+
+> ## 🎯 DECISION (2026-06-26): TAPE ONLY — survey XYZ is NOT used for now
+>
+> Metric scale comes **only from the hand-measured tape distances**. The surveyed XYZ
+> (`field_<L>_coordinates.txt`) is **off the table for now** — it's RTK-GPS-limited (~2 cm,
+> field_A tape↔survey gap 17 mm) and anchoring it bends good geometry to noisy targets (see
+> `MARKER_COLMAP_RERUN_EXPERIMENT.md`). Tape is mm-level, needs no GPS, and is what any farmer has.
+>
+> **⚠️ KNOWN TAPE DATA ERROR (field_A / sheet "plot A"):** the tape distance for pair **target5↔target1
+> (codes 85↔113) = 1.4580 m is a gross outlier** (~+82 mm vs survey 1.3756 m, +45 mm vs our
+> photogrammetry ~1.40 m). Survey + our photogrammetry (two independent methods) agree ~1.376–1.40 m →
+> it's a **tape entry error, not ours**. Harmless to the scale (tape mode uses the **median** of 15
+> ratios → outlier ignored; tape scale 0.5595 vs survey 0.5537, ~1% apart, ratio CV 1.00%), but
+> **EXCLUDE pair (85,113) in any per-pair tape analysis on field_A.** field_D not yet checked.
+>
+> **The survey code is NOT deleted** — `load_survey()` + the Umeyama-onto-survey path in
+> `marker_scale.py`, and the survey-anchored `marker_gcp_ba.py` / `marker_gcp_lomo.py`, all stay on
+> disk for later. They are simply **not part of the current route**. Re-enable if a session ever gets
+> a trustworthy (total-station) survey.
+>
+> ### Two tape-only routes (both survey-free)
+>
+> **Route 1 — single COLMAP run (post-hoc, production default).**
+> ```
+> run_colmap.py (ONE normal SfM)  →  detect markers  →  triangulate (back-projection on poses)
+>   →  tape scale  (k = median(tape_dist / recon_dist))  →  metric model
+> ```
+> COLMAP runs once; triangulation is just geometry; scale is a uniform multiply. No second
+> optimization, so markers can't distort the reconstruction. Safe, simple, the workhorse.
+>
+> **Route 2 — second FULL COLMAP SfM with markers as tie-points (BUILT; experiment pending).**
+> ```
+> detect markers on input_uniform FIRST  →  feature_extractor → matcher → [inject markers into
+>   database.db as tie-points: pixel + ID, NO coordinates] → mapper   (a full second SfM)
+>   →  markers baked into SfM (arbitrary units)  →  tape scale on top
+> ```
+> Markers enter as **guaranteed-correct 2D correspondences** (same ID across images = a certain
+> match), **not** as world coordinates — so this is survey-free. **Built (2026-06-26):**
+> `src/preprocessing/inject_markers_to_db.py` writes marker keypoints + verified two-view matches into
+> `distorted/database.db` (raw SQLite — pycolmap 4.0.4's Database is an abstract base that segfaults);
+> `run_colmap.py` calls it between matcher and mapper when `inject_markers_json` is set (default "" =
+> off, byte-identical normal run). **Validated** on field_A/20250609: injected 118 marker keypoints +
+> 1279 match-edges → mapper registered **119/119** images (= baseline, no regression) and triangulated
+> **114/118** marker keypoints into 3D points → markers are baked into the SfM. **Question still to
+> measure:** does this improve **camera calibration** and/or **downstream 3DGS** versus Route 1?
+> Likely upside is registration robustness on weak sessions (blurry / low-overlap). This is the
+> survey-free version of the old "Arm C" (metric-from-scratch with survey — that variant stays
+> deferred). **Run it:** detect on input_uniform → `run_colmap.py inject_markers_json=<that json>`.
+> NOT yet wired into run_preprocessing (which runs colmap before detect); use the two scripts manually.
+>
+> Compare Route 2 vs Route 1 on: marker reproj (px), held-out marker error via tape pairs (mm),
+> images registered (the robustness lever), and — once on Euler — 3DGS PSNR/SSIM/LPIPS on the same
+> pinned split.
+
+---
+
+## STATUS & NEXT STEPS (as of 2026-06-27)
+
+**ALIKED front-end + marker layer run across the whole 14-session phone series (2026-06-27):**
+- **SfM front-end switched to ALIKED+LightGlue** (see [`PHONE_SFM_FRONTEND.md`](PHONE_SFM_FRONTEND.md)) — every session now registers 100 % into one connected model (SIFT fragmented). The marker layer below was triangulated against these new ALIKED reconstructions.
+- **Marker layer run on all 14 sessions** (`run_preprocessing run_markers=true marker_scale_source=tape`, tape-only, quality guard active). All 14 → 6/6 markers triangulated. Outcome: **10 reliable tape-metric** (CV 0.7–2.7 %, ours-vs-tape 4.8–27 mm, `sparse_metric/` written), **3 flagged `reliable=False`** (CV ~7 %: both lisa-Pixel-6a sessions + field_D/20250706), **1 failsafe-blocked** (field_D/20250722 — only 2 quality markers; guard dropped 4 garbage ones with reproj up to 1440 px). **The (a) quality guard is proven in production: flagged 3 + blocked 1.**
+- **✅ Marker-DETECTION gap SOLVED (field_D/20250722) — the brightness-based plate gate. → docs/MARKER_DETECTOR_LATE_SEASON.md.** Was: CCT v8 found markers in 0–11 views vs Agisoft's 9–22 on the same images. Scored our detector pin-by-pin against Agisoft's `marker_projections.csv` GT (63/63 cams map, GT in our pixel space; note all pins are `Pinned=True` which is *also* how Agisoft auto-detected coded targets export — pinned ≠ manual). **Gate attribution (92 GT projections): NCC proposes a candidate at 75/92 (82 %) — the matcher is fine — but the `white_surround` gate kills 57 of 75** (only 12 pass = our 13 % recall; killed markers score `white_surround_frac` ≈ 0–0.05). **Root cause:** the gate IDs the plate by *brightness* (bright-via-local-Otsu AND desaturated), and in late season the wheat is brighter than the grey/shaded plate → the real marker reads "not white" → rejected (and bright straw passes → FPs). **Fix:** a brightness-invariant **`plate_gate=lowsat`** (plate = achromatic / low HSV-saturation `S ≤ plate_s_max=110`, no brightness test; `detect_markers_v6.white_surround_frac` branches on `cfg.plate_gate`). Recall **13 % → 79 %**; the two FPs (77 @1103 px, 101 @737 px) **eliminated** (consensus outvotes them once it has the true cluster: 77 → 20 views/15 inliers @2.25 px, 101 → 18/11 @2.32 px); all 6 markers clean → **scale unblocked: 6/6, CV 2.24 %, 20.4 mm vs tape, `sparse_metric/` written.** 14-session batch (lowsat detect+tri vs white-gate baseline): **zero new FPs, 11 byte-equal, 2 improved (both 0722), 0 degraded** → lowsat is a strict superset; now the default (`white` kept for A/B). Decode cost negligible — the gate is only a pre-decode filter; real FP defense is decode + manifest + triangulation consensus + quality guard (all brightness-independent). See [[lowsat-plate-gate-idea]]. **RESIDUAL (separate small follow-up):** NCC recall — 17/92 GT had no NCC candidate (oblique late-season foreshortening the ring → ellipse the fronto-parallel templates miss; e.g. code 89 only 4 views) → needs oblique/affine proposal templates.
+- **NEXT TASK (post-compact): pose-accuracy vs Agisoft on the ALIKED models** — `compare_to_agisoft.py` Umeyama-aligns our cameras to `agisoft/sparse/0` → per-camera translation (mm) + rotation (deg). Registration is solved (100 %); this checks the *geometry* is right (a different axis). Run per session, ALIKED `sparse/0` vs `agisoft/sparse/0`; earlier SIFT numbers were ~12–23 mm / <1°.
+
+**Built + validated (2026-06-26):**
+- **Tape-only metric scale** — `marker_scale.py` + `apply_metric_transform.py` have `scale_source: survey|tape`
+  (survey default byte-identical; tape = scale-only similarity from tape distances, survey-free). Orchestrator
+  threads `marker_scale_source` to steps 6+7 and auto-skips step 8 (GCP-BA is survey-anchored). Tested:
+  field_A/20250609 tape scale 0.5595 vs survey 0.5537, ours-vs-tape 8.85 mm.
+- **Route 2 (markers baked INTO the SfM)** — `inject_markers_to_db.py` injects marker tie-points into
+  `database.db`; `run_colmap.py` calls it (gated `inject_markers_json`); orchestrator `markers_in_sfm=true`
+  runs a pre-COLMAP detect on `input_uniform` + injects. Validated: 20250609 → 119/119 + markers triangulated.
+  Smooth one-command Route 2: `run_markers=true markers_in_sfm=true marker_scale_source=tape`.
+- **Bugs fixed:** (1) orchestrator step-4 detect wrote `marker_detections_v8.json` but step-5 triangulate read
+  `…_v8_manifest.json` (pre-existing name mismatch → triangulate crashed); (2) recap printed `scale_umeyama`,
+  absent in tape mode (KeyError). Both fixed.
+
+**OPEN — pick up here after compaction:**
+- **(a) Marker-scale quality guard — ✅ BUILT + VALIDATED (2026-06-26).** Implemented in `marker_scale.py`
+  as the single source of truth (`quality_thresholds` / `marker_quality_ok` / `filter_ours`), reused by
+  `apply_metric_transform.py` (so the applied transform is anchored on the exact same markers the report
+  trusted) AND by the orchestrator failsafe (`_count_quality_markers` now counts only quality-passing
+  markers, not merely solved ones). Three per-marker gates (defaults, all configurable, set 0 to disable):
+  `quality_min_parallax_deg: 10`, `quality_min_inlier_views: 4`, `quality_max_reproj_px: 8` — read from
+  marker_points3d.json (parallax_deg / n_inliers / max_reproj_px). Plus tape mode gets a robust MAD
+  outlier-reject on the per-pair ratios (`quality_ratio_mad_k: 3.5`) and a CV warning
+  (`quality_warn_cv: 0.05` → `scale_reliable` flag). **Defaults are a NO-OP on every good run** (lowest seen
+  parallax 36.7°, inliers 6, max-reproj 6.0px) and only cut the ~5°-parallax poisoners. `mad_k=0` keeps the
+  scale byte-identical to before. The guard report (kept/dropped + thresholds) is embedded into
+  marker_scale.json and metric_frame.json. **Validation:** on field_A/20250609 the guard kept all 6 markers
+  and the MAD reject *automatically* dropped pair (85,113) — the documented tape entry error
+  ([[project-tape-measure-error]]) — with zero hand-tuning → CV 0.60%, ours-vs-tape 6.20 mm; both
+  marker_scale.py and apply_metric_transform.py produced the identical scale 0.558890 (single-source-of-truth
+  confirmed). Config knobs added to `marker_scale.yaml`, `marker_metric.yaml`, `config.yaml`.
+- **(b) The 76/113 registration gap — ✅ SOLVED (2026-06-26) by ALIKED+LightGlue front-end.** **HEADLINE
+  RESULT:** swapping the feature front-end SIFT → **ALIKED + LightGlue** (learned detector + learned matcher,
+  both NATIVE in this COLMAP 4.1 build) puts **all 113/113 images into ONE connected model** (vs SIFT's 4
+  fragments / largest 76) and builds a reconstruction **denser than Agisoft**. Scored A/B/gold on
+  field_A/20250603 with the new `src/analysis/analyze_sfm_connectivity.py`:
+  | metric | SIFT (baseline) | ALIKED+LightGlue | Agisoft |
+  |---|---|---|---|
+  | sub-models | 4 | **1** | 1 |
+  | largest model | 76/113 | **113/113** | 113/113 |
+  | 3D points | 4,472 | **62,351** | 49,592 |
+  | obs/image | 202 | **1,474** | 900 |
+  | strong pairs (≥30) | 285 | 773 | — |
+  | reproj err | 1.31px | 1.39px | — |
+  The diagnosis (below) predicted exactly this: the bottleneck was sparse features → sparse triangulation →
+  marginal frames can't register. ALIKED's denser, better-localized learned features + LightGlue's
+  ambiguity-resolving matcher fix it. **Cost:** GPU extraction 44s + LightGlue *exhaustive* matching ~12 min +
+  mapper 110s; the 12-min match is the long pole → try **sequential matching** for production (suits the
+  continuous sweep). **Run it:** `--FeatureExtraction.type ALIKED_N16ROT --FeatureMatching.type
+  ALIKED_LIGHTGLUE` (harness `scratchpad/aliked_run.sh`). **LOCAL ENV GOTCHA:** COLMAP's ONNX provider was
+  built for CUDA 12 but the box has CUDA 13 → ALIKED GPU aborts (`libcublasLt.so.12` missing). FIX (no env/torch
+  change): `pip install --target <scratch> nvidia-cublas-cu12 nvidia-cuda-runtime-cu12 nvidia-cudnn-cu12
+  nvidia-cufft-cu12` then prepend those `nvidia/*/lib` dirs to `LD_LIBRARY_PATH` for the COLMAP call. **SIFT
+  kept untouched as the comparison baseline.** TODO: wire ALIKED as a `camera`/front-end option in
+  `run_colmap.py`; run on the other 13 sessions; check pose accuracy vs Agisoft (compare_to_agisoft). **The
+  fragmentation diagnosis that led here ↓ (kept for the record):**
+- **(b-diagnosis) The 76/113 gap was reconstruction FRAGMENTATION, not registration failure.** On 20250603 our COLMAP actually
+  registered **110/113** images, but the mapper split them into **4 disconnected sub-models** (76 + 12 + 11 +
+  11); `run_colmap.py` keeps only the largest (76). The fragments are **temporally interleaved** with model 0
+  (all inside one continuous 150300→150432 sweep, e.g. sub-model 3 = 150341–150349 sits *inside* model 0's
+  span) → same physical area, but the incremental mapper repeatedly lost+re-acquired the thread on repetitive
+  wheat and spawned a new sub-model each time. A clean no-marker baseline fragments identically (76 + 30 + 11),
+  so it's NOT caused by marker injection. **Neither rescue tool works:** `model_merger` fails (the sub-models
+  share ZERO co-registered images, so it has nothing to align on); `image_registrator` adds 0 (the missing
+  frames see only 9–21 of model 0's 3D points, far below the ~30 needed). **Root cause (from the database):**
+  between an 11-frame fragment and the 76-frame model there are only **10 geometrically-verified pairs** (of
+  836 possible), and just **4** clear the ~30-inlier bar — a hair-thin bridge; within model 0 connections are
+  dense. So the bottleneck is **sparse cross-cluster feature matching on repetitive wheat** = the real
+  phone-SfM-vs-Agisoft front-end question (Agisoft's better features/markers-as-tie-points keep it one model).
+  **NEXT (deferred at user request — CPU-heavy): test a stronger front-end.** Started COLMAP's repetitive-scene
+  recipe (CPU SIFT `estimate_affine_shape=1` + `domain_size_pooling=1` + `max_num_features=16384` + exhaustive
+  `guided_matching=1`); the 113-image extraction finished (~5 min) but CPU guided matching was ~30–60 min on
+  all 8 cores → stopped. The extraction DB is cached at
+  `scratchpad/regexp/strong/database.db` → **resume by running only GPU `exhaustive_matcher`
+  (`--FeatureMatching.guided_matching 1`) + mapper on it (~1–2 min)**. Experiment harness:
+  `scratchpad/reg_experiment.sh`. Other levers if SIFT is insufficient: **ALIKED** (learned features, native in
+  this COLMAP 4.1 build — no external hloc) or hloc/SuperPoint+LightGlue. See
+  [`COMPARE_TO_AGISOFT_RESULTS.md`](COMPARE_TO_AGISOFT_RESULTS.md).
+- **Route 1 vs Route 2 experiment — capability built, NOT yet MEASURED.** A/B on the same sessions (toggle
+  `markers_in_sfm`): compare registration count, marker reproj, and downstream 3DGS PSNR/SSIM/LPIPS. The weak
+  sessions are where Route 2 *might* help.
+- **3DGS bridge — NOT built.** `run_reconstruction.py` cannot yet train on `sparse_metric/`. Add a
+  `use_metric_sfm` flag (mirror `use_agisoft_sfm`) to train 3DGS on the tape-metric model, then train on Euler
+  (3DGS = Euler only). This is the path to actual metric phenotyping (measure a marker distance in the trained
+  model, confirm it matches tape).
+
+---
+
 **Status (current): Stage A + B SOLVED via Option C = CCTDecode (detect-and-decode).** Full write-up in
 [`MARKER_DETECTION_CCT.md`](MARKER_DETECTION_CCT.md); version history in
 [`MARKER_DETECTION_VERSIONS.md`](MARKER_DETECTION_VERSIONS.md).

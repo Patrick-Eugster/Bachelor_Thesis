@@ -49,6 +49,21 @@ surround_scale_inner: 1.2
 surround_scale_outer: 1.9
 white_s_max: 70
 min_white_surround: 0.65
+# plate-surround gate mode. "white" (default, legacy) = surround must be BRIGHT (local-Otsu) AND
+# desaturated. "lowsat" (brightness-invariant) = surround just needs to be ACHROMATIC (low
+# saturation), no brightness test. lowsat fixes the late-season miss: a grey/shaded plate fails the
+# absolute-white test because bright sunlit straw drives the local Otsu bar above the plate, so the
+# plate reads as "not white" (white_surround_frac ~0) and a plainly-visible marker is rejected. On
+# field_D/20250722 the white gate killed 57 of the 75 markers NCC found; lowsat recovers ~all of
+# them (GT recall 13%->79%). FP control is downstream (CCT decode + manifest + multi-view
+# triangulation consensus + quality guard), not this gate. See docs/MARKER_DETECTOR_LATE_SEASON.md.
+# DEFAULT = lowsat: validated across all 14 sessions as a strict superset of "white" — byte-identical
+# on the genuinely-bright sessions, and rescues the two late-season 0722 sessions (field_D 2/6->6/6,
+# field_A 5/6->6/6) with ZERO new false positives anywhere. Set plate_gate=white for the legacy A/B.
+plate_gate: lowsat
+# saturation ceiling (HSV S, 0-255) for the lowsat plate gate. 70 is too tight for shaded blue-grey
+# plates (only 14% pass); 110 passes ~all NCC-found markers. Only used when plate_gate=lowsat.
+plate_s_max: 110
 fid_search_min: 50
 fid_search_factor: 1.4
 fid_min_area: 30

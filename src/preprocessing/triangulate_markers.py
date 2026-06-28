@@ -323,22 +323,53 @@ def main(cfg: DictConfig):
         # wipe first so a re-run on a smaller image set can't leave stale overlays from a previous run
         shutil.rmtree(vis_dir, ignore_errors=True)
         os.makedirs(vis_dir, exist_ok=True)
-        col = {"detected": (0, 200, 0), "snapped": (0, 165, 255), "reprojected": (255, 100, 0)}
+        # overlay legend (BGR). The point of the overlay is to judge quality at a glance, so the
+        # ACCEPTED detections (the ones that actually built the 3D point) must be unmistakable, and
+        # the RANSAC-rejected outliers (canopy false positives, decode misreads) must NOT look like
+        # good detections. Reprojected/snapped are PREDICTED (not measured) → drawn faint, labelled.
+        #   ACCEPTED detection (inlier)  = bold GREEN ring + center crosshair
+        #   REJECTED detection (outlier) = RED ring + a big X ("rejected"), labelled "REJ"
+        #   reprojected (3D pt -> frames it wasn't seen in) = BLUE, labelled "rep"
+        #   snapped (misread recovered)  = ORANGE, labelled "snap"
+        COL_ACCEPT, COL_REJECT, COL_REPROJ, COL_SNAP = (0, 255, 0), (0, 0, 255), (255, 170, 0), (0, 165, 255)
         by_cam = {}
         for m in manifest:
             for o in observations[m]:
-                by_cam.setdefault(o["cam"], []).append((m, o["xy"], o["src"]))
+                by_cam.setdefault(o["cam"], []).append((m, o["xy"], o["src"], o.get("inlier")))
         img_dir = os.path.join(cfg.source_path, "images")
         for cam, items in by_cam.items():
             img = cv2.imread(os.path.join(img_dir, cam))
             if img is None:
                 continue
-            r = max(18, int(0.012 * max(img.shape[:2])))
-            for m, (x, y), src in items:
+            # bold at full-res so the marks survive the ~0.4x downscale to overlay_max_width
+            r = max(40, int(0.020 * max(img.shape[:2])))
+            th = max(6, int(0.0028 * max(img.shape[:2])))
+            for m, (x, y), src, inlier in items:
                 p = (int(round(x)), int(round(y)))
-                cv2.circle(img, p, r, col[src], 4)
-                cv2.putText(img, str(m), (p[0] + r, p[1]), cv2.FONT_HERSHEY_SIMPLEX,
-                            1.4, col[src], 4)
+                if src == "detected" and inlier:
+                    c, tag = COL_ACCEPT, ""
+                elif src == "detected":
+                    c, tag = COL_REJECT, " REJ"
+                elif src == "snapped":
+                    c, tag = COL_SNAP, " snap"
+                else:
+                    c, tag = COL_REPROJ, " rep"
+                # exact-center crosshair (so "does it hit the marker middle?" is judgeable) + ring
+                cv2.drawMarker(img, p, c, cv2.MARKER_CROSS, r, th)
+                cv2.circle(img, p, r, c, th)
+                if tag == " REJ":                     # extra X so a rejected dot can't pass as accepted
+                    cv2.drawMarker(img, p, c, cv2.MARKER_TILTED_CROSS, int(r * 1.5), max(3, th - 2))
+                lbl = str(m) + tag
+                # black halo under the label so it stays readable over both plate and canopy
+                cv2.putText(img, lbl, (p[0] + r, p[1]), cv2.FONT_HERSHEY_SIMPLEX, 1.8, (0, 0, 0), th + 4)
+                cv2.putText(img, lbl, (p[0] + r, p[1]), cv2.FONT_HERSHEY_SIMPLEX, 1.8, c, th)
+            # legend strip (top-left), drawn at full-res so it downscales legibly
+            lx, ly = 30, 60
+            for txt, c in [("ACCEPTED (inlier)", COL_ACCEPT), ("REJECTED outlier", COL_REJECT),
+                           ("reprojected", COL_REPROJ), ("snapped", COL_SNAP)]:
+                cv2.putText(img, txt, (lx, ly), cv2.FONT_HERSHEY_SIMPLEX, 1.7, (0, 0, 0), 10)
+                cv2.putText(img, txt, (lx, ly), cv2.FONT_HERSHEY_SIMPLEX, 1.7, c, 4)
+                ly += 60
             W = img.shape[1]
             if cfg.overlay_max_width and W > cfg.overlay_max_width:
                 s = cfg.overlay_max_width / W

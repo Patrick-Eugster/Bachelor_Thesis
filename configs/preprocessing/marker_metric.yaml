@@ -22,8 +22,23 @@ sparse_dir: sparse/0                    # input COLMAP model (arbitrary scale)
 output_dir: sparse_metric               # output metric model (real metres, local origin)
 points_json: logs/marker_points3d.json  # our triangulated markers (from triangulate_markers.py)
 
+# WHERE the metric transform comes from (must match how marker_scale.py was run):
+#   survey (default) = Umeyama onto surveyed XYZ → metric + georeferenced (needs the survey file).
+#   tape             = SCALE only from tape distances → metric size, NOT georeferenced (needs the tape
+#                      xlsx, no survey/GPS). R=identity, origin=marker centroid.
+scale_source: survey
+
 # surveyed XYZ reference (gitignored demoanlage metadata, repo-root relative); <L> -> plot letter
 survey_file: demoanlage2025_v0/metadata/markers/field_<L>_coordinates.txt
+# tape distances (only used when scale_source=tape); sheet 'plot <L>' inside this workbook
+tape_xlsx: demoanlage2025_v0/metadata/markers/Demoanlage-2025-markers-manual-distances.xlsx
+
+# --- marker quality guard (open item (a)) — MUST match marker_scale.yaml so the applied transform
+# is anchored on exactly the markers the report trusted. See docs/MARKER_INTEGRATION_PLAN.md. ---
+quality_min_parallax_deg: 10.0   # triangulation angle; < this = depth poorly constrained
+quality_min_inlier_views: 4      # inlier views backing the 3D point
+quality_max_reproj_px: 8.0       # max per-view reprojection error of the 3D point
+quality_ratio_mad_k: 3.5         # tape mode: drop any pair whose ratio is > k MADs from median (0=off)
 
 output_meta: logs/metric_frame.json
 

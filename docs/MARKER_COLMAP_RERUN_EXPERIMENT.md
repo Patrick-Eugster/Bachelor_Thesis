@@ -2,6 +2,14 @@
 
 **Branch:** `markers`  ·  **Status:** ARM A DONE (3 sessions; more dates to come)  ·  **Scope (first pass):** Arm A + leave-one-marker-out, geometry metrics only (3DGS deferred to Euler).
 
+> **⚠️ SUPERSEDED FRAMING (2026-06-26): we are going TAPE-ONLY, no survey XYZ.** The Arms A/B/C below
+> all anchor the **survey** (GCPs with world coords) — that path is **deferred** (RTK-GPS ~2 cm bends
+> geometry; see DECISION banner in `MARKER_INTEGRATION_PLAN.md`). The current "does a second COLMAP run
+> help?" experiment is **Route 2 there**: a full second `extractor→matcher→mapper` with markers as
+> **tie-points only** (pixel + ID, NO coordinates), tape for scale on top. The results below still stand
+> as the reason we dropped survey-anchoring; the code (`marker_gcp_ba.py`, `marker_gcp_lomo.py`) is kept,
+> not deleted, for if a trustworthy survey ever appears.
+
 ## RESULTS — first pass (`marker_gcp_lomo.py`, 6 folds/session)
 
 | session | baseline_noBA (post-hoc) | frozen | focal | **focal_pp** | anchoring vs post-hoc |
