@@ -142,3 +142,6 @@ docs/CAMERA_INTRINSICS_EXPLAINED.md
 # --- Hydra logs (now disabled via `override /hydra/job_logging: disabled` in each config — this is the safety net) ---
 # *.log already covered by **/*.log at top
 logs/
+
+# ALIKED CUDA-12 onnxruntime libs (~2.5 GB) — persistent local copy, never commit/rsync
+tools/cuda12libs/

@@ -31,6 +31,7 @@ Config: configs/preprocessing/detect_markers_v6.yaml
 """
 
 import json
+import math
 import os
 import time
 
@@ -40,10 +41,31 @@ import numpy as np
 from omegaconf import DictConfig, OmegaConf
 
 
+def _warp_oblique(t, ratio, theta_deg):
+    """Squash a square template by `ratio` along the direction `theta_deg` (in-plane), to simulate a
+    frontal marker seen from an oblique angle (a circle foreshortens to an ellipse). The compression
+    axis is rotated to theta so we can cover any slant direction. borderValue = template mean so the
+    constant fill contributes ~nothing to the mean-subtracted NCC (TM_CCOEFF_NORMED)."""
+    h, w = t.shape
+    cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
+    th = math.radians(theta_deg)
+    c, s = math.cos(th), math.sin(th)
+    # anisotropic scale by `ratio` along direction theta: R(theta) @ diag(1,ratio) @ R(-theta)
+    A = np.array([[c, -s], [s, c]]) @ np.array([[1.0, 0.0], [0.0, ratio]]) @ np.array([[c, s], [-s, c]])
+    M = np.zeros((2, 3), np.float64)
+    M[:, :2] = A
+    M[:, 2] = [cx - (A[0, 0] * cx + A[0, 1] * cy), cy - (A[1, 0] * cx + A[1, 1] * cy)]
+    return cv2.warpAffine(t, M, (w, h), flags=cv2.INTER_AREA, borderValue=float(t.mean()))
+
+
 def build_template_bank(cfg, work_scale):
     """Resize the ONE real fiducial crop to each disk radius in the bank (geometric spacing).
     The crop has a known canonical disk radius (cfg.canon_radius); to get a template whose disk
-    radius is `r` full-res, we want `r*work_scale` work-px, i.e. resize the crop by that / canon."""
+    radius is `r` full-res, we want `r*work_scale` work-px, i.e. resize the crop by that / canon.
+    If cfg.oblique_templates is on, each scale ALSO gets affine-warped (foreshortened) copies so the
+    matcher can find plates viewed at steep oblique angles (late-season tall canopy → circle projects
+    to an ellipse the fronto-parallel template misses). Opt-in: it multiplies the template count (and
+    the matchTemplate cost) by 1 + len(ratios)*len(rotations) — see docs/MARKER_DETECTOR_LATE_SEASON.md."""
     tmpl_path = os.path.join(hydra.utils.get_original_cwd(), cfg.template_image)
     canon = cv2.imread(tmpl_path, cv2.IMREAD_GRAYSCALE)
     if canon is None:
@@ -55,6 +77,13 @@ def build_template_bank(cfg, work_scale):
         factor = (float(r) * work_scale) / float(cfg.canon_radius)
         size = max(7, int(round(canon.shape[0] * factor)))   # keep templates a few px minimum
         bank.append((float(r), cv2.resize(canon, (size, size), interpolation=cv2.INTER_AREA)))
+    if cfg.get("oblique_templates", False):
+        ratios = list(cfg.get("oblique_ratios", [0.6, 0.42]))
+        rots = list(cfg.get("oblique_rotations_deg", [0, 45, 90, 135]))
+        for r, t in list(bank):                       # keep the radius; warp the image
+            for ra in ratios:
+                for th in rots:
+                    bank.append((r, _warp_oblique(t, float(ra), float(th))))
     return bank
 
 

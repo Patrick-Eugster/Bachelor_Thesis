@@ -126,17 +126,44 @@ So lowsat is byte-equivalent where "white" already worked and rescues the late-s
 it didn't. Decode cost is negligible (31 s vs 28 s on 0722 despite more candidates — the manifest +
 concentric-decode reject the extras cheaply).
 
-## 7. Residual limit (separate follow-up)
+## 7. The NCC-recall residual, and the oblique-template option (opt-in)
 
-The remaining gap is **NCC recall**, not the gate: 17 of 92 GT markers on 0722 had *no* NCC candidate
-at all (e.g. code 89 gets only 4 views), from steep oblique late-season viewing angles foreshortening
-the circular ring into a thin ellipse the fronto-parallel templates miss. Fixing that means a stronger
-*proposal* stage (oblique/affine or multi-orientation templates) — a smaller, independent task. The
-gate fix already takes 0722 from blocked to a reliable 6/6 metric scale.
+A separate gap lives one stage earlier, at the **NCC proposal** step (not the gate): 17 of 92 GT
+markers on 0722 had *no* NCC candidate at all (e.g. code 89 gets only 4 views). The templates are the
+circular fiducial rendered **fronto-parallel**; under steep late-season viewing the circle projects to
+a thin **ellipse** the round template doesn't correlate with → no candidate → nothing for the gate or
+decoder to work with (the lowsat fix can't touch these — there's nothing localized to keep).
+
+**The fix — oblique (affine-warped) templates** (`oblique_templates=true`, default off). For each scale
+the bank also gets **foreshortened copies**: the template squashed by a ratio (≈ cos of the
+view-from-normal angle) along several in-plane directions, so the matcher recognises tilted plates.
+`_warp_oblique()` + `build_template_bank()` in `detect_markers_v6.py`; knobs `oblique_ratios`
+(default `[0.6, 0.42]` ≈ 53°/65°), `oblique_rotations_deg` (`[0,45,90,135]`, 180° covers a symmetric
+squash).
+
+**Why not a *rounder* ratio** (ratio sweep on 0722): adding `0.8` (≈37°) lifts proposal recall
+89 %→92 % (+3) but **triples candidates (122k→308k)** — a near-circle oval isn't selective (it fires on
+roundish canopy blobs), and the gently-tilted plates it targets are already caught by the frontal
+circle's own NCC tolerance. So `[0.6, 0.42]` (distinctive ellipses) is the recall/precision sweet spot;
+`[0.8,0.6,0.42]` only makes sense to chase max recall on a genuinely view-starved session.
+
+**Validated, but situational.** On 0722 it lifted the **NCC proposal recall 82 % → 89 %** (+7 markers;
+code 113 **18/22 → 22/22**, code 89 4/9 → 6/9) with only ~1.4× candidates. End-to-end it added a few
+*decoded* views (113 19→20, 105 12→14) — **but those did not become new triangulation inliers**: the
+markers were already view-saturated (6/6 reliable from the frontal bank on the [pose-corrected]
+(PHONE_SFM_POSE_ACCURACY.md) model), so consensus gained nothing and the 3D points/scale were
+unchanged. And it costs **~9× the matchTemplate time** (bank 10→90 templates; detection ~30 s → ~2.5–5
+min).
+
+**So: keep it off by default.** It's a tool for a genuinely *view-starved* marker — one hanging at 2–3
+views right at the quality-guard cutoff, where +2 real oblique views would tip it over. On healthy
+sessions (which exhaustive matching already delivers) it's redundant cost. Not worth running on 0722;
+useful insurance for a future worst-case session.
 
 ## 8. Files
 
 - Gate: [src/preprocessing/detect_markers_v6.py](../src/preprocessing/detect_markers_v6.py) `white_surround_frac` (mode branch) + `detect_one`.
-- Config: [configs/preprocessing/detect_markers_v8_cct.yaml](../configs/preprocessing/detect_markers_v8_cct.yaml) `plate_gate`, `plate_s_max`.
+- Oblique templates: same file, `_warp_oblique()` + `build_template_bank()`.
+- Config: [configs/preprocessing/detect_markers_v8_cct.yaml](../configs/preprocessing/detect_markers_v8_cct.yaml) `plate_gate`, `plate_s_max`, `oblique_templates`, `oblique_ratios`, `oblique_rotations_deg`.
 - GT scorer: [src/preprocessing/score_markers_vs_gt.py](../src/preprocessing/score_markers_vs_gt.py) (RED = GT missed, MAGENTA = stray candidate).
 - Context: [docs/MARKER_INTEGRATION_PLAN.md](MARKER_INTEGRATION_PLAN.md) item (b) / late-season gap.

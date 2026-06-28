@@ -70,7 +70,7 @@ python src/preprocessing/run_colmap.py field=field_A plot=20250603 \
 
 Config knobs (ALIKED only): `aliked_max_num_features` (4096), `aliked_max_image_size` (**default 2048** — feature-detection resolution; output images stay full-res; drop to 1600 for more VRAM headroom — see §5b), `aliked_extract_threads` (4 — caps the CPU-side decode), `aliked_cuda12_libdir` (see below).
 
-**Matcher default:** flipped to `sequential` (validated best for our phone sweeps). `exhaustive` remains the fallback for **unordered** image sets — sequential assumes capture order. Applies to both front-ends.
+**Matcher default:** `exhaustive` (flipped back from sequential on 2026-06-28). Sequential and exhaustive give the *same registration* (1 model, 100 %), but sequential leaves the single linear walk without loop closure → **camera-pose drift at the sweep endpoints**. Exhaustive's all-pairs cross-links close the open walk and materially improve pose accuracy + marker scale (14-session study: median pose error vs Agisoft down ~30–80 %, 13/14 sessions reliable metric). Use `matcher=sequential` (with a higher `sequential_overlap`) only for **large sets (170+ imgs)** to dodge exhaustive's O(N²) cost, or for **unordered** image sets. Full write-up: [PHONE_SFM_POSE_ACCURACY.md](PHONE_SFM_POSE_ACCURACY.md). Applies to both front-ends.
 
 ## 5. Environment gotchas (important)
 
@@ -111,6 +111,6 @@ The jump is sharp (bimodal): ≤1664 ≈ 9–10 GB, ≥1728 ≈ 15 GB — the ON
 - ✅ **Generalises across the whole phone series.** Ran ALIKED (2048-px feature extraction, sequential, full-res output) on all 13 other sessions: **every one → 1 connected model, 100 % of images registered** (both fields, 64→183 images, incl. the Pixel-6a camera). The lone SIFT session left untouched (`field_A/20250603`, 4 fragments / 76-of-113) is the side-by-side baseline.
 - ☐ Pose-accuracy check of the ALIKED model vs Agisoft (`compare_to_agisoft.py`) — registration is solved, this confirms the geometry is also right.
 - ☐ Decide whether to flip the **front-end** default to ALIKED once it's validated broadly (currently `sift` to preserve the established baseline).
-- ☐ Make the CUDA-12 lib dir permanent (a stable `aliked_cuda12_libdir`).
+- ✅ Made the CUDA-12 lib dir permanent: copied to in-repo **`tools/cuda12libs/`** (~2.5 GB, gitignored) and set as the **default `aliked_cuda12_libdir`** in `configs/preprocessing/colmap.yaml` — replaces the old ephemeral scratchpad path that every prior run referenced. Set `aliked_cuda12_libdir=""` on Euler (system CUDA matches).
 
 Diagnosis history and the marker context: [MARKER_INTEGRATION_PLAN.md](MARKER_INTEGRATION_PLAN.md) item (b). Scorer: `src/analysis/analyze_sfm_connectivity.py`.

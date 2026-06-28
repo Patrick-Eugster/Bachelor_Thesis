@@ -14,6 +14,14 @@ Outputs (READ-ONLY on the data, writes into the plot's logs/ + a vis folder):
   logs/marker_triangulation.json    every observation per marker (detected / snapped / reprojected)
   marker_vis_v8manifest_triangulated/*.png  overlays: detected (green) / snapped (orange) / reprojected (blue)
 
+FRAME: always operate on the UNDISTORTED `images/` (detections + overlays) — that is the frame the
+`sparse/0` poses, 3DGS, and 3d-segmentation all live in. Critical if the camera model ever gains
+distortion (SIMPLE_RADIAL/OPENCV): under the current SIMPLE_PINHOLE `images/`==`input/` pixel-for-pixel,
+but with a real distortion model `input/` would be the WRONG frame here (it'd misproject vs sparse/0).
+The ONE deliberate exception is COLMAP-DB marker injection / GCP-BA (inject_markers_to_db.py,
+marker_gcp_ba.py), which must use the DISTORTED `input_uniform` space because COLMAP's database
+keypoints + mapper work in original (distorted) image coords. Don't mix the two.
+
 Theory + the manifest/Hamming background: docs/MARKER_CODE_STRUCTURE.md, docs/MARKER_INTEGRATION_PLAN.md.
 
 Usage:

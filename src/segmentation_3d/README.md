@@ -65,6 +65,7 @@ results/reconstruction/fip/{plot}/vanilla_3dgs/{experiment}/segmentation_3d/{exp
 ├── all_obj_labels.pth       ← per-Gaussian wheat head ID tensor
 ├── all_counts.pth           ← FlashSplat contribution counts
 ├── results.csv              ← per-head: ID, source mask, view count, Gaussian count
+├── seg_summary.json         ← run totals: wheat_heads_found (= predicted PLOT head count), masks_matched/unmatched, total_masks
 ├── experiment.txt           ← run metadata
 ├── 2DSeg/                   ← per-camera 2D label maps (.pt, one per image) — used by eval
 ├── ply/                     ← per-head PLY files: wh_0001.ply, wh_0042_b.ply (overlap suffix)
@@ -144,6 +145,8 @@ Paper results for comparison (Table 2): IoU=0.50, Precision=0.81, Recall=0.57, F
 | GT head count | lines in `manual_label/{stem}.txt` | wheat heads manually annotated in this camera view |
 | Pred head count | distinct non-zero IDs in `2DSeg/{stem}.pt` | separate wheat head instances the pipeline found in this view |
 | Count error ratio | (pred − GT) / GT | normalized count difference — negative = under-count, positive = over-count; e.g. −0.19 = found 19% fewer heads than GT |
+
+> **Per-view vs plot-total — pick the right number.** These `eval_seg_2d` counts are **per-camera** (heads in *one* labeled view vs the YOLO `.txt` for that view) and only exist for images with `manual_label/` GT. For a **plot-level total** head count (e.g. vs the FIP `wheat_head_counts.xlsx` GT), use `run_3d_seg`'s **`seg_summary.json → wheat_heads_found`** (= number of unique 3D head instances = `num_wheat_head`), NOT the per-view `eval_seg_2d` counts. The xlsx comparison is relative-only — see the boundary/reconstructed-volume caveat in [docs/FIP_REPROCESSED_DATA.md](../../docs/FIP_REPROCESSED_DATA.md).
 
 ### Inputs
 

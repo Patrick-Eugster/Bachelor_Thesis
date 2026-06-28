@@ -2,6 +2,7 @@ import os
 import sys
 import csv
 import glob
+import json
 import random
 import shutil
 import string
@@ -477,6 +478,19 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
     print(f"  Masks never matched:     {len(buffered_masks)}   (no cross-camera confirmation)")
     print(f"  Results saved to:        {out_dir}")
     print(f"{'='*60}")
+
+    # persist the headline numbers to a small JSON so downstream code (e.g. head-count vs GT eval) can
+    # read the total predicted wheat-head count without scraping stdout or counting ply/wh_*.ply files.
+    # num_wheat_head is the plot-level 3D instance count (one ID per head, matched across views).
+    with open(f"{out_dir}/seg_summary.json", "w") as f:
+        json.dump({
+            "exp_name": exp_name,
+            "wheat_heads_found": num_wheat_head,   # = predicted total head count for this plot
+            "masks_matched": len(processed_masks),
+            "masks_unmatched": len(buffered_masks),
+            "total_masks": len(all_mask_paths),
+            "iou_threshold": iou_threshold,
+        }, f, indent=2)
 
     if wandb_enabled:
         wandb.summary["total_wheat_heads"] = num_wheat_head

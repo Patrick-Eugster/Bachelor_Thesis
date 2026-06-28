@@ -20,6 +20,11 @@ field: field_A
 plot: ???
 
 source_path: ${dataset.input_dir}/${field}/${plot}
+# ALWAYS the UNDISTORTED images/ — same frame as sparse/0 poses + 3DGS + 3d-seg, so triangulation,
+# overlays and GT scoring stay pixel-consistent. Under SIMPLE_PINHOLE images/==input/ (no distortion,
+# byte-identical), but if the camera model ever gains distortion (SIMPLE_RADIAL/OPENCV) input/ would be
+# the WRONG frame. EXCEPTION: COLMAP-DB injection / GCP-BA needs image_subdir=input_uniform (distorted
+# feature space) — see configs/preprocessing/inject_markers.yaml. See docs/MARKER_INTEGRATION_PLAN.md.
 image_subdir: images
 output_vis_dir: marker_vis_v8
 output_json: logs/marker_detections_v8.json
@@ -45,6 +50,20 @@ ncc_threshold: 0.7
 top_k_per_scale: 400
 nms_suppress_radius: 40
 min_rel_contrast: 0.15
+# OBLIQUE templates (opt-in): also match affine-foreshortened copies of the fiducial so steep
+# late-season views (tall canopy → the circular plate projects to a thin ellipse) get a candidate at
+# the NCC proposal stage. OFF by default = byte-identical (frontal bank only). On field_D/20250722 it
+# lifted NCC recall 82%→89% (+7 markers; code 113 18/22→22/22) with only ~1.4× candidates — BUT it
+# multiplies matchTemplate cost by 1+len(ratios)*len(rotations) (~9× → detection ~30s→~4-5min), so use
+# it only on hard sessions where marker recall matters. See docs/MARKER_DETECTOR_LATE_SEASON.md §7.
+oblique_templates: false
+oblique_ratios: [0.6, 0.42]            # minor/major ellipse ratio (≈ cos of view-from-normal: 0.6≈53°, 0.42≈65°)
+# WHY NOT a rounder ratio (e.g. 0.8 ≈37°): tested on 0722 — recall 89%→92% (+3) BUT candidates
+# 122k→308k (×2.5). A near-circle oval isn't selective (fires on roundish canopy blobs), and the
+# gently-tilted plates it targets are already caught by the frontal circle's own NCC tolerance. So
+# 0.6/0.42 (distinctive ellipses) is the recall/precision sweet spot. Set [0.8,0.6,0.42] only to chase
+# max recall on a genuinely view-STARVED session, accepting the candidate flood. See docs §7.
+oblique_rotations_deg: [0, 45, 90, 135]  # in-plane direction of the foreshortening axis (180° covers it)
 surround_scale_inner: 1.2
 surround_scale_outer: 1.9
 white_s_max: 70

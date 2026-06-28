@@ -29,10 +29,24 @@ image_subdir: input_uniform
 single_camera: true
 
 # COLMAP camera model
-# SIMPLE_PINHOLE — best for repetitive vegetation (wheat) — single focal length, no distortion (default)
+# SIMPLE_PINHOLE — single focal length, no distortion (DEFAULT)
 # PINHOLE        — two focal lengths (fx, fy), no distortion
-# SIMPLE_RADIAL  — adds 1 radial distortion param
-# OPENCV         — full radial + tangential (good for buildings, fails on wheat)
+# SIMPLE_RADIAL  — adds 1 radial distortion param (k1)
+# OPENCV         — full radial + tangential (k1,k2,p1,p2)
+# WHY SIMPLE_PINHOLE is the default (re-tested 2026-06-28 under the ALIKED front-end):
+#  * The OLD reason ("PINHOLE/OPENCV collapse to 2/93 on wheat") was a SIFT-era result and is now
+#    OBSOLETE — under ALIKED+LightGlue all three register 93/93 on field_A/20250618 (the strong learned
+#    matches easily constrain the extra distortion params SIFT couldn't).
+#  * The CURRENT reason is that modeling distortion buys ~nothing here: pose-vs-Agisoft is noise-level
+#    (~1mm / ~0.3°), Chamfer identical (~22mm), while SIMPLE_RADIAL/OPENCV cost 7-17% more time, CROP the
+#    undistorted image (4032->3942->3881), and drift focal +2.8%/+3.7% vs Agisoft.
+#  * HONEST caveat: that focal agreement with Agisoft is partly circular (Agisoft also uses SIMPLE_PINHOLE).
+#    The Agisoft-INDEPENDENT metric — internal reprojection error — does slightly favour the richer models
+#    (1.323 -> 1.299 -> 1.263 px), i.e. there IS real distortion (k1~0.05, ~50-60px at the extreme corner)
+#    and OPENCV is marginally MORE correct. The gain is tiny (0.06px) because distortion lives in the
+#    corners. So SIMPLE_PINHOLE is the robust default, NOT provably the most accurate model. The deciding
+#    test (does removing corner distortion improve 3DGS PSNR at the edges?) is UNRUN. For non-vegetation
+#    scenes (buildings) OPENCV is the better choice. Full write-up: docs/PHONE_SFM_CAMERA_MODEL.md.
 camera: SIMPLE_PINHOLE
 
 # feature front-end: "sift" (classic, default — byte-identical to before) or "aliked" (learned ALIKED
@@ -42,12 +56,18 @@ camera: SIMPLE_PINHOLE
 # docs/PHONE_SFM_FRONTEND.md for the full benchmark.
 front_end: sift
 
-# feature matcher: "sequential" (ordered walk/video — matches each frame to its neighbours; default) or
-# "exhaustive" (all-pairs, any order). Sequential is validated as the best fit for our continuous phone
-# sweeps: on field_A/20250603 ALIKED+sequential gave the SAME 1-model / 113-of-113 result as exhaustive
-# but ~8× faster matching (94s vs 742s). Use exhaustive for UNORDERED image sets (sequential assumes
-# capture order). Works for both front_end=sift and front_end=aliked.
-matcher: sequential
+# feature matcher: "exhaustive" (all-pairs — default) or "sequential" (ordered walk/video, matches each
+# frame to its time-neighbours only). DEFAULT FLIPPED to exhaustive 2026-06-28 for POSE ACCURACY:
+# sequential and exhaustive give the same REGISTRATION (1 model, 100%), but a single linear walk has no
+# loop closure, so sequential accumulates DRIFT — the sweep endpoints wander (field_D/20250722 ends were
+# ~85-99mm off Agisoft, middle ~15mm). Exhaustive's all-pairs matching supplies the missing long-range
+# cross-links that close the open walk: across 14 sessions it cut median camera-pose error vs Agisoft
+# (e.g. field_A/20250618 51->10mm, field_A/20250603 111->49mm), halved typical rotation error, and
+# tightened the marker tape-scale (field_A/20250618 27->1.1mm; 13/14 sessions now reliable metric).
+# COST: exhaustive is O(N^2) — ~5min@64img, ~14min@113img, ~34min@183img. For LARGE sets (170+, e.g. the
+# lisa sessions) prefer sequential with a higher sequential_overlap (or add loop detection) to dodge the
+# N^2 blow-up. Use sequential for UNORDERED sets too. See docs/PHONE_SFM_POSE_ACCURACY.md.
+matcher: exhaustive
 
 # sequential only — how many next images each image is matched against (also matches symmetrically backwards)
 sequential_overlap: 25
@@ -71,7 +91,10 @@ aliked_extract_threads: 4
 # LD_LIBRARY_PATH so COLMAP's CUDA-12-built ONNX provider loads on a CUDA-13 box. "" = leave
 # LD_LIBRARY_PATH untouched (set this empty if the system CUDA already matches, e.g. Euler). Create once:
 #   pip install --target <dir> nvidia-cublas-cu12 nvidia-cuda-runtime-cu12 nvidia-cudnn-cu12 nvidia-cufft-cu12
-aliked_cuda12_libdir: ""
+# Default points at the PERSISTENT in-repo copy (tools/cuda12libs, ~2.5 GB, gitignored) so ALIKED keeps
+# working across sessions — replaces the old ephemeral scratchpad path that every run used to reference.
+# Set "" on a box whose system CUDA already matches (e.g. Euler).
+aliked_cuda12_libdir: /workspace/tools/cuda12libs
 
 # threads for SIFT extraction + matching. Lower = less RAM (default 8, set -1 for all cores)
 num_threads: 8
