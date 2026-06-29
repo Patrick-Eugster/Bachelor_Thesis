@@ -74,8 +74,18 @@ only_yolo: false
 
 # --- SAHI tiling params (see docs/SAHI_EXPLAINED.md + docs/SAHI_IMPLEMENTATION_PLAN.md) ---
 
-# tile size in px. Set == target_image_size so tiles enter YOLO 1:1 (NO scaling, preserves fine detail)
+# tile size in px (fixed mode). Set == target_image_size so tiles enter YOLO 1:1 (NO scaling, preserves detail)
 sahi_slice_size: 1280
+
+# DYNAMIC tiling: size the tiles from the image resolution instead of the hardcoded sahi_slice_size, and
+# place them evenly so there's never a near-duplicate edge tile (robust to any phone resolution). The tile
+# size is derived from the LONGER image side: best multiple-of-32 fit for ~sahi_target_tile-sized tiles,
+# plus one extra 32px as a small buffer (a touch bigger → guaranteed coverage, a bit more overlap).
+# When on, sahi_slice_size is ignored and the model runs at the per-image computed size.
+# "auto" = ON for phone (varied resolutions, ROI), OFF for fip (keeps the fixed-1280 GT benchmark
+# byte-identical). Set true/false to force it either way.
+sahi_dynamic_tiles: auto
+sahi_target_tile: 1280     # desired tile scale for dynamic mode (the size is snapped to 32 and buffered)
 
 # fraction of overlap between neighbouring tiles. 0.3 → ~384px band, covers our ~161px elongated heads
 sahi_overlap_ratio: 0.3

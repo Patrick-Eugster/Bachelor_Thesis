@@ -23,6 +23,7 @@ import os
 import glob
 import time
 import gc
+import math
 import concurrent.futures
 import numpy as np
 import cv2
@@ -67,6 +68,52 @@ def compute_tile_boxes(img_w, img_h, slice_size, overlap_ratio):
     return list(dict.fromkeys(tiles))
 
 
+def dynamic_tile_size(img_w, img_h, target, overlap):
+    """Pick a tile size that adapts to the image resolution instead of a hardcoded pixel value.
+    Driven by the LONGER side (so portrait/landscape both work): find how many ~target-sized tiles
+    cover it at ~overlap, take the size that fits them evenly, round UP to a multiple of 32 (YOLO's
+    stride), then add one more 32-stride as a small buffer (tiles a touch bigger than a perfect fit →
+    a bit more overlap, guaranteed coverage, never a near-duplicate edge tile)."""
+    L = max(img_w, img_h)
+    if L <= target:
+        return int(math.ceil(L / 32) * 32)
+    # ideal tile count along the long side: the value of n for which n target-sized tiles cover L at
+    # exactly `overlap`. Round to nearest so the fitted size lands closest to target (not one count off).
+    n = max(2, round((L - target) / (target * (1 - overlap)) + 1))
+    t_star = L / (1 + (n - 1) * (1 - overlap))                    # size that fits n tiles exactly
+    return int(math.ceil(t_star / 32) * 32 + 32)                  # best 32x + one 32 buffer
+
+
+def _even_origins(D, T, overlap):
+    """Tile origins along one axis, spread EVENLY from 0 to D-T so the first and last tiles sit on the
+    edges (no clamped near-duplicate). The count is the minimum that keeps overlap >= the requested
+    ratio; with even spacing the actual overlap comes out >= requested and uniform."""
+    if D <= T:
+        return [0]
+    m = math.ceil((D - T) / (T * (1 - overlap))) + 1   # how many tiles needed to cover at >= overlap
+    return [int(round(i * (D - T) / (m - 1))) for i in range(m)]
+
+
+def use_dynamic_tiles(cfg):
+    """Resolve the sahi_dynamic_tiles setting. Accepts an explicit bool, or "auto" which means
+    ON for the phone dataset (varied resolutions + ROI) and OFF otherwise (e.g. the FIP benchmark)."""
+    v = cfg.method.get("sahi_dynamic_tiles", "auto")
+    if isinstance(v, bool):
+        return v
+    return str(v).lower() == "auto" and cfg.dataset.name == "phone"
+
+
+def compute_tile_boxes_dynamic(img_w, img_h, target, overlap):
+    """Resolution-adaptive tiling: square tiles sized by dynamic_tile_size(), placed by even
+    distribution on both axes. All tiles are exactly TxT and the grid has no near-duplicate column
+    at any resolution. Returns (tiles, T) so the caller can run the model at size=T."""
+    T = dynamic_tile_size(img_w, img_h, target, overlap)
+    xs = _even_origins(img_w, T, overlap)
+    ys = _even_origins(img_h, T, overlap)
+    tiles = [(x0, y0, min(x0 + T, img_w), min(y0 + T, img_h)) for y0 in ys for x0 in xs]
+    return list(dict.fromkeys(tiles)), T
+
+
 # =====================================================================
 # -------- CPU PREP (one image) — runs in a background thread --------
 # =====================================================================
@@ -74,36 +121,44 @@ def compute_tile_boxes(img_w, img_h, slice_size, overlap_ratio):
 def load_and_slice(img_path, cfg):
     """CPU prep for one image (the pipeline's prefetch stage): load the RGB array, lay out the
     tile grid, and cut the native-resolution crops. Returns everything infer_tiles + the save step
-    need: (save_name, img_np, h, w, crops, offsets). Runs in a worker thread so it overlaps the
-    GPU work on the previous image — touches no GPU/model state, only PIL + numpy slicing."""
+    need: (save_name, img_np, h, w, crops, offsets, infer_size). Runs in a worker thread so it
+    overlaps the GPU work on the previous image — touches no GPU/model state, only PIL + numpy."""
     save_name = os.path.splitext(os.path.basename(img_path))[0]
     img_np = np.array(Image.open(img_path).convert('RGB'))
     # ROI: grey-out outside the marker polygon (no-op unless roi.enabled) so the tiles below —
     # which are views into img_np — only carry plot content. img_path drives the per-image polygon.
     img_np = apply_roi(img_np, img_path, cfg)
     h, w = img_np.shape[:2]
-    tiles   = compute_tile_boxes(w, h, cfg.method.sahi_slice_size, cfg.method.sahi_overlap_ratio)
+    if use_dynamic_tiles(cfg):
+        # resolution-adaptive: size tiles from the longer side, place them evenly (no near-dup column)
+        tiles, infer_size = compute_tile_boxes_dynamic(
+            w, h, cfg.method.sahi_target_tile, cfg.method.sahi_overlap_ratio)
+    else:
+        # fixed hardcoded slice size (original behaviour, e.g. FIP)
+        infer_size = cfg.method.sahi_slice_size
+        tiles = compute_tile_boxes(w, h, infer_size, cfg.method.sahi_overlap_ratio)
     crops   = [img_np[y0:y1, x0:x1] for (x0, y0, x1, y1) in tiles]   # views into img_np, no copy
     offsets = [(x0, y0)             for (x0, y0, x1, y1) in tiles]
-    return save_name, img_np, h, w, crops, offsets
+    return save_name, img_np, h, w, crops, offsets, infer_size
 
 
 # =====================================================================
 # -------- GPU INFERENCE (one image) — main thread only --------
 # =====================================================================
 
-def infer_tiles(model, img_np, crops, offsets, img_w, img_h, cfg):
+def infer_tiles(model, img_np, crops, offsets, img_w, img_h, cfg, infer_size):
     """GPU step for one image: run YOLO on the pre-cut tiles in GPU-sized batches (+ optional
     full-image pass), shift every box back to ORIGINAL-image coords, and return them as a
     float32 array [N,5] = x1,y1,x2,y2,conf. Only the main thread calls this (it is the one place
-    that touches the model); the CPU slicing was already done by load_and_slice."""
+    that touches the model); the CPU slicing was already done by load_and_slice. infer_size is the
+    tile size to run the model at (fixed slice size, or the per-image dynamic tile size)."""
     all_preds = []
     tb = max(1, cfg.method.sahi_tile_batch_size)
     # run tiles in batches so peak VRAM stays bounded (each tile ~ one slice^2 forward)
     for i in range(0, len(crops), tb):
         batch_crops   = crops[i:i + tb]
         batch_offsets = offsets[i:i + tb]
-        results = model(batch_crops, size=cfg.method.sahi_slice_size)  # boxes in each crop's coords
+        results = model(batch_crops, size=infer_size)  # boxes in each crop's coords
         for det, (ox, oy) in zip(results.tolist(), batch_offsets):
             p = det.xyxy[0].cpu().numpy()  # [n,6] x1,y1,x2,y2,conf,cls
             if len(p) == 0:
@@ -370,10 +425,11 @@ def run_yolo_phase_sahi(image_folders, cfg):
                 for idx in range(n_images):
                     # collect the prepared crops for the current image — usually already done,
                     # since load_and_slice ran during the previous image's GPU call
-                    save_name, img_np, h, w, crops, offsets = load_future.result()
+                    save_name, img_np, h, w, crops, offsets, infer_size = load_future.result()
                     if idx == 0:
-                        print(f"  tiling {w}x{h} → {len(crops)} tiles of {cfg.method.sahi_slice_size}px "
-                              f"(overlap {cfg.method.sahi_overlap_ratio})")
+                        mode = "dynamic" if use_dynamic_tiles(cfg) else "fixed"
+                        print(f"  tiling {w}x{h} → {len(crops)} tiles of {infer_size}px ({mode}, "
+                              f"overlap {cfg.method.sahi_overlap_ratio})")
 
                     # prefetch+slice the NEXT image in the background
                     if idx + 1 < n_images:
@@ -387,7 +443,7 @@ def run_yolo_phase_sahi(image_folders, cfg):
                         prev_save = None
 
                     # GPU: run YOLO on this image's tiles (main thread blocks; load+save run in parallel)
-                    preds = infer_tiles(model, img_np, crops, offsets, w, h, cfg)
+                    preds = infer_tiles(model, img_np, crops, offsets, w, h, cfg, infer_size)
                     prev_save = (preds, img_np, h, w, save_name, image_files[idx])
 
                     if cfg.method.show_time_yolo and (idx + 1) % 10 == 0:

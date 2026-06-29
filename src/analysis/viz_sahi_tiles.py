@@ -11,7 +11,7 @@ import argparse
 import numpy as np
 import cv2
 
-from mask_generation.sahi_yolo_sam.sahi_yolo_pipelined import compute_tile_boxes
+from mask_generation.sahi_yolo_sam.sahi_yolo_pipelined import compute_tile_boxes, compute_tile_boxes_dynamic
 
 # distinct BGR colours cycled per tile
 _COLORS = [(0, 0, 255), (0, 165, 255), (0, 255, 255), (0, 255, 0), (255, 255, 0),
@@ -23,12 +23,17 @@ def main():
     ap.add_argument("image")
     ap.add_argument("--slice", type=int, default=1280)
     ap.add_argument("--overlap", type=float, default=0.3)
+    ap.add_argument("--dynamic", action="store_true", help="use resolution-adaptive tiling (sizes from longer side)")
+    ap.add_argument("--target", type=int, default=1280, help="target tile size for --dynamic")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
     img = cv2.imread(args.image)
     h, w = img.shape[:2]
-    tiles = compute_tile_boxes(w, h, args.slice, args.overlap)
+    if args.dynamic:
+        tiles, args.slice = compute_tile_boxes_dynamic(w, h, args.target, args.overlap)
+    else:
+        tiles = compute_tile_boxes(w, h, args.slice, args.overlap)
 
     # 1) faint fills first, so the stacked overlap bands get visibly darker/more saturated
     fill = img.copy()
