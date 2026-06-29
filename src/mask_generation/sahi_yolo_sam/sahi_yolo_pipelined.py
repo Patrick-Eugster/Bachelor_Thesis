@@ -35,6 +35,7 @@ from sahi.postprocess.combine import NMMPostprocess, NMSPostprocess
 from wheat_utils.path_utils import get_mask_generation_result_path
 # reuse the folder-reset helper so we don't duplicate it
 from mask_generation.yolo_sam_v1.yolo_v1_pipelined import reset_folder
+from mask_generation.roi_mask import apply_roi, roi_keep_mask
 
 
 # =====================================================================
@@ -77,6 +78,9 @@ def load_and_slice(img_path, cfg):
     GPU work on the previous image — touches no GPU/model state, only PIL + numpy slicing."""
     save_name = os.path.splitext(os.path.basename(img_path))[0]
     img_np = np.array(Image.open(img_path).convert('RGB'))
+    # ROI: grey-out outside the marker polygon (no-op unless roi.enabled) so the tiles below —
+    # which are views into img_np — only carry plot content. img_path drives the per-image polygon.
+    img_np = apply_roi(img_np, img_path, cfg)
     h, w = img_np.shape[:2]
     tiles   = compute_tile_boxes(w, h, cfg.method.sahi_slice_size, cfg.method.sahi_overlap_ratio)
     crops   = [img_np[y0:y1, x0:x1] for (x0, y0, x1, y1) in tiles]   # views into img_np, no copy
@@ -272,12 +276,16 @@ def save_sahi_result(preds, original_img, save_name,
     return good_count, bad_count
 
 
-def _merge_and_save(preds, img_np, img_h, img_w, save_name,
+def _merge_and_save(preds, img_np, img_h, img_w, save_name, img_path,
                     bbox_folder, bboxes_with_conf_folder, yolo_vis_folder, cfg):
     """The pipeline's save stage for one image (runs in a background thread, overlapping the next
     image's GPU work): merge the tile overlap-duplicates, then draw + write bboxes/*.pt + yolo_vis/*.jpg.
     Pure CPU (sahi NMM + cv2 + torch.save of CPU tensors) — never touches the model. Returns (good,bad)."""
     merged = merge_preds(preds, img_h, img_w, cfg)
+    # ROI: drop merged boxes that fall outside the plot polygon (no-op unless roi.enabled)
+    if len(merged) > 0:
+        keep = roi_keep_mask(merged[:, :4], img_path, cfg, img_w, img_h)
+        merged = merged[keep]
     return save_sahi_result(merged, img_np, save_name,
                             bbox_folder, bboxes_with_conf_folder, yolo_vis_folder, cfg)
 
@@ -322,7 +330,7 @@ def run_yolo_phase_sahi(image_folders, cfg):
         base_result_path = get_mask_generation_result_path(cfg, plot_name)
         yolo_vis_folder  = os.path.join(base_result_path, "yolo_vis")
         bbox_folder      = os.path.join(base_result_path, "bboxes")
-        if cfg.only_labeled_images:
+        if cfg.only_labeled_images or cfg.get("save_bboxes_conf", False):
             bboxes_with_conf_folder = os.path.join(base_result_path, "bboxes_with_conf")
             reset_folder(bboxes_with_conf_folder)
         else:
@@ -380,7 +388,7 @@ def run_yolo_phase_sahi(image_folders, cfg):
 
                     # GPU: run YOLO on this image's tiles (main thread blocks; load+save run in parallel)
                     preds = infer_tiles(model, img_np, crops, offsets, w, h, cfg)
-                    prev_save = (preds, img_np, h, w, save_name)
+                    prev_save = (preds, img_np, h, w, save_name, image_files[idx])
 
                     if cfg.method.show_time_yolo and (idx + 1) % 10 == 0:
                         print(f"  ...{idx + 1}/{n_images} images")

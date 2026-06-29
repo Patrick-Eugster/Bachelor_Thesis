@@ -38,6 +38,7 @@ import wandb
 from segment_anything import sam_model_registry, SamPredictor
 
 from wheat_utils.path_utils import get_mask_generation_result_path
+from mask_generation.roi_mask import apply_roi
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -106,13 +107,16 @@ def print_sam_plot_summary(num_images, total_time):
 # -------- PIPELINE HELPERS (new in pipelined version) --------
 # =====================================================================
 
-def _load_image_and_bbox(image_file, bbox_folder):
+def _load_image_and_bbox(image_file, bbox_folder, cfg):
     """Load one image from disk and its corresponding bbox .pt tensor.
     Returns (image_name, save_name, image_rgb, bbox_or_None) — None signals a missing bbox file."""
     image_name = os.path.basename(image_file)
     save_name = os.path.splitext(image_name)[0]
     image = cv2.imread(image_file)
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    # ROI: grey-out outside the plot polygon (buffered, no-op unless roi.enabled) so SAM masks
+    # don't bleed into neighbour-plot wheat. The boxes were already ROI-filtered in the YOLO/SAHI phase.
+    image = apply_roi(image, image_file, cfg)
     bbox_path = os.path.join(bbox_folder, save_name + ".pt")
     if not os.path.exists(bbox_path):
         return image_name, save_name, image, None  # None signals missing bbox
@@ -211,7 +215,7 @@ def run_sam_phase(image_folders, cfg):
             # --- PRE-PROCESSING: kick off load for image 0 immediately ---
             # It runs in the background while the loop sets up, so it's often already
             # done by the time we call .result() below.
-            load_future = executor.submit(_load_image_and_bbox, image_files[0], bbox_folder)
+            load_future = executor.submit(_load_image_and_bbox, image_files[0], bbox_folder, cfg)
 
             prev_save_data = None  # holds (masks_np, image, save_name, image_name, ...) from previous GPU step
 
@@ -227,7 +231,7 @@ def run_sam_phase(image_folders, cfg):
                 # --- PRE-PROCESSING: submit load for the NEXT image ---
                 # This starts immediately and runs in parallel while the GPU works below.
                 if i + 1 < n_images:
-                    load_future = executor.submit(_load_image_and_bbox, image_files[i + 1], bbox_folder)
+                    load_future = executor.submit(_load_image_and_bbox, image_files[i + 1], bbox_folder, cfg)
 
                 # --- POST-PROCESSING: submit save for the PREVIOUS image ---
                 # Also starts immediately and runs in parallel while the GPU works below.

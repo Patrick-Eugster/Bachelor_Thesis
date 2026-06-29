@@ -38,6 +38,7 @@ from PIL import Image
 import shutil
 
 from wheat_utils.path_utils import get_mask_generation_result_path
+from mask_generation.roi_mask import apply_roi, roi_keep_mask
 
 # map YAML string → PIL resize constant
 _RESIZE_METHODS = {
@@ -59,10 +60,14 @@ def reset_folder(folder_path):
     os.makedirs(folder_path, exist_ok=True)  # Recreates the empty folder
 
 
-def resize_single_image(img_path, target_size, resize_method):
+def resize_single_image(img_path, target_size, resize_method, cfg):
     """For Parallelized CPU Image Resizing.
     Scale the image so the longer side fits target_size, then pad to a square with grey borders (letterbox)."""
-    img_orig = Image.open(img_path).convert('RGB')
+    img_np = np.array(Image.open(img_path).convert('RGB'))
+    # ROI: grey-out everything outside the marker polygon (no-op unless roi.enabled) so YOLO
+    # only sees the plot. Done before letterbox; box geometry is unaffected (pad math uses sizes).
+    img_np = apply_roi(img_np, img_path, cfg)
+    img_orig = Image.fromarray(img_np)
     orig_w, orig_h = img_orig.size
     # 1. Scale ratio (new / old) (takes the one which original_size side x or y was bigger)
     r = min(target_size / orig_w, target_size / orig_h)
@@ -85,7 +90,7 @@ def resize_single_image(img_path, target_size, resize_method):
     canvas.paste(img_resized, (left, top))
     # 6. Return the pad_info needed for reversing the boxes later
     pad_info = (r, left, top)
-    return np.array(canvas), np.array(img_orig), pad_info
+    return np.array(canvas), img_np, pad_info
 
 
 def save_single_result(_, result, original_img, pad_info, original_path, bbox_folder, bboxes_with_conf_folder, yolo_vis_folder, cfg):
@@ -108,6 +113,10 @@ def save_single_result(_, result, original_img, pad_info, original_path, bbox_fo
         orig_h, orig_w = original_img.shape[:2]
         preds[:, [0, 2]] = np.clip(preds[:, [0, 2]], 0, orig_w)
         preds[:, [1, 3]] = np.clip(preds[:, [1, 3]], 0, orig_h)
+        # ROI: drop boxes that fall outside the plot polygon (no-op unless roi.enabled).
+        # Done on original-image coords, before the good/bad split, so SAM + eval + viz all agree.
+        roi_keep = roi_keep_mask(preds[:, :4], original_path, cfg, orig_w, orig_h)
+        preds = preds[roi_keep]
         # 3. VECTORIZED FILTERING. This mask instantly separates good and bad boxes in C++
         mask = preds[:, 4] >= cfg.method.conf_threshold_good_box
         good_preds = preds[mask]
@@ -185,12 +194,12 @@ def save_debug_image_yolo(resized_imgs, folder):
 # -------- PIPELINE HELPERS (new in v2) --------
 # =====================================================================
 
-def _resize_sub_batch(files, target_size, resize_method, max_threads):
+def _resize_sub_batch(files, target_size, resize_method, max_threads, cfg):
     """Resize one GPU sub-batch of images in parallel, returns list of (resized, original, pad_info).
     Uses max_threads//2 so resize and save can run simultaneously without starving NMS on the main thread."""
     n_workers = min(max(1, max_threads // 2), len(files))
     with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as pool:
-        return list(pool.map(lambda p: resize_single_image(p, target_size, resize_method), files))
+        return list(pool.map(lambda p: resize_single_image(p, target_size, resize_method, cfg), files))
 
 
 def _save_sub_batch(det_list, orig_imgs, pad_infos, files,
@@ -254,8 +263,9 @@ def run_yolo_phase(image_folders, cfg):
         base_result_path = get_mask_generation_result_path(cfg, plot_name)  # results/mask_generation/...
         yolo_vis_folder  = os.path.join(base_result_path, "yolo_vis")
         bbox_folder      = os.path.join(base_result_path, "bboxes")
-        # only create bboxes_with_conf when running in metrics mode — no point saving it for full runs
-        if cfg.only_labeled_images:
+        # create bboxes_with_conf in metrics mode OR when save_bboxes_conf is set (e.g. conf-histogram
+        # tuning on phone, which has no labels) — otherwise skip it for normal full runs
+        if cfg.only_labeled_images or cfg.get("save_bboxes_conf", False):
             bboxes_with_conf_folder = os.path.join(base_result_path, "bboxes_with_conf")
             reset_folder(bboxes_with_conf_folder)
         else:
@@ -301,7 +311,7 @@ def run_yolo_phase(image_folders, cfg):
                 # --- PRE-PROCESSING: kick off resize for sub-batch 0 immediately ---
                 # It runs in the background while the loop sets up, so it's often already
                 # done by the time we call .result() below.
-                resize_future = executor.submit(_resize_sub_batch, sub_batches[0], cfg.method.target_image_size, resize_method, cfg.method.max_threads)
+                resize_future = executor.submit(_resize_sub_batch, sub_batches[0], cfg.method.target_image_size, resize_method, cfg.method.max_threads, cfg)
 
                 prev_data = None   # holds (det_list, orig_imgs, pad_infos, files) from the previous GPU step
                 save_futures = []  # collect save futures so we can harvest box counts at the end
@@ -321,7 +331,7 @@ def run_yolo_phase(image_folders, cfg):
                     # --- PRE-PROCESSING: submit resize for the NEXT sub-batch ---
                     # This starts immediately and runs in parallel while the GPU works below.
                     if b + 1 < n_sub:
-                        resize_future = executor.submit(_resize_sub_batch, sub_batches[b + 1], cfg.method.target_image_size, resize_method, cfg.method.max_threads)
+                        resize_future = executor.submit(_resize_sub_batch, sub_batches[b + 1], cfg.method.target_image_size, resize_method, cfg.method.max_threads, cfg)
 
                     # --- POST-PROCESSING: submit save for the PREVIOUS sub-batch ---
                     # Also starts immediately and runs in parallel while the GPU works below.

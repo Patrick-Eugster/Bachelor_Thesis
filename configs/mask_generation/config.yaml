@@ -22,8 +22,39 @@ limit_images: 0
 # true = only process images that have a manual_label/*.txt file (used for metrics evaluation)
 only_labeled_images: false
 
+# true = also write bboxes_with_conf/*.pt (5 cols: x1,y1,x2,y2,conf) for ALL images, even without
+# manual labels. Lets you build a confidence histogram on phone data (which has no GT). Pair it with a
+# LOW conf threshold (method.conf_threshold_nms_floor / method.conf_threshold_good_box) to capture the
+# full sub-threshold distribution for tuning. Off by default → no change to normal runs.
+save_bboxes_conf: false
+
 # log SAM progress to wandb.ai dashboard (requires wandb login first)
 wandb_enabled: false
+
+# Region-of-interest masking — restrict YOLO/SAHI/SAM to the plot area bounded by the
+# ground markers, so the bad image corners (distortion, blur, neighbour-plot heads) are
+# ignored. PHONE-ONLY feature: OFF by default → byte-identical to the old pipeline.
+# Turn on with roi.enabled=true on phone runs (FIP has no phone markers → auto fallback).
+# See src/mask_generation/roi_mask.py. Eyeball before a run:
+#   python src/mask_generation/roi_mask.py input_plots/phone/field_A/20250715 --buffer_px 80
+roi:
+  enabled: false           # master switch (phone-only)
+  source: markers          # markers = convex hull of the projected 3D markers (logs/marker_points3d.json)
+  fallback: none           # when <min_markers projected (e.g. FIP): none | circle | square
+  min_markers: 3           # need at least this many projected markers to form a polygon
+  # soft border: grow the MASK polygon outward so boundary heads aren't cut.
+  # buffer_frac (fraction of the image SHORT side) scales with resolution and TAKES PRECEDENCE;
+  # e.g. 0.05 * 3024px = ~151 px on the phone images. buffer_px is an absolute override (used
+  # only when buffer_frac <= 0). The box post-filter always uses the un-buffered polygon.
+  buffer_frac: 0.05        # ≈151 px on 4032x3024 — set 0 to use buffer_px instead
+  buffer_px: 120           # absolute fallback (px) when buffer_frac <= 0
+  fill: [114, 114, 114]    # grey-out value outside the ROI (= YOLO's letterbox pad → treated as padding)
+  filter_boxes: true       # post-filter boxes that fall outside the plot
+  filter_mode: overlap     # overlap = drop only boxes COMPLETELY outside the (un-buffered) polygon;
+                           # center  = drop boxes whose centre is outside
+  filter_tol_px: 0         # soften the filter boundary by N px (keep boxes within tol of the polygon)
+  fallback_circle_frac: 0.9   # circle radius as frac of min(w,h)/2 (fallback=circle)
+  fallback_square_frac: 0.9   # kept fraction per side (fallback=square)
 
 # hydra: don't create outputs/ folder
 hydra:
