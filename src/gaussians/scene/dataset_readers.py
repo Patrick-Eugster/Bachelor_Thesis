@@ -96,7 +96,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, bboxes_fold
         #   SIMPLE_PINHOLE: [f, cx, cy]
         #   PINHOLE:        [fx, fy, cx, cy]
         # vanilla 3DGS only reads focal length and silently drops cx, cy — that's the
-        # principal-point bug (see docs/PIXEL_SHIFT_BUG.md). We now also extract cx/cy
+        # principal-point bug (see docs/reconstruction/PIXEL_SHIFT_BUG.md). We now also extract cx/cy
         # and pass them downstream; they're only USED when use_principal_point=True.
         cx_intr = None
         cy_intr = None

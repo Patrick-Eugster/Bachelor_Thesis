@@ -8,7 +8,7 @@ They detect and decode **circular coded targets (CCT)** — the same family as t
 Agisoft 12-bit coded ground markers used in this project. We adopt the **decode core**
 (ellipse-fit → affine-rectify → `CCT_or_not` validate → ring-sample → bit-decode) and
 plan to replace only the **front-end** (global Otsu → adaptive / crop-seeded). See
-`docs/MARKER_DETECTION_CCT.md` for the full write-up.
+`docs/preprocessing/markers/MARKER_DETECTION_CCT.md` for the full write-up.
 
 ## Local modifications
 - **`CCTDecodeRelease.py`**: made the `from progress.bar import ShadyBar` import lazy

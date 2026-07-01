@@ -2,7 +2,7 @@
 Diagnostic: measure how "sparse" each COLMAP/Agisoft reconstruction is.
 
 3DGS densification methods behave differently depending on how well-constrained the
-input is (see docs/DENSIFICATION_OPTIONS.md). "Sparse / limited views" is not just the
+input is (see docs/reconstruction/DENSIFICATION_OPTIONS.md). "Sparse / limited views" is not just the
 image count — it is mostly about multi-view OVERLAP (how many cameras see each 3D point)
 and ANGULAR diversity (do the cameras look from many directions or all from one cone).
 This script reads the sparse SfM model and reports those numbers so we can decide, per

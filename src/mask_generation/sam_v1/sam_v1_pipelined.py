@@ -31,6 +31,7 @@ import concurrent.futures
 import gc
 import numpy as np
 import cv2
+from PIL import Image
 import torch
 import colorsys
 import shutil
@@ -112,8 +113,11 @@ def _load_image_and_bbox(image_file, bbox_folder, cfg):
     Returns (image_name, save_name, image_rgb, bbox_or_None) — None signals a missing bbox file."""
     image_name = os.path.basename(image_file)
     save_name = os.path.splitext(image_name)[0]
-    image = cv2.imread(image_file)
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    # Load with PIL (not cv2.imread): both use libjpeg-turbo so pixels are equivalent, but PIL decodes
+    # the phone JPEGs silently whereas cv2 prints "Invalid SOS parameters for sequential JPEG" on the
+    # ~half that carry a non-standard SOS header. PIL also returns RGB directly (no BGR->RGB needed) and
+    # matches how YOLO/SAHI load their images. We do NOT exif_transpose, so orientation stays as before.
+    image = np.array(Image.open(image_file).convert("RGB"))
     # ROI: grey-out outside the plot polygon (buffered, no-op unless roi.enabled) so SAM masks
     # don't bleed into neighbour-plot wheat. The boxes were already ROI-filtered in the YOLO/SAHI phase.
     image = apply_roi(image, image_file, cfg)
@@ -207,6 +211,11 @@ def run_sam_phase(image_folders, cfg):
         start_sam_plot = time.perf_counter()
         n_images = len(image_files)
         save_futures = []  # collect save futures so we can harvest t_save at the end
+        # BACKPRESSURE cap: how many image-saves may sit in the queue at once. Each queued save still
+        # holds that image's full-res masks (~12 MB per head -> a few GB at hundreds of phone heads),
+        # so without a cap the backlog piles up across many images and RAM climbs into swap. Block on
+        # the oldest save once more than this many are in flight. Tunable via method.sam_save_queue_max.
+        save_queue_max = cfg.method.get("sam_save_queue_max", 2)
 
         # Outer executor has 2 slots: one for the load future, one for the save future.
         # The save task spawns its own inner pool (max_threads) for parallel mask PNG writing.
@@ -240,6 +249,11 @@ def run_sam_phase(image_folders, cfg):
                     sf = executor.submit(_save_image_results, *prev_save_data, cfg.method.max_threads)
                     save_futures.append(sf)
                     prev_save_data = None  # drop reference so RAM can be freed once save is done
+                    # backpressure: if the save queue is deeper than the cap, block on the oldest
+                    # save(s) until it drains. Each drained future's t_save is accumulated here, so
+                    # the end-of-plot harvest below only sums the ones still pending.
+                    while len(save_futures) > save_queue_max:
+                        total_sam_pure_time += save_futures.pop(0).result()
 
                 # Handle skip cases (missing bbox file or no detections)
                 if bbox is None:

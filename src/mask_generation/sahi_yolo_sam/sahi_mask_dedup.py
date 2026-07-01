@@ -15,7 +15,7 @@ This file does it the other way round:
 
 Scope (honest): this only recovers heads YOLO *detected* (each has a box) that the box-merge wrongly
 fused — it does NOT find heads YOLO missed (no box -> no prompt). The spike that justified this is in
-docs/SAHI_EVAL_RESULTS.md §6. Standalone — the normal sahi_yolo_pipelined / run_mask_generation are
+docs/mask_generation/SAHI_EVAL_RESULTS.md §6. Standalone — the normal sahi_yolo_pipelined / run_mask_generation are
 untouched.
 
 Run:  python src/mask_generation/sahi_yolo_sam/sahi_mask_dedup.py plot_glob=plot_461 limit_images=1

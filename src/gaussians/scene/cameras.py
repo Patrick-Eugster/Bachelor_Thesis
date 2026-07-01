@@ -56,7 +56,7 @@ class Camera(nn.Module):
 
         # principal point (already scaled to match current image_width/height by camera_utils.loadCam)
         # None → symmetric frustum (vanilla 3DGS, principal point assumed at image center)
-        # set  → asymmetric frustum that honors the real cx/cy (see docs/PIXEL_SHIFT_BUG.md)
+        # set  → asymmetric frustum that honors the real cx/cy (see docs/reconstruction/PIXEL_SHIFT_BUG.md)
         self.cx = cx
         self.cy = cy
 

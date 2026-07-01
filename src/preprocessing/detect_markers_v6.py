@@ -65,7 +65,7 @@ def build_template_bank(cfg, work_scale):
     If cfg.oblique_templates is on, each scale ALSO gets affine-warped (foreshortened) copies so the
     matcher can find plates viewed at steep oblique angles (late-season tall canopy → circle projects
     to an ellipse the fronto-parallel template misses). Opt-in: it multiplies the template count (and
-    the matchTemplate cost) by 1 + len(ratios)*len(rotations) — see docs/MARKER_DETECTOR_LATE_SEASON.md."""
+    the matchTemplate cost) by 1 + len(ratios)*len(rotations) — see docs/preprocessing/markers/MARKER_DETECTOR_LATE_SEASON.md."""
     tmpl_path = os.path.join(hydra.utils.get_original_cwd(), cfg.template_image)
     canon = cv2.imread(tmpl_path, cv2.IMREAD_GRAYSCALE)
     if canon is None:

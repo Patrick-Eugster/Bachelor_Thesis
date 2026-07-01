@@ -207,7 +207,7 @@ python src/preprocessing/run_colmap.py plot=mixed_cams single_camera=false      
 
 ## CPU vs GPU SIFT
 
-The COLMAP we built has CUDA enabled (`COLMAP 4.1.0 with CUDA` in the help output). **Building CUDA-enabled COLMAP from source is documented step-by-step in [`docs/INSTALL_COLMAP_CUDA.md`](../../docs/INSTALL_COLMAP_CUDA.md)** — use that if you need to reinstall in a fresh container.
+The COLMAP we built has CUDA enabled (`COLMAP 4.1.0 with CUDA` in the help output). **Building CUDA-enabled COLMAP from source is documented step-by-step in [`docs/setup/INSTALL_COLMAP_CUDA.md`](../../docs/setup/INSTALL_COLMAP_CUDA.md)** — use that if you need to reinstall in a fresh container.
 
 GPU SIFT runs about **5–8× faster than CPU SIFT** on the feature extraction + matching stages. The mapper (SfM + bundle adjustment) is CPU-only either way, so total speedup is more like **2–3×**.
 
@@ -444,7 +444,7 @@ Before considering either of the upgrade sections below, follow this concrete be
    ```bash
    python src/preprocessing/compare_to_agisoft.py field=field_D plot=20250523
    ```
-   Reports per-camera translation error (mm) + rotation error (deg) after Umeyama alignment. Tells us how close our reconstruction is to Agisoft's geometrically. Repeat for all four sessions to check consistency across captures (see [`../../docs/SFM_PIPELINE_COMPARISON.md`](../../docs/SFM_PIPELINE_COMPARISON.md) for the rationale on why four data points matter).
+   Reports per-camera translation error (mm) + rotation error (deg) after Umeyama alignment. Tells us how close our reconstruction is to Agisoft's geometrically. Repeat for all four sessions to check consistency across captures (see [`../../docs/preprocessing/sfm/SFM_PIPELINE_COMPARISON.md`](../../docs/preprocessing/sfm/SFM_PIPELINE_COMPARISON.md) for the rationale on why four data points matter).
 
 3. **Train 3DGS on both `sparse/` versions of the same session and compare quality.**
    - Train once using our `sparse/0/` (our COLMAP output).
@@ -528,7 +528,7 @@ Absolute thresholds are only approximate — the **session distribution** matter
 | field_A/20250618 | **1026** | 0 | 93/93 registered, 22.9 mm vs Agisoft |
 | field_D/20250530 | **399** | **5** | 63/85 registered, 60 mm vs Agisoft ❌ |
 
-The cross-session pattern is unambiguous: sharper sessions register more images and produce tighter poses. The full discussion of how the sharpness numbers explain the `compare_to_agisoft` numbers is in [`../../docs/COMPARE_TO_AGISOFT_RESULTS.md`](../../docs/COMPARE_TO_AGISOFT_RESULTS.md).
+The cross-session pattern is unambiguous: sharper sessions register more images and produce tighter poses. The full discussion of how the sharpness numbers explain the `compare_to_agisoft` numbers is in [`../../docs/preprocessing/sfm/COMPARE_TO_AGISOFT_RESULTS.md`](../../docs/preprocessing/sfm/COMPARE_TO_AGISOFT_RESULTS.md).
 
 ### Possible future use (not implemented)
 

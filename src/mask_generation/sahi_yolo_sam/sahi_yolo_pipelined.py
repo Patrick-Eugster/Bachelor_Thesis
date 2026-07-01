@@ -8,8 +8,8 @@ each tile, shifts the boxes back to original-image coordinates, and merges the
 overlap duplicates. This recovers the small/dense/overlapping heads in phone
 images that get lost when a big frame is squashed to 1280.
 
-Why this exists + the math (tile count, edge overlap, the merge): docs/SAHI_EXPLAINED.md.
-Design decisions (sahi pkg for the merge only, simple loop first): docs/archive/SAHI_IMPLEMENTATION_PLAN.md (archived, local-only — plan complete).
+Why this exists + the math (tile count, edge overlap, the merge): docs/mask_generation/SAHI_EXPLAINED.md.
+Design decisions (sahi pkg for the merge only, simple loop first): archive/docs/SAHI_IMPLEMENTATION_PLAN.md (archived, local-only — plan complete).
 
 One image at a time on the GPU (all its tiles go in GPU-sized batches), but the CPU
 work is pipelined the same way yolo_v1_pipelined does it: while the GPU runs image N's
@@ -355,7 +355,13 @@ def run_yolo_phase_sahi(image_folders, cfg):
     print("\n" + "=" * 50)
     print(" PHASE 1 (SAHI): LOADING YOLO AND PROCESSING ALL PLOTS")
     print("=" * 50)
-    print(f"  slice={cfg.method.sahi_slice_size}px  overlap={cfg.method.sahi_overlap_ratio} "
+    # The tile size shown depends on the mode: dynamic tiling (phone default) sizes tiles per-image from
+    # the resolution, so here we only know the TARGET — the real size is printed per-image below.
+    if use_dynamic_tiles(cfg):
+        tile_desc = f"tiles=dynamic(target {cfg.method.sahi_target_tile}px, sized per image)"
+    else:
+        tile_desc = f"slice={cfg.method.sahi_slice_size}px"
+    print(f"  {tile_desc}  overlap={cfg.method.sahi_overlap_ratio} "
           f"merge={cfg.method.sahi_merge}/{cfg.method.sahi_match_metric}@{cfg.method.sahi_match_threshold} "
           f"conf={cfg.method.conf_threshold_good_box}  "
           f"full_image_pass={cfg.method.sahi_full_image_pass}  tile_batch={cfg.method.sahi_tile_batch_size}")

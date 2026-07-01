@@ -54,7 +54,7 @@ def getProjectionMatrix(znear, zfar, fovX, fovY, cx=None, cy=None, width=None, h
     If cx/cy/width/height are all None → symmetric frustum (vanilla 3DGS behavior,
     principal point assumed at image center). If they're all provided → asymmetric
     frustum that honors the real (cx, cy), shifting the rendered image to align
-    with the GT photo. See docs/CAMERA_INTRINSICS_EXPLAINED.md for the derivation.
+    with the GT photo. See docs/reconstruction/CAMERA_INTRINSICS_EXPLAINED.md for the derivation.
     """
     tanHalfFovY = math.tan((fovY / 2))
     tanHalfFovX = math.tan((fovX / 2))

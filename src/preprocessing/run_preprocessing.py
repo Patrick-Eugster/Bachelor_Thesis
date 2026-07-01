@@ -217,7 +217,7 @@ def main(cfg: DictConfig):
     # ROUTE 2 (markers_in_sfm=true): detect markers on the DISTORTED input_uniform — the space the
     # database keypoints live in — BEFORE colmap, then have run_colmap inject them between matcher and
     # mapper so the second SfM bakes markers in (survey-free). Needs run_uniform to have made
-    # input_uniform first. Default off → normal single-SfM run. See docs/MARKER_INTEGRATION_PLAN.md.
+    # input_uniform first. Default off → normal single-SfM run. See docs/preprocessing/markers/MARKER_INTEGRATION_PLAN.md.
     inject_arg = []
     if cfg.get("markers_in_sfm", False) and cfg.run_colmap:
         det_json = cfg.get("marker_inputspace_json", "logs/marker_det_inputspace.json")
@@ -286,7 +286,7 @@ def main(cfg: DictConfig):
             ], timings, fatal=False)
 
         # TAPE GATE: auto-decide whether Flavour 2 (GCP-BA) is trustworthy for this field. The LOMO
-        # experiment (docs/MARKER_COLMAP_RERUN_EXPERIMENT.md) showed anchoring markers HELPS when the
+        # experiment (docs/preprocessing/markers/MARKER_COLMAP_RERUN_EXPERIMENT.md) showed anchoring markers HELPS when the
         # survey is good and HURTS when it's off — and the Step-3 tape↔survey agreement tells us which
         # IN ADVANCE. So: tape agrees (small) → survey trusted → run GCP-BA (Flavour 2 chosen); tape
         # disagrees (large) → survey suspect → skip GCP-BA, keep Flavour 1 as the metric model.

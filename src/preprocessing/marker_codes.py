@@ -5,7 +5,7 @@ is a circle with no fixed "up", the decoder canonicalizes each read to the MINIM
 12 rotations (see cctdecode B2I) — so every code we handle here is already rotation-canonical.
 
 Used by the detectors (v8 ID filter) and later by triangulation (same manifest / Hamming logic).
-Full write-up: docs/MARKER_CODE_STRUCTURE.md.
+Full write-up: docs/preprocessing/markers/MARKER_CODE_STRUCTURE.md.
 
 IMPORTANT: the set of "legal necklaces" (352 rotation-canonical 12-bit values) does NOT separate
 real markers from junk — the all-ones junk codes (511, 1023, ...) are themselves legal necklaces, and

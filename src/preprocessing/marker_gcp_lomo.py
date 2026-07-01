@@ -1,7 +1,7 @@
 """Arm A experiment: does integrating markers INTO COLMAP (with intrinsics refined) beat the post-hoc
 approach? Evaluated with leave-one-marker-out (LOMO) so we never train and test on the same point.
 
-Plan + rationale: docs/MARKER_COLMAP_RERUN_EXPERIMENT.md. This is a DIAGNOSTIC script — it does not
+Plan + rationale: docs/preprocessing/markers/MARKER_COLMAP_RERUN_EXPERIMENT.md. This is a DIAGNOSTIC script — it does not
 touch the dataset or the production sparse_metric/ models; it only reads them and writes a JSON report.
 
 The honest test (LOMO): for each of the 6 markers, hold it OUT, anchor the other 5 as constant GCPs at

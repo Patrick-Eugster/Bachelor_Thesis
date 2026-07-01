@@ -9,7 +9,7 @@ gets real metres, which is what phenotyping (length/width/volume in mm) needs. T
   tape              SCALE only from the tape distances (marker_scale.tape_scale, the same number the
                     report uses) → R = identity, origin = marker centroid. Metric SIZE but NOT
                     georeferenced (no orientation/position), which is all phenotyping needs, and needs
-                    no survey/GPS. See docs/MARKER_INTEGRATION_PLAN.md.
+                    no survey/GPS. See docs/preprocessing/markers/MARKER_INTEGRATION_PLAN.md.
 
 Why a hand-written rewrite (not `colmap model_transformer`): the tool's `--transform_path` matrix
 convention did not match a plain `[sR|t]` 4x4 (it produced a scrambled rotation + 30 m translation,

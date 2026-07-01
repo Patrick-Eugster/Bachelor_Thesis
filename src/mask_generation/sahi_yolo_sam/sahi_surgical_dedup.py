@@ -22,7 +22,7 @@ internal tie-breaker, the real per-head masks still come later in the normal SAM
 
 Honest bound: like v1, this only un-merges heads YOLO DETECTED (each tier-3 box exists because YOLO
 boxed it). A nested head with no box can't be recovered — that's a detector limitation. Full write-up
-+ the v1 comparison: docs/SAHI_SURGICAL_DEDUP.md. Standalone — production and v1 are untouched.
++ the v1 comparison: docs/mask_generation/SAHI_SURGICAL_DEDUP.md. Standalone — production and v1 are untouched.
 
 Run:  python src/mask_generation/sahi_yolo_sam/sahi_surgical_dedup.py plot_glob=plot_461 limit_images=1
 Out:  results/mask_generation/{dataset}/{plot}/sahi_yolo_sam/{experiment_name}/{bboxes,masks,viz,yolo_vis}/

@@ -139,9 +139,9 @@ Box centers binned into 50×50 grid, Gaussian blur sigma=1.5, cells below 10% of
 
 `eval_yolo_boxes.py` (above) scores **one** method against GT. These three tools compare **SAHI** (`sahi_yolo_sam`) against **plain YOLO** (`yolo_sam_v1`) — head by head — to tune SAHI's tiling knobs (slice size, overlap, merge) by *seeing* what SAHI adds vs breaks, not just aggregate P/R. They import the matching primitives from `eval_yolo_boxes.py` (no changes to it) plus a shared `compare_common.py`.
 
-**Full design + the 7-region model + the metric→knob cheat-sheet:** `docs/archive/SAHI_YOLO_EVAL_PLAN.md` (archived, local-only — plan complete; the tools below are what it produced).
+**Full design + the 7-region model + the metric→knob cheat-sheet:** `archive/docs/SAHI_YOLO_EVAL_PLAN.md` (archived, local-only — plan complete; the tools below are what it produced).
 
-**Findings from running these tools** → [`docs/SAHI_EVAL_RESULTS.md`](../../../docs/SAHI_EVAL_RESULTS.md): the confidence-floor bug that made SAHI first look worse, the single-threshold fix (SAHI now beats YOLO on recall), and the IOS/IOU/CONF merge study (IOS wins on FIP; nested-head case needs mask-based dedup, parked for phone). **SAHI eval boxes are now produced by a normal run with `only_labeled_images=true` — NOT `--config-name eval_run` (SAHI no longer has the `conf_threshold_nms_floor` key).**
+**Findings from running these tools** → [`docs/mask_generation/SAHI_EVAL_RESULTS.md`](../../../docs/mask_generation/SAHI_EVAL_RESULTS.md): the confidence-floor bug that made SAHI first look worse, the single-threshold fix (SAHI now beats YOLO on recall), and the IOS/IOU/CONF merge study (IOS wins on FIP; nested-head case needs mask-based dedup, parked for phone). **SAHI eval boxes are now produced by a normal run with `only_labeled_images=true` — NOT `--config-name eval_run` (SAHI no longer has the `conf_threshold_nms_floor` key).**
 
 ## Prerequisite — produce boxes for BOTH methods
 

@@ -71,7 +71,13 @@ def print_final_configuration_report(cfg, total_seconds, sam_seconds, total_imag
     print("-" * 50)
     # 2. Detection strategy — method specific (SAHI never resizes, yolo_sam_v1 letterboxes)
     if cfg.method.name == "sahi_yolo_sam":
-        print(f"{'SAHI Tile Size:':<25} {cfg.method.sahi_slice_size}px (native, no resize)")
+        # tile size depends on the mode: dynamic tiling (phone default) sizes tiles per image from the
+        # resolution, so report the target + "dynamic" rather than the fixed sahi_slice_size.
+        from mask_generation.sahi_yolo_sam.sahi_yolo_pipelined import use_dynamic_tiles
+        if use_dynamic_tiles(cfg):
+            print(f"{'SAHI Tile Size:':<25} dynamic — target {cfg.method.sahi_target_tile}px, sized per image (native, no resize)")
+        else:
+            print(f"{'SAHI Tile Size:':<25} {cfg.method.sahi_slice_size}px (native, no resize)")
         print(f"{'SAHI Overlap Ratio:':<25} {cfg.method.sahi_overlap_ratio}")
         print(f"{'SAHI Merge:':<25} {cfg.method.sahi_merge}/{cfg.method.sahi_match_metric} @ {cfg.method.sahi_match_threshold}")
         print(f"{'Tiles per GPU Forward:':<25} {cfg.method.sahi_tile_batch_size}")
@@ -80,6 +86,17 @@ def print_final_configuration_report(cfg, total_seconds, sam_seconds, total_imag
         print(f"{'YOLO Resize Size:':<25} {cfg.method.target_image_size}px")
         print(f"{'BATCH_SIZE_YOLO:':<25} {cfg.method.batch_size_yolo}")
         print(f"{'RAM_CHUNK_SIZE_YOLO:':<25} {cfg.method.ram_chunk_size_yolo}")
+    print("-" * 50)
+    # 2b. ROI (phone marker-polygon plot mask) — applies to both methods; off by default (FIP / no markers)
+    roi = cfg.get("roi", None)
+    if roi is not None and roi.get("enabled", False):
+        buf = f"{roi.get('buffer_frac', 0)}×short-side" if roi.get("buffer_frac", 0) else f"{roi.get('buffer_px', 0)}px"
+        box_filter = roi.get("filter_mode", "overlap") if roi.get("filter_boxes", True) else "off"
+        print(f"{'ROI Plot Mask:':<25} ON  (source={roi.get('source', 'markers')}, fallback={roi.get('fallback', 'none')})")
+        print(f"{'ROI Buffer:':<25} {buf}")
+        print(f"{'ROI Box Filter:':<25} {box_filter}")
+    else:
+        print(f"{'ROI Plot Mask:':<25} off")
     print("-" * 50)
     # 3. Dataset & Results
     print(f"{'Total Images Processed:':<25} {total_images}")

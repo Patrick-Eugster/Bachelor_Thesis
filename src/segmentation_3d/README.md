@@ -8,6 +8,8 @@ Run via `src/run_reconstruction.py` with `run_seg=true` — not directly. The se
 
 ---
 
+> **Want to understand the algorithm, not just run it?** See the deep-dive explainer [`docs/segmentation_3d/SEGMENTATION_3D_EXPLAINED.md`](../../docs/segmentation_3d/SEGMENTATION_3D_EXPLAINED.md) — the FlashSplat lift mechanics, full pseudo-code, the `processed`/`buffered` trust gate, the overlap-merge rule, and where the runtime goes.
+
 ## How It Works — Iterative Match-and-Fine-Tune
 
 For each 2D mask (one wheat head instance in one camera view):
@@ -146,7 +148,7 @@ Paper results for comparison (Table 2): IoU=0.50, Precision=0.81, Recall=0.57, F
 | Pred head count | distinct non-zero IDs in `2DSeg/{stem}.pt` | separate wheat head instances the pipeline found in this view |
 | Count error ratio | (pred − GT) / GT | normalized count difference — negative = under-count, positive = over-count; e.g. −0.19 = found 19% fewer heads than GT |
 
-> **Per-view vs plot-total — pick the right number.** These `eval_seg_2d` counts are **per-camera** (heads in *one* labeled view vs the YOLO `.txt` for that view) and only exist for images with `manual_label/` GT. For a **plot-level total** head count (e.g. vs the FIP `wheat_head_counts.xlsx` GT), use `run_3d_seg`'s **`seg_summary.json → wheat_heads_found`** (= number of unique 3D head instances = `num_wheat_head`), NOT the per-view `eval_seg_2d` counts. The xlsx comparison is relative-only — see the boundary/reconstructed-volume caveat in [docs/FIP_REPROCESSED_DATA.md](../../docs/FIP_REPROCESSED_DATA.md).
+> **Per-view vs plot-total — pick the right number.** These `eval_seg_2d` counts are **per-camera** (heads in *one* labeled view vs the YOLO `.txt` for that view) and only exist for images with `manual_label/` GT. For a **plot-level total** head count (e.g. vs the FIP `wheat_head_counts.xlsx` GT), use `run_3d_seg`'s **`seg_summary.json → wheat_heads_found`** (= number of unique 3D head instances = `num_wheat_head`), NOT the per-view `eval_seg_2d` counts. The xlsx comparison is relative-only — see the boundary/reconstructed-volume caveat in [docs/data/FIP_REPROCESSED_DATA.md](../../docs/data/FIP_REPROCESSED_DATA.md).
 
 ### Inputs
 

@@ -1,4 +1,0 @@
-# Generated analysis outputs (produced by the src/analysis/ scripts) — keep this folder in the repo
-# but don't track its contents. The committed docs/*.md write-ups cite these JSONs; regenerate as needed.
-*
-!.gitignore

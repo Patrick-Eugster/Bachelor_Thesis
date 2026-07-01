@@ -77,7 +77,7 @@ def main(cfg: DictConfig):
 
     # ALIKED's ONNX provider in this COLMAP build was compiled against CUDA 12; on a CUDA-13 box it
     # aborts (libcublasLt.so.12 missing). Prepend a user-supplied CUDA-12 lib dir to LD_LIBRARY_PATH so
-    # it loads. Harmless when front_end=sift or aliked_cuda12_libdir is empty. See docs/PHONE_SFM_FRONTEND.md.
+    # it loads. Harmless when front_end=sift or aliked_cuda12_libdir is empty. See docs/preprocessing/sfm/PHONE_SFM_FRONTEND.md.
     if front_end == "aliked" and cfg.get("aliked_cuda12_libdir", ""):
         libdirs = [dp for dp, _dn, _fn in os.walk(cfg.aliked_cuda12_libdir)
                    if os.path.basename(dp) == "lib"]

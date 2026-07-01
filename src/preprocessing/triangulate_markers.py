@@ -22,7 +22,7 @@ The ONE deliberate exception is COLMAP-DB marker injection / GCP-BA (inject_mark
 marker_gcp_ba.py), which must use the DISTORTED `input_uniform` space because COLMAP's database
 keypoints + mapper work in original (distorted) image coords. Don't mix the two.
 
-Theory + the manifest/Hamming background: docs/MARKER_CODE_STRUCTURE.md, docs/MARKER_INTEGRATION_PLAN.md.
+Theory + the manifest/Hamming background: docs/preprocessing/markers/MARKER_CODE_STRUCTURE.md, docs/preprocessing/markers/MARKER_INTEGRATION_PLAN.md.
 
 Usage:
     python src/preprocessing/triangulate_markers.py field=field_A plot=20250609

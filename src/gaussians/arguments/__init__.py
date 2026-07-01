@@ -55,7 +55,7 @@ class ModelParams(ParamGroup):
         self.data_device = "cuda"
         self.eval = True
         self.seg_dir = ""  # explicit path to detection results (bboxes/ + masks/) — auto-derived in run_reconstruction.py
-        self.use_principal_point = False  # opt-in: honor cx/cy via asymmetric frustum (see docs/PIXEL_SHIFT_BUG.md)
+        self.use_principal_point = False  # opt-in: honor cx/cy via asymmetric frustum (see docs/reconstruction/PIXEL_SHIFT_BUG.md)
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -88,7 +88,7 @@ class OptimizationParams(ParamGroup):
         self.densify_from_iter = 500
         self.densify_until_iter = 11_000
         self.densify_grad_threshold = 0.0002
-        self.absgrad = False  # opt-in: use AbsGS (gsplat means2d.absgrad) for the densify criterion — recovers fine detail. Raise densify_grad_threshold (~2-4x) when on. See docs/DENSIFICATION_OPTIONS.md
+        self.absgrad = False  # opt-in: use AbsGS (gsplat means2d.absgrad) for the densify criterion — recovers fine detail. Raise densify_grad_threshold (~2-4x) when on. See docs/reconstruction/DENSIFICATION_OPTIONS.md
         self.opacity_cull_threshold = 0.005  # Gaussians below this opacity get pruned; raise to 0.01 to save VRAM
         self.random_background = False
         super().__init__(parser, "Optimization Parameters")

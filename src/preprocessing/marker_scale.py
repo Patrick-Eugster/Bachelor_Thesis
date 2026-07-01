@@ -13,9 +13,9 @@ two modes (config `scale_source`):
            "plot <L>" -> scale = median(tape_dist / our_recon_dist) over the measured pairs. NO survey
            needed (survey is loaded only as an optional extra check if the file happens to be present).
            This gives SIZE only (a uniform scale, no absolute world frame) — which is all phenotyping
-           needs — and sidesteps the RTK-GPS ~2 cm survey error. See docs/MARKER_INTEGRATION_PLAN.md.
+           needs — and sidesteps the RTK-GPS ~2 cm survey error. See docs/preprocessing/markers/MARKER_INTEGRATION_PLAN.md.
 
-Marker target<->code map (from the spec PDF, see docs/MARKER_CODE_STRUCTURE.md):
+Marker target<->code map (from the spec PDF, see docs/preprocessing/markers/MARKER_CODE_STRUCTURE.md):
     target 1->113  target 2->105  target 3->89  target 4->101  target 5->85  target 6->77
 
 Output (READ-ONLY on the data, writes into the plot's logs/):
@@ -137,7 +137,7 @@ def load_ours(points_json):
 # 3D positions that poison the distance-ratio scale — empirically the ~5deg-parallax markers in a
 # bad Route-2 run blew the tape CV up to 196%. On every good run all 6 markers clear these (lowest
 # seen: parallax 36.7deg, inliers 6, max-reproj 6.0px) so the guard is a NO-OP on good data.
-# Set any threshold to 0 to disable that gate. See docs/MARKER_INTEGRATION_PLAN.md open item (a).
+# Set any threshold to 0 to disable that gate. See docs/preprocessing/markers/MARKER_INTEGRATION_PLAN.md open item (a).
 QUALITY_DEFAULTS = {
     "quality_min_parallax_deg": 10.0,  # triangulation angle; < this = depth poorly constrained
     "quality_min_inlier_views": 4,     # inlier views backing the 3D point

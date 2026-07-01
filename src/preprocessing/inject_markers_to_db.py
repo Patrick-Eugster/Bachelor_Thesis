@@ -9,7 +9,7 @@ TIE-POINTS ONLY: we add image-to-image correspondences ("this pixel in image A i
 marker as this pixel in image B"), NOT world coordinates — so it is completely survey-free / GPS-free.
 A marker seen in N images contributes N keypoints + every cross-image pair as a guaranteed match, so it
 forms one track and comes out as a single 3D point. Metric scale still comes post-hoc from tape
-(marker_scale.py scale_source=tape). See docs/MARKER_INTEGRATION_PLAN.md (Route 2).
+(marker_scale.py scale_source=tape). See docs/preprocessing/markers/MARKER_INTEGRATION_PLAN.md (Route 2).
 
 The marker pixels MUST be detected on the SAME images COLMAP extracted features from (the distorted
 `input_uniform/` for phone) so the coordinates line up with the SIFT keypoints. Run detection with
