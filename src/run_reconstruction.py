@@ -368,7 +368,9 @@ def _run_pipeline(cfg):
             "--iou_threshold", "0.5",
             "--exp_name", cfg.segmentation_3d.exp_name,
             "--vis_max_heads", str(cfg.segmentation_3d.vis_max_heads),
-        ] + seg_dir_flag + ([] if cfg.segmentation_3d.save_vis_overlay else ["--no_save_vis_overlay"]) + data_device_flag + pp_flag + wandb_flag, log_file, depends_on="train")
+        ] + seg_dir_flag + ([] if cfg.segmentation_3d.save_vis_overlay else ["--no_save_vis_overlay"])
+          + ([] if cfg.segmentation_3d.use_mask_cache else ["--no_mask_cache"])
+          + data_device_flag + pp_flag + wandb_flag, log_file, depends_on="train")
         if seg_tee:
             seg_tee.close()
         # auto-export colored PLY right after segmentation — no separate toggle needed

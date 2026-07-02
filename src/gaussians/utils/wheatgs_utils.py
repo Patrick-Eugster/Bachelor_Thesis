@@ -117,6 +117,40 @@ def calculate_seg_iou_gpu(mask1, mask2):
     union = (mask1 | mask2).sum()
     return (intersection / union).item() if union > 0 else 0.0
 
+def build_mask_crop(mask_bool):
+    """Take a full-frame bool mask and keep ONLY its tight bounding-box crop:
+    returns (y0, y1, x0, x1, crop, area), or None for an empty mask.
+    A mask is 0 outside its bbox, so this crop carries all its information while
+    using ~1000x less memory — lets us cache every mask instead of re-reading the
+    PNG in find_match. See docs/segmentation_3d/SEGMENTATION_3D_RUNTIME.md."""
+    pixels = mask_bool.nonzero(as_tuple=False)  # (N, 2): [row, col] of every True pixel
+    if pixels.numel() == 0:
+        return None
+    y0, x0 = pixels.min(dim=0).values
+    y1, x1 = pixels.max(dim=0).values
+    y0, x0, y1, x1 = int(y0), int(x0), int(y1) + 1, int(x1) + 1  # +1 -> exclusive upper bound
+    # numpy round-trip with an explicit .copy() GUARANTEES the crop owns its own buffer and can
+    # NEVER be a view pinning the full-frame mask (a torch view would report a tiny numel() while
+    # secretly retaining the whole 12 MB frame -> the RAM blow-up we saw). torch.from_numpy then
+    # wraps that independent buffer, so the full-frame mask is freed as soon as the worker returns.
+    crop_np = mask_bool[y0:y1, x0:x1].cpu().numpy().copy()
+    crop = torch.from_numpy(crop_np)
+    return (y0, y1, x0, x1, crop, int(crop_np.sum()))
+
+def calculate_seg_iou_gpu_crop(pred_seg, pred_area, entry):
+    """IoU between the full-frame rendered blob (pred_seg) and a mask stored only as
+    its tight-bbox crop (entry from build_mask_crop). pred_area = pred_seg.sum() (passed
+    in so it's computed once per view, not per candidate).
+    Numerically identical to calculate_seg_iou_gpu(full_mask, pred_seg): the mask is 0
+    outside its crop so the intersection is unchanged, and by inclusion-exclusion the
+    union equals |mask| + |pred| - |intersection| exactly. Uses the same torch ops as
+    calculate_seg_iou_gpu so the returned float matches bit-for-bit."""
+    y0, y1, x0, x1, crop, area = entry
+    crop = crop.to(pred_seg.device, non_blocking=True)  # cache lives in CPU RAM; move the tiny crop to GPU per use
+    intersection = (pred_seg[y0:y1, x0:x1] & crop).sum()  # only where the mask lives
+    union = area + pred_area - intersection  # area may be a python int -> broadcasts with the GPU tensors
+    return (intersection / union).item() if union > 0 else 0.0
+
 ########### End of Image Helper Functions ###########
 
 ########### Begin of Visualization Helper Functions ###########

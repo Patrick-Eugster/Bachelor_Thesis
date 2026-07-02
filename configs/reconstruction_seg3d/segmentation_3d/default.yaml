@@ -16,3 +16,9 @@ save_vis_overlay: true
 
 # only save overlays for the first N heads — 0 = save all (can generate 300+ images, slow for large plots)
 vis_max_heads: 10
+
+# pre-decode every SAM mask once into a compact tight-bbox crop cache (CPU RAM) instead of re-reading
+# the full-res PNG per candidate in find_match — the big speedup on dense data, provably bit-identical
+# to the old path. true = on (recommended). false = old decode-per-candidate baseline.
+# (env WHEAT_SEG_NO_CACHE=1 also forces it off, e.g. for the A/B benchmark script.)
+use_mask_cache: true

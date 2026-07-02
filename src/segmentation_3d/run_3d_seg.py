@@ -3,11 +3,14 @@ import sys
 import csv
 import glob
 import json
+import time
 import random
 import shutil
 import string
+import resource
 from argparse import ArgumentParser
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from itertools import islice
 from typing import List
 
 import numpy as np
@@ -28,8 +31,15 @@ from gaussians.utils.wheatgs_utils import (
     is_overlapping,
     calculate_seg_iou,
     calculate_seg_iou_gpu,
+    build_mask_crop,
+    calculate_seg_iou_gpu_crop,
     vis_image_w_overlay
 )
+
+# Optional render-vs-match timing (set WHEAT_SEG_TIMING=1). Off by default so the
+# cuda.synchronize() calls it needs don't slow normal runs.
+_SEG_TIMING = os.environ.get("WHEAT_SEG_TIMING") == "1"
+_SEG_TIMER = {"render": 0.0, "match": 0.0}
 
 def find_new_mask_dir(overlap_counter, num_wheat_head):
     """Return next letter suffix (a, b, c…) for an overlapping head, tracked in memory."""
@@ -107,12 +117,14 @@ def counts_to_obj_labels(all_counts, slackness=0.0):
     # print(f"{torch.sum(all_obj_labels, dim=1)[1]} Gaussians identified")  # too verbose: fires for every mask + every fine-tune iteration
     return all_obj_labels
 
-def find_match(target_viewpoint_stack, gs_params, obj_used_mask, iou_threshold, dir_name, bbox_cache, verbose=False):
+def find_match(target_viewpoint_stack, gs_params, obj_used_mask, iou_threshold, dir_name, bbox_cache, mask_cache, verbose=False):
     """
-    Input: 
+    Input:
         target_viewpoint_stack: a list of viewpoints to iterate
         gs_params: gaussians, pipe, background
         obj_used_mask: pre-optimized flashsplat results
+        mask_cache: dict mask_path -> tight-bbox crop entry (or None for empty), built once
+                    at startup so we never re-decode a mask PNG from disk here
     Output:
     """
     gaussians, pipe, background = gs_params
@@ -121,12 +133,17 @@ def find_match(target_viewpoint_stack, gs_params, obj_used_mask, iou_threshold, 
     sum_max_iou = 0.0
     # print(f"Length of target vpt stack to be matched: {len(target_viewpoint_stack)}")
     for viewpoint_cam in target_viewpoint_stack:
+        if _SEG_TIMING:
+            torch.cuda.synchronize(); _t = time.perf_counter()
         with torch.no_grad():
             # Go through other cameras to find match
             render_pkg = flashsplat_render(viewpoint_cam, gaussians, pipe, background, used_mask=obj_used_mask)
             render_alpha = render_pkg["alpha"]
             pred_seg = render_alpha.squeeze() > 0.5  # stays on GPU — avoids GPU→CPU sync per render
         pred_bbox = get_bbox_from_mask_gpu(pred_seg)  # GPU torch ops, returns same (x,y,x,y) tuple
+        pred_area = pred_seg.sum()  # |P| for IoU — computed ONCE per view, reused by every candidate
+        if _SEG_TIMING:
+            torch.cuda.synchronize(); _SEG_TIMER["render"] += time.perf_counter() - _t; _t = time.perf_counter()
         # Load YOLO bounding boxes from pre-loaded RAM cache (avoids disk read per camera)
         bboxes = bbox_cache[viewpoint_cam.image_name]
         # Overlap boxes xyxy, id and mIOU
@@ -138,18 +155,27 @@ def find_match(target_viewpoint_stack, gs_params, obj_used_mask, iou_threshold, 
         for p in overlap_masks_paths:
             assert p in viewpoint_cam.mask_paths, f"{p} not found in current image's masks"
 
-        # Find the bbox/seg pair with largest Segmentation IOU between the rendering
+        # Find the bbox/seg pair with largest Segmentation IOU between the rendering.
+        # Compare against the cached tight-bbox crops instead of re-decoding each PNG.
         max_iou = 0.0
         max_overlap_mask_path = None
         for mask_path in overlap_masks_paths:
-            with Image.open(mask_path) as temp:
-                # load mask to same device as pred_seg (GPU) — avoids CPU round-trip for IoU
-                mask = binarize_mask(PILtoTorch(temp.copy(), viewpoint_cam.resolution)).squeeze().to(pred_seg.device) > 0
-                assert mask.shape == pred_seg.shape
-            iou = calculate_seg_iou_gpu(mask, pred_seg)
+            entry = mask_cache.get(mask_path, "MISS")
+            if entry == "MISS":
+                # safety fallback: path not cached -> decode on the fly (original behaviour)
+                with Image.open(mask_path) as temp:
+                    mask = binarize_mask(PILtoTorch(temp.copy(), viewpoint_cam.resolution)).squeeze().to(pred_seg.device) > 0
+                    assert mask.shape == pred_seg.shape
+                iou = calculate_seg_iou_gpu(mask, pred_seg)
+            elif entry is None:
+                continue  # empty mask -> IoU 0, can never beat max_iou (strict >)
+            else:
+                iou = calculate_seg_iou_gpu_crop(pred_seg, pred_area, entry)
             if iou > max_iou:
                 max_iou = iou
                 max_overlap_mask_path = mask_path
+        if _SEG_TIMING:
+            torch.cuda.synchronize(); _SEG_TIMER["match"] += time.perf_counter() - _t
                                     
         if max_iou > iou_threshold: # Hyperparameters to modify
             # Add matched viewpoint cam and matched seg to a list
@@ -175,7 +201,7 @@ def update_processed_masks(processed_masks, new_mask_paths):
 
 ########### End of Find & Match helper methods ###########
         
-def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_vis_overlay, vis_max_heads, wandb_enabled=False):
+def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_vis_overlay, vis_max_heads, wandb_enabled=False, use_mask_cache=True):
     # All 3DSeg results will be saved under 3dgs_model_path/segmentation_3d/(exp_name)
     out_dir = os.path.join(dataset.model_path, "segmentation_3d", exp_name)
     sub_dirs = ["ply", "img", "count"]
@@ -210,6 +236,7 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
     viewpoint_stack_eval = scene.getTestCameras().copy()
 
     print(f"Length of viewpoint stack: {len(viewpoint_stack)}")
+    print(f"[RAM] after scene+cameras loaded: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6:.1f} GB peak")
     _overlay_executor = ThreadPoolExecutor(max_workers=4)  # async overlay JPG and 2DSeg saves
 
     # pre-load all bbox files into RAM — avoids repeated torch.load disk reads inside find_match
@@ -218,6 +245,67 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
         for cam in viewpoint_stack + viewpoint_stack_eval
     }
     print(f"Pre-loaded {len(bbox_cache)} bbox files into RAM")
+
+    # Pre-decode every mask ONCE into a compact tight-bbox crop cache (kept in CPU RAM).
+    # find_match otherwise re-reads each full-res mask PNG from disk on every overlapping
+    # head — the dominant cost on dense data. Cropping is lossless for IoU (a mask is 0
+    # outside its bbox). See docs/segmentation_3d/SEGMENTATION_3D_RUNTIME.md.
+    #
+    # Decoded in parallel but with a BOUNDED number of masks in flight. An earlier version
+    # used ThreadPoolExecutor.map, which eagerly submitted all ~22k tasks so the decode
+    # workers ran thousands of full-frame (~12 MB) masks ahead of consumption and buffered
+    # them all -> OOM-killed the job during the build. Here we keep at most MAX_IN_FLIGHT
+    # futures alive, so peak memory is bounded (only max_workers decode at once); the cached
+    # crops themselves are tiny.
+    def _decode_crop(job):
+        """Decode one mask PNG to a tight-bbox crop entry (or None if empty). Runs in a worker thread."""
+        mask_path, resolution = job
+        with Image.open(mask_path) as temp:
+            m = binarize_mask(PILtoTorch(temp.copy(), resolution)).squeeze() > 0  # full-frame CPU bool, freed when worker returns
+        entry = build_mask_crop(m)  # clones a tiny crop -> m can be released
+        if entry is None:
+            return mask_path, None
+        y0, y1, x0, x1, crop, area = entry
+        return mask_path, (y0, y1, x0, x1, crop, int(area))
+
+    t_cache = time.time()
+    mask_cache = {}
+    # cache off if the config flag says so OR the env override is set (env wins for the A/B script)
+    _cache_disabled = (not use_mask_cache) or os.environ.get("WHEAT_SEG_NO_CACHE") == "1"
+    if _cache_disabled:
+        # Leave the cache empty so find_match falls back to the original per-candidate PNG decode.
+        # Controlled by segmentation_3d.use_mask_cache=false (config) or WHEAT_SEG_NO_CACHE=1 (env,
+        # used by the A/B benchmark script). Default: cache on.
+        _why = "WHEAT_SEG_NO_CACHE=1 (env)" if os.environ.get("WHEAT_SEG_NO_CACHE") == "1" else "use_mask_cache=false (config)"
+        print(f"mask crop cache DISABLED via {_why} -> baseline decode-per-candidate path")
+    else:
+        _jobs = [(mp, cam.resolution) for cam in viewpoint_stack for mp in cam.mask_paths]
+        MAX_IN_FLIGHT = 16  # cap concurrent+buffered decodes so full-frame masks can't pile up
+        _it = iter(_jobs)
+        _done_n = 0
+        with ThreadPoolExecutor(max_workers=4) as _cache_exec:  # 4 concurrent decodes -> small transient spike
+            futures = {_cache_exec.submit(_decode_crop, job) for job in islice(_it, MAX_IN_FLIGHT)}
+            with tqdm(total=len(_jobs), desc="Caching mask crops") as _pbar:
+                while futures:
+                    done, futures = wait(futures, return_when=FIRST_COMPLETED)
+                    for fut in done:
+                        mask_path, entry = fut.result()
+                        mask_cache[mask_path] = entry  # entry already finalized (or None)
+                        _pbar.update(1)
+                        _done_n += 1
+                        if _done_n % 2000 == 0:  # trace RAM growth to catch a leak during the build
+                            _cmb = sum(e[4].numel() for e in mask_cache.values() if e is not None) / 1e6
+                            tqdm.write(f"[RAM] build {_done_n}/{len(_jobs)}: "
+                                       f"{resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6:.1f} GB peak, "
+                                       f"cache so far {_cmb:.0f} MB")
+                        nxt = next(_it, None)
+                        if nxt is not None:
+                            futures.add(_cache_exec.submit(_decode_crop, nxt))  # keep the pipeline topped up
+        _sizes = [e[4].numel() for e in mask_cache.values() if e is not None]
+        _cache_mb = sum(_sizes) / 1e6
+        print(f"Cached {len(mask_cache)} mask crops in CPU RAM ({_cache_mb:.0f} MB, "
+              f"largest {max(_sizes) if _sizes else 0} px, mean {int(sum(_sizes)/max(len(_sizes),1))} px) "
+              f"in {time.time() - t_cache:.0f}s")
 
     twoD_seg_results = {} # 2D segmentation results update through the pipeline
     os.makedirs(f"{out_dir}/2DSeg", exist_ok=True)
@@ -301,6 +389,7 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
             iou_threshold = iou_threshold,
             dir_name = os.path.dirname(this_mask_path),
             bbox_cache = bbox_cache,
+            mask_cache = mask_cache,
             verbose = True  # print match stats only on initial call, not in fine-tune loop
         )
         matched_viewpoint_stack += new_viewpoint_stack # as a whole
@@ -338,6 +427,7 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
                     iou_threshold = iou_threshold,
                     dir_name = os.path.dirname(this_mask_path),
                     bbox_cache = bbox_cache,
+                    mask_cache = mask_cache,
                 )
                 if len(new_viewpoint_stack) == 0:
                     tqdm.write(f"  Fine-tuning converged after {i} iteration(s)")
@@ -477,6 +567,15 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
     print(f"  Masks matched:           {len(processed_masks)} / {len(all_mask_paths)}")
     print(f"  Masks never matched:     {len(buffered_masks)}   (no cross-camera confirmation)")
     print(f"  Results saved to:        {out_dir}")
+    # peak resource usage — ru_maxrss is peak RSS in KB on Linux; torch tracks peak VRAM for free
+    print(f"  Peak CPU RAM:            {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6:.1f} GB")
+    if torch.cuda.is_available():
+        print(f"  Peak GPU VRAM:           {torch.cuda.max_memory_allocated() / 1e9:.1f} GB alloc / "
+              f"{torch.cuda.max_memory_reserved() / 1e9:.1f} GB reserved")
+    if _SEG_TIMING:
+        tot = _SEG_TIMER["render"] + _SEG_TIMER["match"]
+        print(f"  find_match time split:   render {_SEG_TIMER['render']:.0f}s ({_SEG_TIMER['render']/tot*100:.0f}%)  "
+              f"match/IoU {_SEG_TIMER['match']:.0f}s ({_SEG_TIMER['match']/tot*100:.0f}%)" if tot > 0 else "  (no timing)")
     print(f"{'='*60}")
 
     # persist the headline numbers to a small JSON so downstream code (e.g. head-count vs GT eval) can
@@ -511,10 +610,13 @@ if __name__ == "__main__":
     parser.add_argument("--save_vis_overlay", action="store_true", default=True, help="Save overlay JPGs per wheat head per camera")
     parser.add_argument("--no_save_vis_overlay", dest="save_vis_overlay", action="store_false")
     parser.add_argument("--vis_max_heads", type=int, default=10, help="Save overlays for first N heads only. 0 = all heads.")
+    parser.add_argument("--use_mask_cache", action="store_true", default=True, help="Pre-decode masks into a tight-bbox crop cache (big speedup, bit-identical)")
+    parser.add_argument("--no_mask_cache", dest="use_mask_cache", action="store_false", help="Disable the crop cache (old decode-per-candidate baseline)")
     parser.add_argument("--wandb_enabled", action="store_true", default=False)
     args = parser.parse_args(sys.argv[1:])
     print("Optimizing " + args.model_path)
 
     training(lp.extract(args), op.extract(args), pp.extract(args),
              args.load_iteration, args.exp_name, args.iou_threshold,
-             args.save_vis_overlay, args.vis_max_heads, args.wandb_enabled)
+             args.save_vis_overlay, args.vis_max_heads, args.wandb_enabled,
+             use_mask_cache=args.use_mask_cache)
