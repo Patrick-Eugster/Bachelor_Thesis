@@ -1,11 +1,11 @@
 #!/bin/bash -l
-#SBATCH -J phone_seg_cropcache
+#SBATCH -J phone_seg_cropcache_v2
 #SBATCH --gpus=rtx_4090:1     # pin a 4090 (24 GB, ~3× faster than a Titan RTX for 3DGS/seg) — seg is the long pole. Trade: longer queue wait.
 #SBATCH --mem-per-cpu=8G      # 8 × 8G = 64 GB — the ~46 GB seg baseline (model + 96 full-res phone
 #SBATCH --cpus-per-task=8     #   images in CPU RAM) sat right at the old 48 GB limit; give headroom
 #SBATCH --time=24:00:00
-#SBATCH --output=/cluster/project/cropsci/peugste/wheat3dgs/slurm_logs/phone_seg_cropcache_%j.out
-#SBATCH --error=/cluster/project/cropsci/peugste/wheat3dgs/slurm_logs/phone_seg_cropcache_%j.err
+#SBATCH --output=/cluster/project/cropsci/peugste/wheat3dgs/slurm_logs/phone_seg_cropcache_v2_%j.out
+#SBATCH --error=/cluster/project/cropsci/peugste/wheat3dgs/slurm_logs/phone_seg_cropcache_v2_%j.err
 #SBATCH --mail-type=END
 #SBATCH --mail-user=peugste@ethz.ch
 
@@ -38,8 +38,8 @@ WHEAT_SEG_TIMING=1 python src/run_reconstruction.py \
   dataset=phone plot=$FIELD date=$DATE experiment_name=$EXP \
   run_seg=true \
   segmentation_3d.detection_method=sahi_yolo_sam \
-  segmentation_3d.exp_name=seg_cropcache
+  segmentation_3d.exp_name=seg_cropcache_v2
 date
 
 SEG=results/reconstruction/phone/$FIELD/$DATE/vanilla_3dgs/$EXP/segmentation_3d
-echo "--- cropcache seg_summary.json ---"; cat $SEG/seg_cropcache/seg_summary.json 2>/dev/null
+echo "--- cropcache seg_summary.json ---"; cat $SEG/seg_cropcache_v2/seg_summary.json 2>/dev/null

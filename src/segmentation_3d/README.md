@@ -46,6 +46,8 @@ exp_name: "run_1"           # subfolder name inside segmentation_3d/ — change 
 mask_gen_experiment: "initial"   # which mask-generation run to read masks from
 save_vis_overlay: true      # save colored overlay images per head (good for debugging)
 vis_max_heads: 10           # only save overlays for first N heads (0 = all — can be slow for 300+ heads)
+use_mask_cache: true        # crop-cache speedup (see below); true = on (recommended), lossless
+seg_seed: 0                 # fixed seed for the mask-processing order → reproducible seg + valid A/B
 wandb_enabled: false        # log per-head progress to wandb.ai
 ```
 
@@ -55,6 +57,19 @@ wandb_enabled: false        # log per-head progress to wandb.ai
 python src/run_reconstruction.py run_seg=true exp_name=run_2
 python src/run_reconstruction.py run_seg=true exp_name=iou05 --iou_threshold 0.5
 ```
+
+### ⚠️ `use_principal_point` MUST match how the model was trained
+
+The seg **renders** the trained Gaussians (via flashsplat) to match them across views. That render must use the **same `use_principal_point`** the model was *trained* with, or every projected blob shifts a few px, cross-view IoU falls under the 0.5 match threshold, and the result collapses (we saw **IoU 0.565 → 0.117** from exactly this). The flag reaches seg through `run_reconstruction.py` (`+ pp_flag`), driven by `reconstruction.use_principal_point`.
+
+- **FIP:** models are trained `use_principal_point=true` (the Round-4 pixel-shift fix), so **seg must also pass `reconstruction.use_principal_point=true`** — e.g. `python src/run_reconstruction.py run_seg=true reconstruction.use_principal_point=true`. A full-pipeline run (train+seg in one call) is auto-consistent; only a **separate** seg run on a pre-trained model needs the flag set manually.
+- **Phone:** trained (and segged) `false` — principal point ≈ image center, so it's a near-no-op; keep both at the default `false`.
+
+Rule of thumb: **seg's `use_principal_point` == training's.** See [`docs/segmentation_3d/CROP_CACHE_OOM_AND_IOU_DEBUG.md`](../../docs/segmentation_3d/CROP_CACHE_OOM_AND_IOU_DEBUG.md).
+
+### Crop-cache speedup (`use_mask_cache`, default on)
+
+`find_match` used to re-decode each full-res mask PNG per candidate per head — the dominant cost on dense (phone/SAHI) data (a run was ~6% done after 48 h). The crop cache pre-decodes every mask **once** at startup into a compact tight-bbox crop kept in CPU RAM (~200 MB for 22 k phone masks), and IoU is computed on the crop — **provably byte-identical** to the old full-frame path (validated on the FIP GT A/B: same `all_obj_labels.pth` md5; offline tests `src/analysis/verify_crop_iou.py` + `verify_numpy_build.py`). Result: the phone run that was stuck at 6%/48 h now finishes in **~18.5 h** (~40×). Turn off with `segmentation_3d.use_mask_cache=false` (or env `WHEAT_SEG_NO_CACHE=1`) — then no cache is built and `find_match` falls back to the original per-candidate decode (used by the A/B baseline). `WHEAT_SEG_TIMING=1` prints the render-vs-match split. Design + the render-side Phase-2 follow-ups: [`docs/segmentation_3d/SEGMENTATION_3D_RUNTIME.md`](../../docs/segmentation_3d/SEGMENTATION_3D_RUNTIME.md).
 
 ---
 

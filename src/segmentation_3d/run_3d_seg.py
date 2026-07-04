@@ -201,7 +201,7 @@ def update_processed_masks(processed_masks, new_mask_paths):
 
 ########### End of Find & Match helper methods ###########
         
-def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_vis_overlay, vis_max_heads, wandb_enabled=False, use_mask_cache=True):
+def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_vis_overlay, vis_max_heads, wandb_enabled=False, use_mask_cache=True, seg_seed=0):
     # All 3DSeg results will be saved under 3dgs_model_path/segmentation_3d/(exp_name)
     out_dir = os.path.join(dataset.model_path, "segmentation_3d", exp_name)
     sub_dirs = ["ply", "img", "count"]
@@ -258,15 +258,25 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
     # futures alive, so peak memory is bounded (only max_workers decode at once); the cached
     # crops themselves are tiny.
     def _decode_crop(job):
-        """Decode one mask PNG to a tight-bbox crop entry (or None if empty). Runs in a worker thread."""
+        """Decode one mask PNG straight to a tight-bbox crop entry (or None if empty). Runs in a
+        worker thread. PURE NUMPY on purpose: routing the full-frame mask through a torch tensor
+        (PILtoTorch -> .cpu().numpy()) pinned the whole 12 MB frame via the numpy view's torch
+        `.base` on Euler's torch-2.1.2 CPU path -> a ~6.5 MB/mask RAM leak that OOM'd the FIP build
+        at 36 GB (flat locally + on Euler phone, but real on Euler FIP). Decoding with PIL+numpy
+        only never creates a full-frame torch tensor, so each frame is freed the moment this returns.
+        Bit-identical to the old path: same resize, same >0 binarize, same bbox, same compact crop."""
         mask_path, resolution = job
         with Image.open(mask_path) as temp:
-            m = binarize_mask(PILtoTorch(temp.copy(), resolution)).squeeze() > 0  # full-frame CPU bool, freed when worker returns
-        entry = build_mask_crop(m)  # clones a tiny crop -> m can be released
-        if entry is None:
+            arr = np.asarray(temp.resize(resolution))  # (H,W) uint8 for 'L' masks — SAME resize as PILtoTorch
+        # binarize_mask semantics: 1-channel -> pixel>0; 3-channel -> any channel>0. SAM masks are 0/255.
+        m_np = (arr > 0) if arr.ndim == 2 else (arr > 0).any(axis=2)  # full-frame numpy bool, freed on return
+        ys, xs = np.nonzero(m_np)
+        if ys.size == 0:
             return mask_path, None
-        y0, y1, x0, x1, crop, area = entry
-        return mask_path, (y0, y1, x0, x1, crop, int(area))
+        y0, y1 = int(ys.min()), int(ys.max()) + 1
+        x0, x1 = int(xs.min()), int(xs.max()) + 1
+        crop_np = m_np[y0:y1, x0:x1].copy()  # compact, independent buffer (m_np is released on return)
+        return mask_path, (y0, y1, x0, x1, torch.from_numpy(crop_np), int(crop_np.sum()))
 
     t_cache = time.time()
     mask_cache = {}
@@ -342,6 +352,7 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
             }
         )
 
+    random.seed(seg_seed)  # fixed seed -> reproducible mask-processing order (see seg_seed config)
     random.shuffle(all_mask_paths)
     processed_masks = set()
     buffered_masks = set()
@@ -612,6 +623,7 @@ if __name__ == "__main__":
     parser.add_argument("--vis_max_heads", type=int, default=10, help="Save overlays for first N heads only. 0 = all heads.")
     parser.add_argument("--use_mask_cache", action="store_true", default=True, help="Pre-decode masks into a tight-bbox crop cache (big speedup, bit-identical)")
     parser.add_argument("--no_mask_cache", dest="use_mask_cache", action="store_false", help="Disable the crop cache (old decode-per-candidate baseline)")
+    parser.add_argument("--seg_seed", type=int, default=0, help="Seed for the mask-processing shuffle (reproducible seg)")
     parser.add_argument("--wandb_enabled", action="store_true", default=False)
     args = parser.parse_args(sys.argv[1:])
     print("Optimizing " + args.model_path)
@@ -619,4 +631,4 @@ if __name__ == "__main__":
     training(lp.extract(args), op.extract(args), pp.extract(args),
              args.load_iteration, args.exp_name, args.iou_threshold,
              args.save_vis_overlay, args.vis_max_heads, args.wandb_enabled,
-             use_mask_cache=args.use_mask_cache)
+             use_mask_cache=args.use_mask_cache, seg_seed=args.seg_seed)

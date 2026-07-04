@@ -22,3 +22,8 @@ vis_max_heads: 10
 # to the old path. true = on (recommended). false = old decode-per-candidate baseline.
 # (env WHEAT_SEG_NO_CACHE=1 also forces it off, e.g. for the A/B benchmark script.)
 use_mask_cache: true
+
+# fixed seed for the mask-processing order (random.shuffle of all_mask_paths). The seg outcome
+# depends on processing order, so a fixed seed makes runs reproducible AND makes the crop-cache
+# A/B a true apples-to-apples comparison (baseline vs cache process the same order).
+seg_seed: 0
