@@ -216,21 +216,28 @@ def render_diffgs(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
             "alpha": rendered_alpha}
 
 
-def flashsplat_render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, 
+def flashsplat_render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0,
                   override_color = None, gt_mask = None, used_mask = None, unique_label = None, setpdb=False,
-                  obj_num = 2,):
+                  obj_num = 2, inference = False):
     """
-    Render the scene. 
-    
+    Render the scene.
+
     Background tensor (bg_color) must be on GPU!
+
+    inference=True skips the screen-space grad machinery (used only for training's densification):
+    no requires_grad, no full-size "+0" copy, no retain_grad. The seg loop renders under no_grad
+    and never backprops, so this is a pure per-call speedup with byte-identical pixels.
     """
- 
+
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
-    screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
-    try:
-        screenspace_points.retain_grad()
-    except:
-        pass
+    if inference:
+        screenspace_points = torch.zeros_like(pc.get_xyz)
+    else:
+        screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
+        try:
+            screenspace_points.retain_grad()
+        except:
+            pass
 
     # if unique_label is not None:
     #     pdb.set_trace()

@@ -27,3 +27,10 @@ use_mask_cache: true
 # depends on processing order, so a fixed seed makes runs reproducible AND makes the crop-cache
 # A/B a true apples-to-apples comparison (baseline vs cache process the same order).
 seg_seed: 0
+
+# frustum cull: a head is a compact 3D blob visible in only a few of the ~96 cameras, yet the
+# match + commit loops render it into ALL of them. With this on, each head's bounding sphere is
+# projected into every camera and the flashsplat render is skipped where the sphere misses the
+# image — the alpha there is provably empty, so the result is bit-identical, just far fewer renders.
+# true = on (recommended). false = old render-every-camera baseline (for the A/B benchmark).
+frustum_cull: true

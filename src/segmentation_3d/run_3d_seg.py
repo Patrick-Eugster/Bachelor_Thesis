@@ -3,6 +3,7 @@ import sys
 import csv
 import glob
 import json
+import math
 import time
 import random
 import shutil
@@ -117,6 +118,48 @@ def counts_to_obj_labels(all_counts, slackness=0.0):
     # print(f"{torch.sum(all_obj_labels, dim=1)[1]} Gaussians identified")  # too verbose: fires for every mask + every fine-tune iteration
     return all_obj_labels
 
+def head_sphere(gaussians, obj_used_mask):
+    """World-space bounding sphere (centroid, radius) of ONE head's Gaussians.
+    The radius is inflated by 3x the largest used scale so a Gaussian whose CENTER sits
+    just outside a view is still counted — its splat (~3 sigma) can still reach into the image.
+    That inflation is what keeps the frustum cull EXACT (bit-identical alpha)."""
+    pts = gaussians.get_xyz[obj_used_mask]
+    centroid = pts.mean(dim=0)
+    max_center = (pts - centroid).norm(dim=1).max()
+    max_scale = gaussians.get_scaling[obj_used_mask].max()
+    return centroid, max_center + 3.0 * max_scale
+
+def cull_cameras(cams, gaussians, obj_used_mask):
+    """Return only the cameras whose head bounding-sphere provably projects into the image.
+    Conservative: a camera is dropped ONLY when the whole sphere lands outside the frustum,
+    so flashsplat's alpha there is guaranteed empty — matching/painting is bit-identical to
+    rendering every camera, just faster. Vectorised over cams -> a single GPU->CPU sync."""
+    if len(cams) == 0:
+        return cams
+    centroid, radius = head_sphere(gaussians, obj_used_mask)
+    device = centroid.device
+    ph = torch.cat([centroid, torch.ones(1, device=device)])          # (4,) homogeneous world point
+    V = torch.stack([c.world_view_transform for c in cams])           # (N,4,4) world->camera
+    P = torch.stack([c.full_proj_transform for c in cams])            # (N,4,4) world->clip
+    tanx = torch.tensor([math.tan(c.FoVx * 0.5) for c in cams], device=device)
+    tany = torch.tensor([math.tan(c.FoVy * 0.5) for c in cams], device=device)
+    # row-vector convention (as in flashsplat_render): p_out = ph @ M
+    p_cam = torch.einsum('j,njk->nk', ph, V)                          # (N,4)
+    z = p_cam[:, 2]                                                   # camera-space depth (z_sign=+1 -> +ve in front)
+    p_clip = torch.einsum('j,njk->nk', ph, P)                        # (N,4)
+    w = p_clip[:, 3]
+    ndc_x = p_clip[:, 0] / w
+    ndc_y = p_clip[:, 1] / w
+    z_safe = torch.clamp(z, min=1e-6)                                # only the outside test divides by z (used where z>radius>0)
+    r_ndc_x = radius / (z_safe * tanx)                               # world radius -> NDC half-extent at depth z
+    r_ndc_y = radius / (z_safe * tany)
+    outside = (ndc_x - r_ndc_x > 1) | (ndc_x + r_ndc_x < -1) | \
+              (ndc_y - r_ndc_y > 1) | (ndc_y + r_ndc_y < -1)
+    fully_behind = (z + radius) <= 0                                 # whole sphere behind camera -> can't project -> drop
+    straddle = (z <= radius) & (~fully_behind)                      # sphere crosses camera plane -> NDC math unstable -> keep
+    keep = ((~fully_behind) & (straddle | (~outside))).cpu().tolist()  # one sync per call
+    return [c for c, k in zip(cams, keep) if k]
+
 def find_match(target_viewpoint_stack, gs_params, obj_used_mask, iou_threshold, dir_name, bbox_cache, mask_cache, verbose=False):
     """
     Input:
@@ -137,7 +180,7 @@ def find_match(target_viewpoint_stack, gs_params, obj_used_mask, iou_threshold, 
             torch.cuda.synchronize(); _t = time.perf_counter()
         with torch.no_grad():
             # Go through other cameras to find match
-            render_pkg = flashsplat_render(viewpoint_cam, gaussians, pipe, background, used_mask=obj_used_mask)
+            render_pkg = flashsplat_render(viewpoint_cam, gaussians, pipe, background, used_mask=obj_used_mask, inference=True)
             render_alpha = render_pkg["alpha"]
             pred_seg = render_alpha.squeeze() > 0.5  # stays on GPU — avoids GPU→CPU sync per render
         pred_bbox = get_bbox_from_mask_gpu(pred_seg)  # GPU torch ops, returns same (x,y,x,y) tuple
@@ -201,7 +244,7 @@ def update_processed_masks(processed_masks, new_mask_paths):
 
 ########### End of Find & Match helper methods ###########
         
-def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_vis_overlay, vis_max_heads, wandb_enabled=False, use_mask_cache=True, seg_seed=0):
+def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_vis_overlay, vis_max_heads, wandb_enabled=False, use_mask_cache=True, seg_seed=0, frustum_cull=True):
     # All 3DSeg results will be saved under 3dgs_model_path/segmentation_3d/(exp_name)
     out_dir = os.path.join(dataset.model_path, "segmentation_3d", exp_name)
     sub_dirs = ["ply", "img", "count"]
@@ -392,9 +435,12 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
         # Initialize a list of consistent segmentation for future fine-tuning
         matched_viewpoint_stack = [this_viewpoint_cam]
         matched_mask_paths = [this_mask_path]
-        
+
+        initial_targets = [vpt for vpt in viewpoint_stack if vpt.image_name != this_image_name]
+        if frustum_cull:
+            initial_targets = cull_cameras(initial_targets, gaussians, obj_used_mask)
         new_viewpoint_stack, new_mask_paths = find_match(
-            target_viewpoint_stack = [vpt for vpt in viewpoint_stack if vpt.image_name != this_image_name],
+            target_viewpoint_stack = initial_targets,
             gs_params = (gaussians, pipe, background),
             obj_used_mask = obj_used_mask,
             iou_threshold = iou_threshold,
@@ -429,10 +475,13 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
                 all_obj_labels = counts_to_obj_labels(all_counts)
                 obj_used_mask = (all_obj_labels[1]).bool()
                 # fine-tuning
+                finetune_targets = [
+                    vpt for vpt in viewpoint_stack if vpt.image_name not in {mpt.image_name for mpt in matched_viewpoint_stack}
+                ]
+                if frustum_cull:
+                    finetune_targets = cull_cameras(finetune_targets, gaussians, obj_used_mask)
                 new_viewpoint_stack, new_mask_paths = find_match(
-                    target_viewpoint_stack = [
-                        vpt for vpt in viewpoint_stack if vpt.image_name not in {mpt.image_name for mpt in matched_viewpoint_stack}
-                    ],
+                    target_viewpoint_stack = finetune_targets,
                     gs_params = (gaussians, pipe, background),
                     obj_used_mask = obj_used_mask,
                     iou_threshold = iou_threshold,
@@ -506,10 +555,15 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
 
             #### Evaluation of refined training ####
             # os.makedirs(f"{this_mask_dir}/overlay", exist_ok=True)
+            # frustum cull: only cameras the head actually projects into paint anything into
+            # twoD_seg_results (empty alpha elsewhere is a no-op paint), so this stays bit-identical.
+            commit_cams = viewpoint_stack + viewpoint_stack_eval
+            if frustum_cull:
+                commit_cams = cull_cameras(commit_cams, gaussians, obj_used_mask)
             overlay_futures = []
-            for i, viewpoint_cam in enumerate(viewpoint_stack + viewpoint_stack_eval):
+            for i, viewpoint_cam in enumerate(commit_cams):
                 with torch.no_grad():
-                    render_pkg = flashsplat_render(viewpoint_cam, gaussians, pipe, background, used_mask=obj_used_mask)
+                    render_pkg = flashsplat_render(viewpoint_cam, gaussians, pipe, background, used_mask=obj_used_mask, inference=True)
                     render_alpha = render_pkg["alpha"].squeeze().detach().cpu()
                     pred_seg = render_alpha.numpy() > 0.5
                     mask = Image.fromarray(np.where(pred_seg, 255, 0).astype(np.uint8), mode='L')
@@ -624,6 +678,8 @@ if __name__ == "__main__":
     parser.add_argument("--use_mask_cache", action="store_true", default=True, help="Pre-decode masks into a tight-bbox crop cache (big speedup, bit-identical)")
     parser.add_argument("--no_mask_cache", dest="use_mask_cache", action="store_false", help="Disable the crop cache (old decode-per-candidate baseline)")
     parser.add_argument("--seg_seed", type=int, default=0, help="Seed for the mask-processing shuffle (reproducible seg)")
+    parser.add_argument("--frustum_cull", action="store_true", default=True, help="Skip rendering a head into cameras its bounding sphere misses (big speedup, bit-identical)")
+    parser.add_argument("--no_frustum_cull", dest="frustum_cull", action="store_false", help="Render every camera (old behaviour, for the A/B baseline)")
     parser.add_argument("--wandb_enabled", action="store_true", default=False)
     args = parser.parse_args(sys.argv[1:])
     print("Optimizing " + args.model_path)
@@ -631,4 +687,4 @@ if __name__ == "__main__":
     training(lp.extract(args), op.extract(args), pp.extract(args),
              args.load_iteration, args.exp_name, args.iou_threshold,
              args.save_vis_overlay, args.vis_max_heads, args.wandb_enabled,
-             use_mask_cache=args.use_mask_cache, seg_seed=args.seg_seed)
+             use_mask_cache=args.use_mask_cache, seg_seed=args.seg_seed, frustum_cull=args.frustum_cull)
