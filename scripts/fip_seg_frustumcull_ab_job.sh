@@ -30,6 +30,7 @@
 RECON_EXP=test_absgrad_v2   # existing trained model folder under vanilla_3dgs/ (reused, not retrained)
 REF=seg_cropcache_v3        # the known-good no-cull, cache-on reference already on disk
 EXPECT_MD5=0bcd708dfe026d1a4ecd2f3f0d68c386   # md5 of REF's all_obj_labels.pth — the exactness gate
+SEGEXP=${SEGEXP:-seg_cull_v3}   # treatment output folder; bump per code version (v2 = + lift inference + 6-bucket timers)
 
 module purge
 source ~/miniconda3/etc/profile.d/conda.sh
@@ -70,12 +71,12 @@ WHEAT_SEG_TIMING=1 python src/run_reconstruction.py \
   plot=plot_461 experiment_name=$RECON_EXP $PP \
   run_seg=true run_eval=true run_eval_2d=true \
   segmentation_3d.frustum_cull=true \
-  segmentation_3d.exp_name=seg_cull_v1
+  segmentation_3d.exp_name=$SEGEXP
 
 echo "==================== DONE — exactness gate ===================="
 date
 SEG=results/reconstruction/fip/plot_461/vanilla_3dgs/$RECON_EXP/segmentation_3d
-CULL_PTH=$SEG/seg_cull_v1/all_obj_labels.pth
+CULL_PTH=$SEG/$SEGEXP/all_obj_labels.pth
 REF_PTH=$SEG/$REF/all_obj_labels.pth
 
 echo "--- md5 all_obj_labels.pth ---"
@@ -90,8 +91,8 @@ else
   echo "  -> the 3-sigma sphere margin may be too tight, or inference=True changed pixels. Do NOT ship."
 fi
 
-echo "--- cull   seg_summary.json ---";  cat $SEG/seg_cull_v1/seg_summary.json 2>/dev/null
-echo "--- cull   metrics_2d.json  ---";  cat $SEG/seg_cull_v1/eval_2d/metrics_2d.json 2>/dev/null
+echo "--- cull   seg_summary.json ---";  cat $SEG/$SEGEXP/seg_summary.json 2>/dev/null
+echo "--- cull   metrics_2d.json  ---";  cat $SEG/$SEGEXP/eval_2d/metrics_2d.json 2>/dev/null
 if [ "$RUN_BASELINE" = "1" ]; then
   echo "--- nocull seg_summary.json ---";  cat $SEG/seg_nocull_v1/seg_summary.json 2>/dev/null
   echo "--- nocull md5 (should also equal $EXPECT_MD5) ---"; md5sum $SEG/seg_nocull_v1/all_obj_labels.pth 2>/dev/null

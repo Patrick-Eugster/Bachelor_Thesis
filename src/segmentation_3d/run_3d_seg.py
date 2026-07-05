@@ -5,6 +5,7 @@ import glob
 import json
 import math
 import time
+import hashlib
 import random
 import shutil
 import string
@@ -40,7 +41,9 @@ from gaussians.utils.wheatgs_utils import (
 # Optional render-vs-match timing (set WHEAT_SEG_TIMING=1). Off by default so the
 # cuda.synchronize() calls it needs don't slow normal runs.
 _SEG_TIMING = os.environ.get("WHEAT_SEG_TIMING") == "1"
-_SEG_TIMER = {"render": 0.0, "match": 0.0}
+# render/match = inside find_match; lift_decode/lift_render = opt_label_w_seg (the FULL-model lift);
+# ilp = the FlashSplat multi_instance_opt solve; commit_render = the per-head 2DSeg paint loop.
+_SEG_TIMER = {"render": 0.0, "match": 0.0, "lift_decode": 0.0, "lift_render": 0.0, "ilp": 0.0, "commit_render": 0.0}
 
 def find_new_mask_dir(overlap_counter, num_wheat_head):
     """Return next letter suffix (a, b, c…) for an overlapping head, tracked in memory."""
@@ -75,30 +78,54 @@ def multi_instance_opt(all_contrib, gamma=0.):
         all_obj_labels[obj_idx] = obj_label
     return all_obj_labels
 
-def opt_label_w_seg(gaussians : GaussianModel, 
-                    viewpoint_stack : List[Camera], 
-                    mask_paths : List[str], 
-                    pipeline, background, pts_filter=None):
+def opt_label_w_seg(gaussians : GaussianModel,
+                    viewpoint_stack : List[Camera],
+                    mask_paths : List[str],
+                    pipeline, background, pts_filter=None, mask_cache=None):
     """
     Helper function that wraps Gaussians label optimization schema into one function
     return:
         all_counts: counts that are additive
         all_obj_labels:
+    mask_cache: optional {path -> crop entry} so the FULL-frame gt_mask can be rebuilt from the cached
+    crop instead of re-decoding the PNG (lossless: a mask is 0 outside its bbox). Falls back to PNG
+    decode on a cache miss / when the cache is off.
     """
     assert len(viewpoint_stack) == len(mask_paths)
-    
+
     all_counts = None
     for idx, viewpoint_cam in enumerate(viewpoint_stack):
-        with Image.open(mask_paths[idx]) as temp:
-            gt_mask = binarize_mask(PILtoTorch(temp.copy(), viewpoint_cam.resolution)).squeeze().to("cuda")
-            assert viewpoint_cam.original_image.shape[-2:] == gt_mask.shape
+        if _SEG_TIMING:
+            _t = time.perf_counter()
+        entry = mask_cache.get(mask_paths[idx], "MISS") if mask_cache else "MISS"
+        if entry == "MISS":
+            # fallback: decode the PNG (cache off, or this mask wasn't cached) — original behaviour
+            with Image.open(mask_paths[idx]) as temp:
+                gt_mask = binarize_mask(PILtoTorch(temp.copy(), viewpoint_cam.resolution)).squeeze().to("cuda")
+        else:
+            # rebuild the full-frame gt_mask from the cached tight-bbox crop (no PNG decode).
+            # Byte-identical to the decode path (verified): the mask is 0 outside its bbox.
+            W, H = viewpoint_cam.resolution                      # cam.resolution is (W,H); gt_mask is (H,W)
+            gt_mask = torch.zeros((H, W), dtype=torch.float32, device="cuda")
+            if entry is not None:                                # None = empty mask -> all zeros
+                y0, y1, x0, x1, crop, _area = entry
+                gt_mask[y0:y1, x0:x1] = crop.to("cuda", dtype=torch.float32)
+        assert viewpoint_cam.original_image.shape[-2:] == gt_mask.shape
+        if _SEG_TIMING:
+            torch.cuda.synchronize()  # wait for the gt_mask H2D copy so it's counted in decode, not lost
+            _SEG_TIMER["lift_decode"] += time.perf_counter() - _t
+            _t = time.perf_counter()
         with torch.no_grad():
-            render_pkg = flashsplat_render(viewpoint_cam, gaussians, pipeline, background, gt_mask=gt_mask, obj_num=1)
+            # inference=True: the lift renders the FULL model (no used_mask) but never backprops, so skip
+            # the screen-space grad machinery — pure speedup on the heaviest render, byte-identical counts.
+            render_pkg = flashsplat_render(viewpoint_cam, gaussians, pipeline, background, gt_mask=gt_mask, obj_num=1, inference=True)
             rendering = render_pkg["render"]
             used_count = render_pkg["used_count"]
             if all_counts is None:
                 all_counts = torch.zeros_like(used_count)
             all_counts += used_count
+        if _SEG_TIMING:
+            torch.cuda.synchronize(); _SEG_TIMER["lift_render"] += time.perf_counter() - _t
     # only flush VRAM cache when actually under memory pressure (>75% reserved)
     if torch.cuda.memory_reserved(0) / torch.cuda.get_device_properties(0).total_memory > 0.75:
         torch.cuda.empty_cache()
@@ -114,50 +141,53 @@ def counts_to_obj_labels(all_counts, slackness=0.0):
     Input: additive all_counts
     Output: all_obj_labels
     """
+    if _SEG_TIMING:
+        torch.cuda.synchronize(); _t = time.perf_counter()
     all_obj_labels = multi_instance_opt(all_counts, slackness)
+    if _SEG_TIMING:
+        torch.cuda.synchronize(); _SEG_TIMER["ilp"] += time.perf_counter() - _t
     # print(f"{torch.sum(all_obj_labels, dim=1)[1]} Gaussians identified")  # too verbose: fires for every mask + every fine-tune iteration
     return all_obj_labels
 
-def head_sphere(gaussians, obj_used_mask):
-    """World-space bounding sphere (centroid, radius) of ONE head's Gaussians.
-    The radius is inflated by 3x the largest used scale so a Gaussian whose CENTER sits
-    just outside a view is still counted — its splat (~3 sigma) can still reach into the image.
-    That inflation is what keeps the frustum cull EXACT (bit-identical alpha)."""
-    pts = gaussians.get_xyz[obj_used_mask]
-    centroid = pts.mean(dim=0)
-    max_center = (pts - centroid).norm(dim=1).max()
-    max_scale = gaussians.get_scaling[obj_used_mask].max()
-    return centroid, max_center + 3.0 * max_scale
+# frustum-cull safety factor: the rasterizer bounds each Gaussian's splat at ~3 sigma, so we treat
+# its on-screen footprint as (sigma * max_scale). Tunable per-run via env if a dataset ever needs more
+# headroom, but the per-Gaussian test below is already conservative at 3.
+_CULL_SIGMA = float(os.environ.get("WHEAT_SEG_CULL_SIGMA", "3.0"))
 
 def cull_cameras(cams, gaussians, obj_used_mask):
-    """Return only the cameras whose head bounding-sphere provably projects into the image.
-    Conservative: a camera is dropped ONLY when the whole sphere lands outside the frustum,
-    so flashsplat's alpha there is guaranteed empty — matching/painting is bit-identical to
-    rendering every camera, just faster. Vectorised over cams -> a single GPU->CPU sync."""
+    """Return only the cameras the head can actually render into. PER-GAUSSIAN test (no single-sphere
+    approximation): project EVERY head Gaussian's centre at ITS OWN depth and keep a camera if ANY
+    Gaussian's splat (centre +/- sigma*max_scale, in NDC) overlaps the image. A Gaussian's true
+    anisotropic 3-sigma footprint is contained in that isotropic bound, and each point uses its own
+    depth, so the keep-set is a conservative superset of what flashsplat actually draws -> bit-identical
+    match/paint on ANY view geometry. This replaces the old one-sphere-one-depth test, whose first-order
+    NDC-radius estimate under-projected on oblique wide-baseline views and was slightly lossy on phone.
+    Vectorised over (cams x Gaussians) -> a single GPU->CPU sync."""
     if len(cams) == 0:
         return cams
-    centroid, radius = head_sphere(gaussians, obj_used_mask)
-    device = centroid.device
-    ph = torch.cat([centroid, torch.ones(1, device=device)])          # (4,) homogeneous world point
-    V = torch.stack([c.world_view_transform for c in cams])           # (N,4,4) world->camera
-    P = torch.stack([c.full_proj_transform for c in cams])            # (N,4,4) world->clip
-    tanx = torch.tensor([math.tan(c.FoVx * 0.5) for c in cams], device=device)
-    tany = torch.tensor([math.tan(c.FoVy * 0.5) for c in cams], device=device)
-    # row-vector convention (as in flashsplat_render): p_out = ph @ M
-    p_cam = torch.einsum('j,njk->nk', ph, V)                          # (N,4)
-    z = p_cam[:, 2]                                                   # camera-space depth (z_sign=+1 -> +ve in front)
-    p_clip = torch.einsum('j,njk->nk', ph, P)                        # (N,4)
-    w = p_clip[:, 3]
-    ndc_x = p_clip[:, 0] / w
-    ndc_y = p_clip[:, 1] / w
-    z_safe = torch.clamp(z, min=1e-6)                                # only the outside test divides by z (used where z>radius>0)
-    r_ndc_x = radius / (z_safe * tanx)                               # world radius -> NDC half-extent at depth z
-    r_ndc_y = radius / (z_safe * tany)
-    outside = (ndc_x - r_ndc_x > 1) | (ndc_x + r_ndc_x < -1) | \
-              (ndc_y - r_ndc_y > 1) | (ndc_y + r_ndc_y < -1)
-    fully_behind = (z + radius) <= 0                                 # whole sphere behind camera -> can't project -> drop
-    straddle = (z <= radius) & (~fully_behind)                      # sphere crosses camera plane -> NDC math unstable -> keep
-    keep = ((~fully_behind) & (straddle | (~outside))).cpu().tolist()  # one sync per call
+    pts = gaussians.get_xyz[obj_used_mask]                            # (G,3) this head's centres
+    scale = gaussians.get_scaling[obj_used_mask].max(dim=1).values    # (G,) isotropic upper bound per Gaussian
+    device = pts.device
+    G = pts.shape[0]
+    ph = torch.cat([pts, torch.ones(G, 1, device=device)], dim=1)    # (G,4) homogeneous
+    V = torch.stack([c.world_view_transform for c in cams])          # (N,4,4) world->camera
+    P = torch.stack([c.full_proj_transform for c in cams])           # (N,4,4) world->clip
+    tanx = torch.tensor([math.tan(c.FoVx * 0.5) for c in cams], device=device).view(-1, 1)  # (N,1)
+    tany = torch.tensor([math.tan(c.FoVy * 0.5) for c in cams], device=device).view(-1, 1)
+    # row-vector convention (as in flashsplat_render): p_out[n,g] = ph[g] @ M[n]
+    p_cam = torch.einsum('gj,njk->ngk', ph, V)                       # (N,G,4)
+    z = p_cam[:, :, 2]                                               # (N,G) depth per Gaussian per cam
+    p_clip = torch.einsum('gj,njk->ngk', ph, P)                     # (N,G,4)
+    w = p_clip[:, :, 3]
+    ndc_x = p_clip[:, :, 0] / w
+    ndc_y = p_clip[:, :, 1] / w
+    z_safe = z.clamp(min=1e-6)                                       # small +z -> huge radius -> keeps (safe)
+    r_x = (_CULL_SIGMA * scale).unsqueeze(0) / (z_safe * tanx)       # (N,G) screen radius in NDC
+    r_y = (_CULL_SIGMA * scale).unsqueeze(0) / (z_safe * tany)
+    in_front = z > 0                                                 # behind the camera -> can't render
+    in_img = in_front & (ndc_x - r_x <= 1) & (ndc_x + r_x >= -1) \
+                      & (ndc_y - r_y <= 1) & (ndc_y + r_y >= -1)     # (N,G) this Gaussian touches the image
+    keep = in_img.any(dim=1).cpu().tolist()                         # camera kept if ANY Gaussian is in
     return [c for c, k in zip(cams, keep) if k]
 
 def find_match(target_viewpoint_stack, gs_params, obj_used_mask, iou_threshold, dir_name, bbox_cache, mask_cache, verbose=False):
@@ -310,7 +340,11 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
         Bit-identical to the old path: same resize, same >0 binarize, same bbox, same compact crop."""
         mask_path, resolution = job
         with Image.open(mask_path) as temp:
-            arr = np.asarray(temp.resize(resolution))  # (H,W) uint8 for 'L' masks — SAME resize as PILtoTorch
+            # skip the resize when it's the identity (resolution=1 -> resolution == native size); a
+            # same-size PIL resize is byte-identical to the raw pixels (verified 0-diff), so this is
+            # lossless and just avoids a full-frame resample on every mask.
+            temp = temp if tuple(resolution) == temp.size else temp.resize(resolution)
+            arr = np.asarray(temp)  # (H,W) uint8 for 'L' masks
         # binarize_mask semantics: 1-channel -> pixel>0; 3-channel -> any channel>0. SAM masks are 0/255.
         m_np = (arr > 0) if arr.ndim == 2 else (arr > 0).any(axis=2)  # full-frame numpy bool, freed on return
         ys, xs = np.nonzero(m_np)
@@ -333,32 +367,85 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
         print(f"mask crop cache DISABLED via {_why} -> baseline decode-per-candidate path")
     else:
         _jobs = [(mp, cam.resolution) for cam in viewpoint_stack for mp in cam.mask_paths]
-        MAX_IN_FLIGHT = 16  # cap concurrent+buffered decodes so full-frame masks can't pile up
-        _it = iter(_jobs)
-        _done_n = 0
-        with ThreadPoolExecutor(max_workers=4) as _cache_exec:  # 4 concurrent decodes -> small transient spike
-            futures = {_cache_exec.submit(_decode_crop, job) for job in islice(_it, MAX_IN_FLIGHT)}
-            with tqdm(total=len(_jobs), desc="Caching mask crops") as _pbar:
-                while futures:
-                    done, futures = wait(futures, return_when=FIRST_COMPLETED)
-                    for fut in done:
-                        mask_path, entry = fut.result()
-                        mask_cache[mask_path] = entry  # entry already finalized (or None)
-                        _pbar.update(1)
-                        _done_n += 1
-                        if _done_n % 2000 == 0:  # trace RAM growth to catch a leak during the build
-                            _cmb = sum(e[4].numel() for e in mask_cache.values() if e is not None) / 1e6
-                            tqdm.write(f"[RAM] build {_done_n}/{len(_jobs)}: "
-                                       f"{resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6:.1f} GB peak, "
-                                       f"cache so far {_cmb:.0f} MB")
-                        nxt = next(_it, None)
-                        if nxt is not None:
-                            futures.add(_cache_exec.submit(_decode_crop, nxt))  # keep the pipeline topped up
-        _sizes = [e[4].numel() for e in mask_cache.values() if e is not None]
-        _cache_mb = sum(_sizes) / 1e6
-        print(f"Cached {len(mask_cache)} mask crops in CPU RAM ({_cache_mb:.0f} MB, "
-              f"largest {max(_sizes) if _sizes else 0} px, mean {int(sum(_sizes)/max(len(_sizes),1))} px) "
-              f"in {time.time() - t_cache:.0f}s")
+
+        # ---- persistent disk cache -------------------------------------------------------------
+        # The crops are a deterministic function of (masks, resolution), so a RERUN on the same plot
+        # (our A/B sweeps) can LOAD them instead of re-decoding ~22k PNGs (~20 min -> seconds). Saved
+        # NEXT TO THE MASKS so every seg run on that plot shares one file; keyed by a manifest =
+        # resolution + hash of (basename,size) over all masks -> auto-rebuilds if any mask changed.
+        # Keys stored by BASENAME so the file is portable across machines (Euler <-> local). Env
+        # WHEAT_SEG_NO_DISK_CACHE=1 skips load+save (force in-memory rebuild).
+        _masks_dir = os.path.dirname(_jobs[0][0]) if _jobs else None
+        _res = tuple(_jobs[0][1]) if _jobs else None
+        _no_disk = os.environ.get("WHEAT_SEG_NO_DISK_CACHE") == "1"
+        _disk_file = (os.path.join(_masks_dir, f"crop_cache_{_res[0]}x{_res[1]}.pt")
+                      if _masks_dir and _res else None)
+        _manifest = None
+        if _jobs:
+            _h = hashlib.md5()
+            for mp, _ in sorted(_jobs):
+                _h.update(f"{os.path.basename(mp)}:{os.path.getsize(mp)};".encode())
+            _manifest = _h.hexdigest()
+
+        _loaded = False
+        if _disk_file and not _no_disk and os.path.exists(_disk_file):
+            try:
+                _blob = torch.load(_disk_file, weights_only=False)
+                if _blob.get("manifest") == _manifest and tuple(_blob.get("resolution", ())) == _res:
+                    mask_cache = {os.path.join(_masks_dir, b): e for b, e in _blob["crops"].items()}
+                    _loaded = True
+                    print(f"Loaded mask crop cache from disk: {_disk_file} "
+                          f"({len(mask_cache)} crops in {time.time() - t_cache:.1f}s -> skipped rebuild)")
+                else:
+                    print(f"Disk mask cache {_disk_file} is stale (masks changed) -> rebuilding")
+            except Exception as _e:
+                print(f"Disk mask cache unreadable ({_e}) -> rebuilding")
+
+        if not _loaded:
+            # workers sized to the ACTUAL cpu allocation (sched_getaffinity respects SLURM cpus-per-task),
+            # minus ONE core reserved for the main/coordinator thread (submits jobs + fills the cache).
+            # PIL releases the GIL during the C decode, so worker threads genuinely parallelise; RAM stays
+            # flat (pure-numpy decode, no leak). Decode is BOUNDED-in-flight so full-frame masks can't pile up.
+            try:
+                _ncpu = len(os.sched_getaffinity(0))
+            except AttributeError:
+                _ncpu = os.cpu_count() or 4
+            _n_workers = max(1, min(8, _ncpu - 1))
+            MAX_IN_FLIGHT = 4 * _n_workers
+            _it = iter(_jobs)
+            _done_n = 0
+            with ThreadPoolExecutor(max_workers=_n_workers) as _cache_exec:
+                futures = {_cache_exec.submit(_decode_crop, job) for job in islice(_it, MAX_IN_FLIGHT)}
+                with tqdm(total=len(_jobs), desc=f"Caching mask crops ({_n_workers}w)") as _pbar:
+                    while futures:
+                        done, futures = wait(futures, return_when=FIRST_COMPLETED)
+                        for fut in done:
+                            mask_path, entry = fut.result()
+                            mask_cache[mask_path] = entry  # entry already finalized (or None)
+                            _pbar.update(1)
+                            _done_n += 1
+                            if _done_n % 2000 == 0:  # trace RAM growth to catch a leak during the build
+                                _cmb = sum(e[4].numel() for e in mask_cache.values() if e is not None) / 1e6
+                                tqdm.write(f"[RAM] build {_done_n}/{len(_jobs)}: "
+                                           f"{resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6:.1f} GB peak, "
+                                           f"cache so far {_cmb:.0f} MB")
+                            nxt = next(_it, None)
+                            if nxt is not None:
+                                futures.add(_cache_exec.submit(_decode_crop, nxt))  # keep the pipeline topped up
+            _sizes = [e[4].numel() for e in mask_cache.values() if e is not None]
+            _cache_mb = sum(_sizes) / 1e6
+            print(f"Cached {len(mask_cache)} mask crops in CPU RAM ({_cache_mb:.0f} MB, "
+                  f"largest {max(_sizes) if _sizes else 0} px, mean {int(sum(_sizes)/max(len(_sizes),1))} px) "
+                  f"in {time.time() - t_cache:.0f}s with {_n_workers} workers")
+            # persist for next time (atomic write via .tmp + rename; basename keys -> portable)
+            if _disk_file and not _no_disk:
+                try:
+                    _by_base = {os.path.basename(mp): mask_cache[mp] for mp, _ in _jobs if mp in mask_cache}
+                    torch.save({"manifest": _manifest, "resolution": _res, "crops": _by_base}, _disk_file + ".tmp")
+                    os.replace(_disk_file + ".tmp", _disk_file)
+                    print(f"Saved mask crop cache to disk: {_disk_file} (reused on next seg run of this plot)")
+                except Exception as _e:
+                    print(f"Could not save disk mask cache ({_e}) -> continuing (rebuild next time)")
 
     twoD_seg_results = {} # 2D segmentation results update through the pipeline
     os.makedirs(f"{out_dir}/2DSeg", exist_ok=True)
@@ -424,7 +511,7 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
         
         # Optimize Gaussians' labels w.r.t ONE segmentation
         # NOTE: all_counts is additive
-        all_counts = opt_label_w_seg(gaussians, [this_viewpoint_cam], [this_mask_path], pipe, background, pts_filter)
+        all_counts = opt_label_w_seg(gaussians, [this_viewpoint_cam], [this_mask_path], pipe, background, pts_filter, mask_cache=mask_cache)
         all_obj_labels = counts_to_obj_labels(all_counts)
         if torch.sum(all_obj_labels, dim=1)[1] == 0:
             tqdm.write(f"WARNING: Can't identify Gaussians for mask {this_mask_name}, skipping")
@@ -469,7 +556,7 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
                 # print(f"-- fine-tuning iteration {i} --")  # up to 100x per head x 300 heads = 30000 lines
                 assert len(new_viewpoint_stack) == len(new_mask_paths)
                 # Update 3D Segmentation
-                update_counts = opt_label_w_seg(gaussians, new_viewpoint_stack, new_mask_paths, pipe, background)
+                update_counts = opt_label_w_seg(gaussians, new_viewpoint_stack, new_mask_paths, pipe, background, mask_cache=mask_cache)
                 assert update_counts.shape == all_counts.shape
                 all_counts += update_counts # update all counts
                 all_obj_labels = counts_to_obj_labels(all_counts)
@@ -563,8 +650,12 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
             overlay_futures = []
             for i, viewpoint_cam in enumerate(commit_cams):
                 with torch.no_grad():
+                    if _SEG_TIMING:
+                        torch.cuda.synchronize(); _t = time.perf_counter()
                     render_pkg = flashsplat_render(viewpoint_cam, gaussians, pipe, background, used_mask=obj_used_mask, inference=True)
                     render_alpha = render_pkg["alpha"].squeeze().detach().cpu()
+                    if _SEG_TIMING:
+                        torch.cuda.synchronize(); _SEG_TIMER["commit_render"] += time.perf_counter() - _t
                     pred_seg = render_alpha.numpy() > 0.5
                     mask = Image.fromarray(np.where(pred_seg, 255, 0).astype(np.uint8), mode='L')
                     # mask.save(f"{this_mask_dir}/masks/{viewpoint_cam.image_name}.jpg")
@@ -638,9 +729,18 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
         print(f"  Peak GPU VRAM:           {torch.cuda.max_memory_allocated() / 1e9:.1f} GB alloc / "
               f"{torch.cuda.max_memory_reserved() / 1e9:.1f} GB reserved")
     if _SEG_TIMING:
-        tot = _SEG_TIMER["render"] + _SEG_TIMER["match"]
-        print(f"  find_match time split:   render {_SEG_TIMER['render']:.0f}s ({_SEG_TIMER['render']/tot*100:.0f}%)  "
-              f"match/IoU {_SEG_TIMER['match']:.0f}s ({_SEG_TIMER['match']/tot*100:.0f}%)" if tot > 0 else "  (no timing)")
+        tot = sum(_SEG_TIMER.values())
+        print("  ---- seg time breakdown (WHEAT_SEG_TIMING) ----")
+        if tot > 0:
+            order = ["lift_render", "commit_render", "render", "match", "ilp", "lift_decode"]
+            labels = {"lift_render": "lift render (full model)", "commit_render": "commit render (2DSeg)",
+                      "render": "find_match render", "match": "find_match match/IoU",
+                      "ilp": "ILP solve", "lift_decode": "lift mask decode"}
+            for k in order:
+                print(f"    {labels[k]:<26} {_SEG_TIMER[k]:8.0f}s ({_SEG_TIMER[k]/tot*100:5.1f}%)")
+            print(f"    {'TOTAL (timed)':<26} {tot:8.0f}s   (untimed = overlay saves / IO / model+image load)")
+        else:
+            print("    (no timing)")
     print(f"{'='*60}")
 
     # persist the headline numbers to a small JSON so downstream code (e.g. head-count vs GT eval) can
