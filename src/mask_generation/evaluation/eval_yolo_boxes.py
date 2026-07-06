@@ -888,7 +888,13 @@ def evaluate_all_plots(cfg):
         plot_name_safe = plot_name.replace(os.sep, '_')
         print(f"--- Plot: {plot_name}  |  Image: {stem} ---")
 
-        image_path   = os.path.join(input_plot_dir, 'images', stem + '.png')    # images stay in input_plots/
+        # images stay in input_plots/ — FIP is .png, phone is .jpg, so glob the extension
+        # instead of hardcoding (like eval_seg_2d.py does). Take the first match.
+        img_hits = glob.glob(os.path.join(input_plot_dir, 'images', stem + '.*'))
+        if not img_hits:
+            print(f"    No image found for {stem} in {os.path.join(input_plot_dir, 'images')} — skipping")
+            continue
+        image_path   = img_hits[0]
         pred_pt_path = os.path.join(result_plot_dir, 'bboxes', stem + '.pt')    # bboxes now in results/
         viz_out_path = os.path.join(viz_dir, f"{plot_name_safe}_{stem}_matches.jpg")
 

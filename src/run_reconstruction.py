@@ -370,7 +370,7 @@ def _run_pipeline(cfg):
             "--vis_max_heads", str(cfg.segmentation_3d.vis_max_heads),
         ] + seg_dir_flag + ([] if cfg.segmentation_3d.save_vis_overlay else ["--no_save_vis_overlay"])
           + ([] if cfg.segmentation_3d.use_mask_cache else ["--no_mask_cache"])
-          + ([] if cfg.segmentation_3d.get("frustum_cull", True) else ["--no_frustum_cull"])
+          + (["--frustum_cull"] if cfg.segmentation_3d.get("frustum_cull", False) else ["--no_frustum_cull"])
           + ["--seg_seed", str(cfg.segmentation_3d.seg_seed)]
           + data_device_flag + pp_flag + wandb_flag, log_file, depends_on="train")
         if seg_tee:

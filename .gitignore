@@ -52,7 +52,8 @@ src/mask_generation/weights/
 input_plots/
 results/
 demoanlage2025_v0/
-slurm_logs/          # Euler SLURM .out/.err logs pulled back locally — never commit, never push up
+# Euler SLURM .out/.err logs pulled back locally — never commit, never push up
+slurm_logs/
 
 # --- Weight/model files (keep yolov5 configs) ---
 **/*.pt

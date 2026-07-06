@@ -28,9 +28,11 @@ use_mask_cache: true
 # A/B a true apples-to-apples comparison (baseline vs cache process the same order).
 seg_seed: 0
 
-# frustum cull: a head is a compact 3D blob visible in only a few of the ~96 cameras, yet the
-# match + commit loops render it into ALL of them. With this on, each head's bounding sphere is
-# projected into every camera and the flashsplat render is skipped where the sphere misses the
-# image — the alpha there is provably empty, so the result is bit-identical, just far fewer renders.
-# true = on (recommended). false = old render-every-camera baseline (for the A/B benchmark).
-frustum_cull: true
+# frustum cull: skip rendering a head into cameras where its Gaussians don't project (per-Gaussian
+# test). Provably bit-identical (verified lossless on 7 FIP plots + phone). BUT it barely helps on
+# the capture geometries we have: FIP overhead + phone close-orbit both put every head in ~every
+# view, so there's almost nothing to skip — and the per-head cull matmul made phone slightly SLOWER
+# (5h41m off vs 5h56m on). The real seg speedups are the crop cache (FIP ~7×) and inference=True
+# (phone ~2.7×), not the cull. So DEFAULT OFF. Turn it on (true) only for a capture where heads are
+# genuinely local to a few views (a long linear sweep) — it's lossless either way.
+frustum_cull: false

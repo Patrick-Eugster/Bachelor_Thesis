@@ -47,6 +47,23 @@ def load_json(path):
         return None
 
 
+def dir_md5(folder, ext=".pt"):
+    """Combined md5 over all <ext> files in a folder (sorted, filename included so a rename shows).
+    None if the folder is missing/empty — e.g. a lean pull that excluded 2DSeg/."""
+    if not os.path.isdir(folder):
+        return None
+    files = sorted(f for f in os.listdir(folder) if f.endswith(ext))
+    if not files:
+        return None
+    h = hashlib.md5()
+    for name in files:
+        h.update(name.encode())
+        with open(os.path.join(folder, name), "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+    return h.hexdigest()
+
+
 def fingerprint(run):
     """Collect the identity-relevant numbers for one seg run folder."""
     summ = load_json(os.path.join(run, "seg_summary.json")) or {}
@@ -56,6 +73,7 @@ def fingerprint(run):
     nrows = sum(1 for _ in open(rcsv)) if os.path.isfile(rcsv) else None
     return {
         "md5": file_md5(os.path.join(run, "all_obj_labels.pth")),
+        "seg2d_md5": dir_md5(os.path.join(run, "2DSeg")),  # 2D commit-loop output (separate cull path)
         "heads": summ.get("wheat_heads_found"),
         "matched": summ.get("masks_matched"),
         "total": summ.get("total_masks"),
@@ -82,20 +100,29 @@ def main():
             sys.exit(f"ERROR: no all_obj_labels.pth in {args.run_b}")
         print(f"A: {args.run_a}")
         print(f"B: {args.run_b}\n")
-        for name, key in [("all_obj_labels md5", "md5"), ("heads", "heads"),
-                          ("matched masks", "matched"), ("total masks", "total"),
+        for name, key in [("all_obj_labels md5", "md5"), ("2DSeg maps md5", "seg2d_md5"),
+                          ("heads", "heads"), ("matched masks", "matched"), ("total masks", "total"),
                           ("2D IoU", "iou"), ("results.csv rows", "csv_rows")]:
             va, vb = a[key], b[key]
-            print(f"  [{'OK  ' if va == vb else 'DIFF'}] {name:20} A={va}  B={vb}")
-        identical = a["md5"] == b["md5"]
+            tag = "OK  " if va == vb else ("SKIP" if va is None or vb is None else "DIFF")
+            print(f"  [{tag}] {name:20} A={va}  B={vb}")
+        # 3D labels are the primary artifact; 2DSeg is the belt-and-suspenders check on the commit-loop
+        # cull. Only count 2DSeg when both runs actually have it (a lean pull may exclude 2DSeg/).
+        labels_same = a["md5"] == b["md5"]
+        seg2d_present = a["seg2d_md5"] is not None and b["seg2d_md5"] is not None
+        seg2d_same = a["seg2d_md5"] == b["seg2d_md5"]
+        identical = labels_same and (seg2d_same or not seg2d_present)
         print()
         if identical:
-            print("VERDICT: ✅ BYTE-IDENTICAL (same all_obj_labels.pth md5)")
+            note = "3D labels + 2DSeg" if seg2d_present else "3D labels; 2DSeg not compared (missing in one run)"
+            print(f"VERDICT: ✅ BYTE-IDENTICAL ({note})")
         else:
-            print("VERDICT: ❌ DIFFERENT — the 3D segmentation is NOT identical")
-            if a["heads"] is not None and b["heads"] is not None:
-                print(f"         head delta {(b['heads'] or 0) - (a['heads'] or 0):+d}, "
+            print("VERDICT: ❌ DIFFERENT — the segmentation is NOT identical")
+            if not labels_same and a["heads"] is not None and b["heads"] is not None:
+                print(f"         all_obj_labels differ: head delta {(b['heads'] or 0) - (a['heads'] or 0):+d}, "
                       f"match delta {(b['matched'] or 0) - (a['matched'] or 0):+d}")
+            if labels_same and seg2d_present and not seg2d_same:
+                print("         3D labels MATCH but 2DSeg maps DIFFER — commit-loop cull is not lossless!")
         sys.exit(0 if identical else 1)
 
     # --- mode 2: gate one run against an expected md5 ---

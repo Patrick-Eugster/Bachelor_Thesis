@@ -274,7 +274,7 @@ def update_processed_masks(processed_masks, new_mask_paths):
 
 ########### End of Find & Match helper methods ###########
         
-def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_vis_overlay, vis_max_heads, wandb_enabled=False, use_mask_cache=True, seg_seed=0, frustum_cull=True):
+def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_vis_overlay, vis_max_heads, wandb_enabled=False, use_mask_cache=True, seg_seed=0, frustum_cull=False):
     # All 3DSeg results will be saved under 3dgs_model_path/segmentation_3d/(exp_name)
     out_dir = os.path.join(dataset.model_path, "segmentation_3d", exp_name)
     sub_dirs = ["ply", "img", "count"]
@@ -778,8 +778,8 @@ if __name__ == "__main__":
     parser.add_argument("--use_mask_cache", action="store_true", default=True, help="Pre-decode masks into a tight-bbox crop cache (big speedup, bit-identical)")
     parser.add_argument("--no_mask_cache", dest="use_mask_cache", action="store_false", help="Disable the crop cache (old decode-per-candidate baseline)")
     parser.add_argument("--seg_seed", type=int, default=0, help="Seed for the mask-processing shuffle (reproducible seg)")
-    parser.add_argument("--frustum_cull", action="store_true", default=True, help="Skip rendering a head into cameras its bounding sphere misses (big speedup, bit-identical)")
-    parser.add_argument("--no_frustum_cull", dest="frustum_cull", action="store_false", help="Render every camera (old behaviour, for the A/B baseline)")
+    parser.add_argument("--frustum_cull", action="store_true", default=False, help="Skip rendering a head into cameras where its Gaussians don't project (bit-identical/lossless). DEFAULT OFF — barely helps on FIP-overhead / phone-orbit captures where heads are in ~every view; enable for a long linear sweep.")
+    parser.add_argument("--no_frustum_cull", dest="frustum_cull", action="store_false", help="Render every camera (the default now).")
     parser.add_argument("--wandb_enabled", action="store_true", default=False)
     args = parser.parse_args(sys.argv[1:])
     print("Optimizing " + args.model_path)
