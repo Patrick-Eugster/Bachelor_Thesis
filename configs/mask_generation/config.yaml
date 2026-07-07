@@ -22,6 +22,11 @@ limit_images: 0
 # true = only process images that have a manual_label/*.txt file (used for metrics evaluation)
 only_labeled_images: false
 
+# only_sam: skip the detector and run ONLY the SAM phase on the bboxes/*.pt already in the
+# experiment folder (e.g. to mask an existing surgical/other box run). Pair with the method +
+# experiment_name whose bboxes/ you want to segment.
+only_sam: false
+
 # true = also write bboxes_with_conf/*.pt (5 cols: x1,y1,x2,y2,conf) for ALL images, even without
 # manual labels. Lets you build a confidence histogram on phone data (which has no GT). Pair it with a
 # LOW conf threshold (method.conf_threshold_nms_floor / method.conf_threshold_good_box) to capture the

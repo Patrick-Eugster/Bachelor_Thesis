@@ -173,8 +173,10 @@ def run(cfg):
         print(f"\n[{plot_name}] {len(images)} image(s) -> {out}")
 
         for img_path in images:
-            name, img_np, H, W, crops, offsets = load_and_slice(img_path, cfg)
-            preds = infer_tiles(model, img_np, crops, offsets, W, H, cfg)   # [N,5], all pre-merge boxes
+            # load_and_slice already does the ROI grey-out (apply_roi) + dynamic tiling; it now also
+            # returns infer_size (added by the later dynamic-tiling work) which infer_tiles needs.
+            name, img_np, H, W, crops, offsets, infer_size = load_and_slice(img_path, cfg)
+            preds = infer_tiles(model, img_np, crops, offsets, W, H, cfg, infer_size)   # [N,5], all pre-merge boxes
             if len(preds) == 0:
                 save_surgical(name, H, W, [], [], [], [], dirs, cfg.save_viz, img_np)
                 continue
@@ -224,6 +226,15 @@ def run(cfg):
                 # area-guard fallbacks: keep the raw YOLO box (no mask) so the head isn't lost
                 for b, c in zip(fb_boxes, fb_conf):
                     boxes.append(b); confs.append(c); tiers.append(3); masks.append(None)
+
+            # ROI box post-filter: drop boxes outside the plot polygon (no-op unless roi.enabled) —
+            # same as production SAHI (sahi_yolo_pipelined merge step). Keeps boxes/confs/tiers/masks in sync.
+            if boxes:
+                keep = sp.roi_keep_mask(np.array(boxes, dtype=np.float32), img_path, cfg, W, H)
+                boxes = [b for b, k in zip(boxes, keep) if k]
+                confs = [c for c, k in zip(confs, keep) if k]
+                tiers = [t for t, k in zip(tiers, keep) if k]
+                masks = [m for m, k in zip(masks, keep) if k]
 
             save_surgical(name, H, W, boxes, confs, tiers, masks, dirs, cfg.save_viz, img_np)
             print(f"  {name}: raw {len(preds)} -> tier2 {len(survivors)} "

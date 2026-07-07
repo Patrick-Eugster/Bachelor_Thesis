@@ -28,8 +28,7 @@ import roi_mask  # noqa: E402
 
 PHONE_ROOT = "/workspace/input_plots/phone"
 RESULTS_ROOT = "/workspace/results/mask_generation/phone"
-DEFAULT_SELECTION = ("/tmp/claude-0/-workspace/e6a109d2-41f2-481c-a1e9-2e00efdd4d44/"
-                     "scratchpad/gt_selection.json")
+DEFAULT_SELECTION = "/workspace/input_plots/phone/gt_selection.json"  # 36 GT images (12 sessions × 3)
 
 
 def iou_vec(a, boxes):

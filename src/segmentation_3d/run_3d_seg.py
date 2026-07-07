@@ -42,8 +42,16 @@ from gaussians.utils.wheatgs_utils import (
 # cuda.synchronize() calls it needs don't slow normal runs.
 _SEG_TIMING = os.environ.get("WHEAT_SEG_TIMING") == "1"
 # render/match = inside find_match; lift_decode/lift_render = opt_label_w_seg (the FULL-model lift);
-# ilp = the FlashSplat multi_instance_opt solve; commit_render = the per-head 2DSeg paint loop.
-_SEG_TIMER = {"render": 0.0, "match": 0.0, "lift_decode": 0.0, "lift_render": 0.0, "ilp": 0.0, "commit_render": 0.0}
+# ilp = the FlashSplat multi_instance_opt solve; commit_render = the per-head 2DSeg GPU render.
+# The remaining keys split the previously-"untimed" CPU/IO work so we can see where the ~2h/phone goes:
+#   setup        = one-time model+scene+camera load + crop-cache build/load + initial 2DSeg write
+#   commit_paint = CPU side of the commit loop: alpha->CPU->threshold->paint the H×W 2DSeg label map
+#   ply_prep     = per-head full-model CPU copy + prune (feeds the async per-head PLY save)
+#   overlay_wait = blocking on the async overlay-JPG saves (only for the first vis_max_heads heads)
+#   seg2d_save   = final 2DSeg/*.pt save at the end
+_SEG_TIMER = {"render": 0.0, "match": 0.0, "lift_decode": 0.0, "lift_render": 0.0, "ilp": 0.0,
+              "commit_render": 0.0, "setup": 0.0, "commit_paint": 0.0, "ply_prep": 0.0,
+              "overlay_wait": 0.0, "seg2d_save": 0.0}
 
 def find_new_mask_dir(overlap_counter, num_wheat_head):
     """Return next letter suffix (a, b, c…) for an overlapping head, tracked in memory."""
@@ -275,6 +283,7 @@ def update_processed_masks(processed_masks, new_mask_paths):
 ########### End of Find & Match helper methods ###########
         
 def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_vis_overlay, vis_max_heads, wandb_enabled=False, use_mask_cache=True, seg_seed=0, frustum_cull=False):
+    _t_setup = time.perf_counter()  # one-time load + cache build, recorded just before the main loop
     # All 3DSeg results will be saved under 3dgs_model_path/segmentation_3d/(exp_name)
     out_dir = os.path.join(dataset.model_path, "segmentation_3d", exp_name)
     sub_dirs = ["ply", "img", "count"]
@@ -489,7 +498,10 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
     num_wheat_head = 0
     overlap_counter = {}  # tracks how many times each head has been updated via overlap (for letter suffix)
     ply_futures = []  # async PLY saves, waited on at end
-    
+
+    if _SEG_TIMING:
+        torch.cuda.synchronize(); _SEG_TIMER["setup"] = time.perf_counter() - _t_setup
+
     #### Iterate through all YOLO/SAM bbox/seg pairs
     for exp_id, this_mask_path in tqdm(enumerate(all_mask_paths), total=len(all_mask_paths), desc="Processing Masks"):
         # print("-" * 50)  # separator line fires 8500 times
@@ -588,6 +600,8 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
             # Check if Gaussians are largely overlap with previously identified wheat head
             which_overlap_object = gaussians.reset_label(obj_used_mask=obj_used_mask, set_which_object_to=num_wheat_head)
             # only copy the 7 tensors needed for save_ply/prune_points, moved to CPU to avoid doubling VRAM
+            if _SEG_TIMING:
+                torch.cuda.synchronize(); _t = time.perf_counter()
             gaussians_obj = GaussianModel(gaussians.max_sh_degree)
             gaussians_obj._xyz = gaussians._xyz.detach().cpu()
             gaussians_obj._features_dc = gaussians._features_dc.detach().cpu()
@@ -596,6 +610,8 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
             gaussians_obj._scaling = gaussians._scaling.detach().cpu()
             gaussians_obj._rotation = gaussians._rotation.detach().cpu()
             gaussians_obj._which_object = gaussians._which_object.detach().cpu()
+            if _SEG_TIMING:
+                _SEG_TIMER["ply_prep"] += time.perf_counter() - _t
             if which_overlap_object is not None:
                 num_wheat_head -= 1 # if overlapping, then it's not a new wheat head
                 if os.path.exists(this_mask_dir):
@@ -656,6 +672,7 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
                     render_alpha = render_pkg["alpha"].squeeze().detach().cpu()
                     if _SEG_TIMING:
                         torch.cuda.synchronize(); _SEG_TIMER["commit_render"] += time.perf_counter() - _t
+                        _t = time.perf_counter()  # commit_paint = the CPU threshold/paint below (no GPU sync needed)
                     pred_seg = render_alpha.numpy() > 0.5
                     mask = Image.fromarray(np.where(pred_seg, 255, 0).astype(np.uint8), mode='L')
                     # mask.save(f"{this_mask_dir}/masks/{viewpoint_cam.image_name}.jpg")
@@ -672,10 +689,16 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
                     # Update the 2D seg&count results
                     assert twoD_seg_results[viewpoint_cam.image_name].shape == render_alpha.shape
                     twoD_seg_results[viewpoint_cam.image_name][render_alpha > 0.5] = which_wheat_head
+                    if _SEG_TIMING:
+                        _SEG_TIMER["commit_paint"] += time.perf_counter() - _t
                     # 2DSeg saved once at end of pipeline (optimization 2: was per-camera per-head = 10,800 writes)
             # wait for all overlay saves before moving to next wheat head
+            if _SEG_TIMING:
+                _t = time.perf_counter()
             for f in overlay_futures:
                 f.result()
+            if _SEG_TIMING:
+                _SEG_TIMER["overlay_wait"] += time.perf_counter() - _t
                     
         else:
             # print(f"==== Not matchings found for {this_mask_name}. Add to Buffer. ====")  # fires too often, not useful
@@ -702,6 +725,8 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
 
     results.close()
 
+    if _SEG_TIMING:
+        _t = time.perf_counter()
     # wait for all async PLY saves to finish before saving final state
     for f in ply_futures:
         f.result()
@@ -715,6 +740,8 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
     for f in seg_futures:
         f.result()
     _overlay_executor.shutdown(wait=True)
+    if _SEG_TIMING:
+        _SEG_TIMER["seg2d_save"] += time.perf_counter() - _t  # final PLY-drain + 2DSeg write
 
     print(f"\n{'='*60}")
     print(f"  SEGMENTATION COMPLETE")
@@ -732,13 +759,17 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
         tot = sum(_SEG_TIMER.values())
         print("  ---- seg time breakdown (WHEAT_SEG_TIMING) ----")
         if tot > 0:
-            order = ["lift_render", "commit_render", "render", "match", "ilp", "lift_decode"]
-            labels = {"lift_render": "lift render (full model)", "commit_render": "commit render (2DSeg)",
-                      "render": "find_match render", "match": "find_match match/IoU",
-                      "ilp": "ILP solve", "lift_decode": "lift mask decode"}
+            order = ["render", "match", "commit_render", "lift_render", "ilp", "lift_decode",
+                     "setup", "commit_paint", "ply_prep", "overlay_wait", "seg2d_save"]
+            labels = {"render": "find_match render", "match": "find_match match/IoU",
+                      "commit_render": "commit render (2DSeg GPU)", "lift_render": "lift render (full model)",
+                      "ilp": "ILP solve", "lift_decode": "lift mask decode",
+                      "setup": "setup (load+cache build)", "commit_paint": "commit paint (CPU 2DSeg)",
+                      "ply_prep": "per-head PLY prep (CPU copy)", "overlay_wait": "overlay-save wait",
+                      "seg2d_save": "final 2DSeg save"}
             for k in order:
-                print(f"    {labels[k]:<26} {_SEG_TIMER[k]:8.0f}s ({_SEG_TIMER[k]/tot*100:5.1f}%)")
-            print(f"    {'TOTAL (timed)':<26} {tot:8.0f}s   (untimed = overlay saves / IO / model+image load)")
+                print(f"    {labels[k]:<28} {_SEG_TIMER[k]:8.0f}s ({_SEG_TIMER[k]/tot*100:5.1f}%)")
+            print(f"    {'TOTAL (timed)':<28} {tot:8.0f}s   (any remaining untimed = pure Python loop overhead)")
         else:
             print("    (no timing)")
     print(f"{'='*60}")

@@ -27,8 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "mask_generatio
 import roi_mask  # noqa: E402
 
 PHONE_ROOT = "/workspace/input_plots/phone"
-DEFAULT_SELECTION = ("/tmp/claude-0/-workspace/e6a109d2-41f2-481c-a1e9-2e00efdd4d44/"
-                     "scratchpad/gt_selection.json")
+DEFAULT_SELECTION = "/workspace/input_plots/phone/gt_selection.json"  # 36 GT images (12 sessions × 3)
 
 
 def build_cfg(buffer_frac):

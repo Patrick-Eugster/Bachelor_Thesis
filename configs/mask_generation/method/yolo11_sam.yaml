@@ -1,0 +1,46 @@
+# method params for yolo11_sam — the 3DKD-wheat YOLOv11-large spike detector -> shared SAM.
+# Runs on the already-installed `ultralytics` (no new library). Weights live in
+# src/mask_generation/weights/ (gitignored). Pick with: method=yolo11_sam
+
+# method identifier — used by run_mask_generation.py's dispatch registry to pick the detector
+name: yolo11_sam
+
+# model weight files (must be placed in src/mask_generation/weights/)
+yolo11_model: "best_yolo11l_40ep.pt"        # YOLOv11-large wheat-spike detector (olzumst HF space)
+sam_checkpoint: "sam_vit_h_4b8939.pth"      # SAM ViT-H checkpoint (~2.4 GB), shared SAM phase
+
+# inference image size (long side). 3008 = the 3DKD paper's FIP setting (fip_detection.py).
+# ultralytics letterboxes internally; boxes come back in original pixels.
+imgsz: 3008
+
+# max detections per image (paper uses 800; phone is denser so allow more)
+max_det: 1000
+
+# floor confidence during inference — all boxes above this survive and are kept for metrics.
+# good/bad split happens after, at conf_threshold_good_box.
+conf_threshold_nms_floor: 0.2
+
+# boxes below this confidence are rejected after inference (shown red in yolo_vis/)
+conf_threshold_good_box: 0.35
+
+# NMS IoU threshold (ultralytics `iou`)
+iou_threshold_nms: 0.5
+
+# class IDs to keep — 0 = wheat head/spike (single class)
+classes_to_detect: [0]
+
+# --- yolo_vis drawing (same knobs as yolo_sam_v1) ---
+show_labels: true
+show_rejected_boxes: true
+show_detected_boxes: true
+box_thickness: 2
+label_font_scale: 1
+
+# --- shared / timing knobs (read by SAM phase + summary report) ---
+max_threads: 10          # CPU threads for the shared SAM phase
+show_time_yolo: true
+show_time_sam: true
+show_time_total: true
+
+# true = skip SAM entirely, only run YOLOv11 detection (metrics / quick box inspection)
+only_yolo: false

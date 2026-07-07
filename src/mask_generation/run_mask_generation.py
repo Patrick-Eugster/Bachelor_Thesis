@@ -24,6 +24,7 @@ from omegaconf import DictConfig, OmegaConf
 # Detectors (box producers) — pick one via cfg.method.name. SAM is shared.
 from mask_generation.yolo_sam_v1.yolo_v1_pipelined import run_yolo_phase
 from mask_generation.sahi_yolo_sam.sahi_yolo_pipelined import run_yolo_phase_sahi
+from mask_generation.yolo11_sam.yolo11_pipelined import run_yolo_phase_yolo11
 from mask_generation.sam_v1.sam_v1_pipelined import run_sam_phase
 from wheat_utils.path_utils import get_mask_generation_result_path
 
@@ -37,6 +38,7 @@ DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 DETECTORS = {
     "yolo_sam_v1":   run_yolo_phase,
     "sahi_yolo_sam": run_yolo_phase_sahi,
+    "yolo11_sam":    run_yolo_phase_yolo11,
 }
 
 
@@ -82,6 +84,11 @@ def print_final_configuration_report(cfg, total_seconds, sam_seconds, total_imag
         print(f"{'SAHI Merge:':<25} {cfg.method.sahi_merge}/{cfg.method.sahi_match_metric} @ {cfg.method.sahi_match_threshold}")
         print(f"{'Tiles per GPU Forward:':<25} {cfg.method.sahi_tile_batch_size}")
         print(f"{'Full-image Pass:':<25} {cfg.method.sahi_full_image_pass}")
+    elif cfg.method.name == "yolo11_sam":
+        # YOLOv11 (ultralytics): single full-image pass, letterboxed internally to imgsz (no tiling)
+        print(f"{'YOLOv11 imgsz:':<25} {cfg.method.imgsz}px (letterboxed internally, boxes in orig px)")
+        print(f"{'Max det/image:':<25} {cfg.method.max_det}")
+        print(f"{'Model:':<25} {cfg.method.yolo11_model}")
     else:
         print(f"{'YOLO Resize Size:':<25} {cfg.method.target_image_size}px")
         print(f"{'BATCH_SIZE_YOLO:':<25} {cfg.method.batch_size_yolo}")
@@ -153,8 +160,13 @@ def main(cfg: DictConfig):
         plot_name = os.path.relpath(os.path.dirname(folder), cfg.dataset.input_dir)
         save_config(get_mask_generation_result_path(cfg, plot_name), cfg)
 
-    # 2. Run the chosen detector (produces bboxes/*.pt)
-    total_plot_boxes = run_detector(image_folders, cfg)
+    # 2. Run the chosen detector (produces bboxes/*.pt) — unless only_sam (SAM existing boxes)
+    if cfg.get("only_sam", False):
+        print("\n ONLY_SAM is set to True. Skipping the detector — running SAM on the existing bboxes/*.pt "
+              f"in the '{cfg.experiment_name}' experiment folder.")
+        total_plot_boxes = 0
+    else:
+        total_plot_boxes = run_detector(image_folders, cfg)
 
     # 3. Run SAM (shared) unless only_yolo
     total_sam_pure_time = 0.0
