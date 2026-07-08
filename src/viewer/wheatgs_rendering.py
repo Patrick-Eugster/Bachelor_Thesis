@@ -206,34 +206,31 @@ def set_camera_frustums(
         img = images[img_id]
         cam = cameras[img.camera_id]
         W, H = cam.width, cam.height
-        fx, fy, cx, cy = cam.params
-        # print(f"Camera {img_id}: {W}x{H}, fx={fx}, fy={fy}, cx={cx}, cy={cy}")  # CHANGED: commented out
+        # camera intrinsics: SIMPLE_PINHOLE = [f, cx, cy] (3 params, fx=fy=f), PINHOLE = [fx, fy, cx, cy].
+        # Phone COLMAP uses SIMPLE_PINHOLE, so unpack defensively (any extra distortion params are ignored —
+        # we only need the focal for the frustum FoV). This used to hardcode a 4-way unpack → crashed on phone.
+        p = list(cam.params)
+        if len(p) == 3:
+            fx = fy = p[0]; cx, cy = p[1], p[2]
+        else:
+            fx, fy, cx, cy = p[0], p[1], p[2], p[3]
         # Skip images that don't exist.
         image_filename = os.path.join(images_path, img.name)
 
+        # FIP filenames encode split/group (e.g. FPWW036_SR0461_FIP2_cam_11) which drive the frustum color
+        # + a 2-camera skip. Phone names (IMG_20250715_153847, or ..._153846~2) don't, so parse defensively
+        # and fall back to "draw every camera in train-red" for phone / any non-FIP name.
         elements = os.path.splitext(img.name)[0].split("_")
+        draw_this, color = True, (255, 71, 77)   # default (phone): draw all, train-red
+        try:
+            group = 1 if len(elements) == 5 else (2 if int(elements[2]) == 6 else 3)
+            split = 'test' if int(elements[-1]) > 10 else 'train'
+            color = (255, 71, 77) if split == 'train' else (0, 255, 0)  # red / green
+            draw_this = not ((group == 2 and int(elements[-1]) == 9) or (group == 3 and int(elements[-1]) == 2))
+        except (ValueError, IndexError):
+            draw_this, color = True, (255, 71, 77)  # non-FIP (phone) name → just draw it
 
-        if len(elements) == 5:
-            group = 1
-        else:
-            if int(elements[2]) == 6:
-                group = 2
-            else:
-                group = 3
-        # print("elements:", elements, "group:", group)  # CHANGED: commented out
-
-        if int(elements[-1]) > 10:
-            split = 'test'
-        else:
-            split = 'train'
-        color = (255, 71, 77) if split == 'train' else (0, 255, 0) # red or green
-        # color = (255, 0, 0) # red
-        
-        # Only visualize if in a specific group
-        # if True: # group == 1: # and int(elements[-1]) == 6:
-        if (group == 2 and int(elements[-1]) == 9) or (group == 3 and int(elements[-1]) == 2):
-            pass
-        else:
+        if draw_this:
             T_world_camera = vtf.SE3.from_rotation_and_translation(
                 vtf.SO3(img.qvec), img.tvec
             ).inverse()

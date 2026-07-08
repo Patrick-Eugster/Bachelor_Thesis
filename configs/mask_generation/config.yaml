@@ -33,6 +33,12 @@ only_sam: false
 # full sub-threshold distribution for tuning. Off by default → no change to normal runs.
 save_bboxes_conf: false
 
+# save_masks: write one binary mask PNG per head in the SAM phase (the default, needed for the
+# 3D segmentation). Set false to SKIP the per-head PNG writes and produce only the sam_vis overlay
+# + counts — much faster + far less RAM (per-head full-res PNGs are ~97% of phone SAM time). Use it
+# for quick visual A/Bs (e.g. ROI-crop on vs off) where you only want to eyeball the masks.
+save_masks: true
+
 # log SAM progress to wandb.ai dashboard (requires wandb login first)
 wandb_enabled: false
 
@@ -58,6 +64,14 @@ roi:
   filter_mode: overlap     # overlap = drop only boxes COMPLETELY outside the (un-buffered) polygon;
                            # center  = drop boxes whose centre is outside
   filter_tol_px: 0         # soften the filter boundary by N px (keep boxes within tol of the polygon)
+  # ROI-crop ("ROI-zoom"): crop the frame to the buffered ROI bbox BEFORE inference so the plot
+  # fills imgsz → bigger heads (~1.4-2x effective resolution) + smaller input tensor (less VRAM).
+  # Boxes/masks are offset back to full-image px afterwards, so downstream (SAM, eval) is unchanged.
+  # OFF by default (byte-identical). Phone-only (needs a marker polygon; FIP has none → no-op).
+  crop_before_inference: false
+  crop_top_margin_frac: 0.10  # extra UPWARD extension (frac of short side) — the marker polygon is
+                              # ground-plane, so tall side-view heads sit above it; this keeps them in
+  crop_pad_frac: 0.0          # extra symmetric padding (frac of short side) around the buffered bbox
   fallback_circle_frac: 0.9   # circle radius as frac of min(w,h)/2 (fallback=circle)
   fallback_square_frac: 0.9   # kept fraction per side (fallback=square)
 

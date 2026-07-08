@@ -223,22 +223,57 @@ def get_c2w_from_up_and_look_at(up, look_at, pos):
     c2w[:3, 3] = pos
     return c2w
 
-def get_camera_path_fixed_elevation(n_frames, n_circles=1, camera_distance=2, cam_center=[0, 0, 0], elevation=0):
+def estimate_scene_up(vpt_stack, centroid):
+    """Estimate the scene's UP axis from the camera centers, for the 360 orbit.
+
+    Why: FIP SfM is gravity-aligned (ground ≈ world XY, up ≈ +Z), so a world-Z orbit works. But phone
+    COLMAP frames are NOT gravity-aligned — the plot's real up is some tilted direction, and orbiting
+    around world-Z then loops the camera OVER THE TOP of the plot instead of circling it like a
+    turntable. The cameras were captured at ~constant height around the plot, so their centers lie
+    ~in a plane whose normal ≈ the scene up. We fit that plane (smallest-variance SVD direction) using
+    ONLY camera_center (convention-free), sign it to point toward the cameras, and return it.
+
+    Returns None when the up is essentially world-Z (|z|>0.98, e.g. FIP) so the caller keeps the
+    original world-Z path byte-identical; otherwise a unit up vector (phone)."""
+    C = np.stack([cam.camera_center.detach().cpu().numpy().astype(np.float64) for cam in vpt_stack])
+    Cc = C - C.mean(axis=0)
+    _, _, Vt = np.linalg.svd(Cc, full_matrices=False)   # plane normal = least-variance direction
+    up = Vt[-1] / (np.linalg.norm(Vt[-1]) + 1e-12)
+    if np.dot(up, C.mean(axis=0) - np.asarray(centroid, dtype=np.float64)) < 0:
+        up = -up                                        # point up toward the cameras, not the ground
+    if abs(up[2]) > 0.98:
+        return None                                     # ~gravity-aligned (FIP) → keep the original path
+    return up.astype(np.float32)
+
+
+def get_camera_path_fixed_elevation(n_frames, n_circles=1, camera_distance=2, cam_center=[0, 0, 0], elevation=0, up=None):
     azimuth = np.linspace(0, 2 * np.pi * n_circles, n_frames)
     elevation_rad = np.deg2rad(elevation)
-    x = camera_distance * np.cos(azimuth) * np.cos(elevation_rad)
-    y = camera_distance * np.sin(azimuth) * np.cos(elevation_rad)
-    z = camera_distance * np.sin(elevation_rad) * np.ones_like(x)
-
-    up = np.array([0, 0, 1], dtype=np.float32)
     look_at = np.array(cam_center, dtype=np.float32)
-    pos = np.stack([x, y, z], axis=1)
 
-    c2ws = []
-    for i in range(n_frames):
-        c2ws.append(get_c2w_from_up_and_look_at(up, look_at, pos[i]))
-    c2ws = np.stack(c2ws, axis=0)
-    return c2ws
+    if up is None:
+        # original world-Z orbit (FIP / gravity-aligned frames) — kept byte-identical
+        x = camera_distance * np.cos(azimuth) * np.cos(elevation_rad)
+        y = camera_distance * np.sin(azimuth) * np.cos(elevation_rad)
+        z = camera_distance * np.sin(elevation_rad) * np.ones_like(x)
+        up_vec = np.array([0, 0, 1], dtype=np.float32)
+        pos = np.stack([x, y, z], axis=1)
+    else:
+        # orbit around an ARBITRARY up axis (phone COLMAP frames aren't gravity-aligned).
+        # Build an in-plane basis (right, fwd) ⟂ up, sweep azimuth in that plane at the elevation.
+        up_vec = np.asarray(up, dtype=np.float64)
+        up_vec = up_vec / (np.linalg.norm(up_vec) + 1e-12)
+        ref = np.array([1.0, 0.0, 0.0]) if abs(up_vec[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+        right = np.cross(up_vec, ref); right /= (np.linalg.norm(right) + 1e-12)
+        fwd = np.cross(up_vec, right)
+        pos = np.stack([
+            look_at + camera_distance * (np.cos(elevation_rad) * (np.cos(a) * right + np.sin(a) * fwd)
+                                         + np.sin(elevation_rad) * up_vec)
+            for a in azimuth], axis=0)
+        up_vec = up_vec.astype(np.float32)
+
+    c2ws = [get_c2w_from_up_and_look_at(up_vec, look_at, pos[i]) for i in range(n_frames)]
+    return np.stack(c2ws, axis=0)
 
 #### End of 360-degree camera trajectory copied from gsgen ####
 
@@ -270,15 +305,16 @@ def eval_obj_labels(all_obj_labels, viewpoint_cam, gaussians, pipe, background):
         max_alpha[pix_mask] = render_alpha[pix_mask]
     return pred_mask
 
-def render_360(og_view, scene_radius, render_path, n_frames, framerate, gaussians, pipeline, background, elevation=45, all_obj_labels=None, all_counts=None):
+def render_360(og_view, scene_radius, render_path, n_frames, framerate, gaussians, pipeline, background, elevation=45, all_obj_labels=None, all_counts=None, up=None, downscale=2):
     from gaussians.gaussian_renderer import render
     os.makedirs(render_path, exist_ok=True)
     gs_centroid = torch.mean(gaussians.get_xyz.detach(), dim=0).cpu().tolist()
-    width, height = math.floor(og_view.image_width / 2), math.floor(og_view.image_height / 2)
+    # downscale=1 → full training-image resolution; 2 → half (default, faster + smaller frames)
+    width, height = math.floor(og_view.image_width / downscale), math.floor(og_view.image_height / downscale)
     fovy, fovx = og_view.FoVy, og_view.FoVx
     znear, zfar = og_view.znear, og_view.zfar
     camera_distance = scene_radius * 2
-    c2ws = get_camera_path_fixed_elevation(n_frames=n_frames, n_circles=1, camera_distance=camera_distance, cam_center=gs_centroid, elevation=elevation)
+    c2ws = get_camera_path_fixed_elevation(n_frames=n_frames, n_circles=1, camera_distance=camera_distance, cam_center=gs_centroid, elevation=elevation, up=up)
     print_every = max(1, n_frames // 10)  # print progress ~10 times total
     for idx in range(len(c2ws)):
         if idx % print_every == 0:
@@ -340,7 +376,7 @@ def render_360(og_view, scene_radius, render_path, n_frames, framerate, gaussian
     return output_video
 
 
-def render_360_fast(og_view, scene_radius, render_path, n_frames, framerate, gaussians, pipeline, background, elevation=45, all_obj_labels=None, all_counts=None):
+def render_360_fast(og_view, scene_radius, render_path, n_frames, framerate, gaussians, pipeline, background, elevation=45, all_obj_labels=None, all_counts=None, up=None, downscale=2):
     """Per-Gaussian colored 360 flyaround — bakes head colors into Gaussians, 1 render per frame.
 
     ~N_heads times faster than render_360 while still showing distinct per-head colors.
@@ -352,11 +388,12 @@ def render_360_fast(og_view, scene_radius, render_path, n_frames, framerate, gau
     from gaussians.gaussian_renderer import render
     os.makedirs(render_path, exist_ok=True)
     gs_centroid = torch.mean(gaussians.get_xyz.detach(), dim=0).cpu().tolist()
-    width, height = math.floor(og_view.image_width / 2), math.floor(og_view.image_height / 2)
+    # downscale=1 → full training-image resolution; 2 → half (default, faster + smaller frames)
+    width, height = math.floor(og_view.image_width / downscale), math.floor(og_view.image_height / downscale)
     fovy, fovx = og_view.FoVy, og_view.FoVx
     znear, zfar = og_view.znear, og_view.zfar
     camera_distance = scene_radius * 2
-    c2ws = get_camera_path_fixed_elevation(n_frames=n_frames, n_circles=1, camera_distance=camera_distance, cam_center=gs_centroid, elevation=elevation)
+    c2ws = get_camera_path_fixed_elevation(n_frames=n_frames, n_circles=1, camera_distance=camera_distance, cam_center=gs_centroid, elevation=elevation, up=up)
 
     orig_features_dc = None
     orig_features_rest = None

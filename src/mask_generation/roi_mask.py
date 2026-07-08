@@ -26,8 +26,15 @@ fully visible to YOLO/SAM. Then roi.filter_boxes drops boxes that fall outside t
   filter_mode="center" (strict) → drop a box whose CENTRE is outside the true polygon.
 roi.filter_tol_px softens the boundary (a box within tol px of the polygon still counts).
 
-FALLBACK: if fewer than roi.min_markers markers can be projected (e.g. FIP, which has no
-phone-coded markers, or a failed session), we fall back to roi.fallback:
+ALL-MARKERS GATE (plot level): the hull needs the FULL marker ring. If COLMAP failed to triangulate
+even ONE manifest marker (its entry is null in marker_points3d.json), the hull built from the rest
+caves in on the missing side and would CLIP real heads — the dangerous direction. We don't infer the
+missing marker (no survey assumption; tape-inference skipped for now), so we WARN and disable the
+marker-ROI for the whole plot → every image falls through to roi.fallback below.
+
+FALLBACK: if the plot fails the all-markers gate above, or fewer than roi.min_markers markers can be
+projected into a given image (e.g. FIP, which has no phone-coded markers, or a failed session), we
+fall back to roi.fallback:
   none   → no masking and no filtering (byte-identical to not using ROI) — the safe default
   circle → central circle (targets radial corner distortion, marker-free)
   square → central square inset
@@ -148,7 +155,24 @@ def _build_plot_polys(plot_dir, min_markers):
     imgs = _parse_images(img_path)
     with open(mk_path) as f:
         mk = json.load(f)
-    marker_xyz = [v["xyz"] for v in mk.get("points3d", {}).values()]
+
+    # A marker is stored as null in points3d.json when COLMAP couldn't triangulate it (too few views).
+    # Our ROI hull needs the FULL marker ring: build it from only the survivors and the hexagon caves
+    # in on the missing side → it would clip real wheat heads there (the dangerous failure direction).
+    # We can't safely infer the missing corner (no survey assumption; tape-inference skipped for now),
+    # so if ANY manifest marker is missing we WARN and disable the marker-ROI for the whole plot →
+    # every image falls back to roi.fallback (default "none" = no masking, byte-identical, never clips).
+    pts3d = mk.get("points3d", {})
+    solved = {code: v for code, v in pts3d.items() if v}        # drop null / missing marker entries
+    manifest = mk.get("manifest") or list(pts3d.keys())
+    if len(solved) < len(manifest):
+        have = {str(k) for k in solved}
+        missing = [c for c in manifest if str(c) not in have]
+        print(f"WARNING [roi_mask]: {plot_dir}: only {len(solved)}/{len(manifest)} markers "
+              f"triangulated (missing {missing}) — marker-ROI DISABLED for this plot; a partial hull "
+              f"would clip real heads. Falling back to roi.fallback (default none = no ROI).")
+        return {}
+    marker_xyz = [v["xyz"] for v in solved.values()]
 
     polys = {}
     for name, (R, tvec, cam_id) in imgs.items():
@@ -250,6 +274,39 @@ def apply_roi(img, img_path, cfg):
     return out
 
 
+def roi_crop_box(img_path, cfg, w, h):
+    """Axis-aligned crop rectangle (x0,y0,x1,y1) tight around the BUFFERED ROI, extended UPWARD
+    for tall side-view heads. Returns None when ROI/crop is disabled or there's no marker polygon
+    (e.g. FIP) → the caller just uses the full frame.
+
+    Why: normally the whole 4032x3024 frame is letterboxed to imgsz, so the plot only gets a
+    fraction of the pixel budget. Cropping to the plot region first makes the plot FILL imgsz →
+    heads land ~1.4-2x bigger AND the input tensor is smaller (less VRAM). It's a single-tile SAHI.
+
+    UPWARD caveat: the marker polygon is a GROUND-plane region, so in an oblique/side view the wheat
+    heads extend vertically ABOVE it. A tight crop would clip the tall/far heads we want, so we push
+    the top edge up by crop_top_margin_frac * short_side. See MASK_RESOLUTION_AND_TILING.md §2."""
+    roi = cfg.get("roi", None)
+    if roi is None or not roi.get("enabled", False) or not roi.get("crop_before_inference", False):
+        return None
+    poly, _ = _base_polygon(img_path, cfg, w, h)
+    if poly is None:
+        return None  # no polygon for this image → no crop, fall back to full frame
+
+    buffer_px = _resolve_buffer_px(roi, w, h)  # match the grey-out extent so kept heads aren't clipped
+    pad = int(round(float(roi.get("crop_pad_frac", 0.0)) * min(w, h)))
+    top_extra = int(round(float(roi.get("crop_top_margin_frac", 0.0)) * min(w, h)))
+    x0 = int(poly[:, 0].min()) - buffer_px - pad
+    x1 = int(poly[:, 0].max()) + buffer_px + pad
+    y0 = int(poly[:, 1].min()) - buffer_px - pad - top_extra   # extra room ABOVE for tall heads
+    y1 = int(poly[:, 1].max()) + buffer_px + pad
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(w, x1), min(h, y1)
+    if x1 - x0 < 16 or y1 - y0 < 16:
+        return None  # degenerate crop → fall back to full frame
+    return (x0, y0, x1, y1)
+
+
 def roi_keep_mask(boxes_xyxy, img_path, cfg, img_w=None, img_h=None):
     """Boolean keep-mask for boxes against the un-buffered (true) marker polygon.
       filter_mode="overlap" (default): keep unless the box is COMPLETELY outside the polygon
@@ -311,6 +368,8 @@ if __name__ == "__main__":
     ap.add_argument("--min_markers", type=int, default=3)
     ap.add_argument("--buffer_px", type=int, default=0, help="absolute buffer (used if --buffer_frac<=0)")
     ap.add_argument("--buffer_frac", type=float, default=0.045, help="buffer as fraction of image short side")
+    ap.add_argument("--crop_top", type=float, default=0.0,
+                    help="if >0, also draw the ROI-crop rectangle with this upward margin (frac of short side)")
     ap.add_argument("--limit", type=int, default=8, help="how many images to draw")
     args = ap.parse_args()
 
@@ -337,6 +396,13 @@ if __name__ == "__main__":
         cv2.polylines(vis, [poly], True, (0, 255, 0), 4)            # green = true marker hull (filter line)
         cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         cv2.drawContours(vis, cnts, -1, (0, 200, 255), 3)          # orange = buffered mask edge
+        # red rectangle = the ROI-crop region (buffered bbox, pushed up by crop_top for tall heads)
+        top_extra = int(round(args.crop_top * min(w, h)))
+        cx0 = max(0, int(poly[:, 0].min()) - buf)
+        cx1 = min(w, int(poly[:, 0].max()) + buf)
+        cy0 = max(0, int(poly[:, 1].min()) - buf - top_extra)
+        cy1 = min(h, int(poly[:, 1].max()) + buf)
+        cv2.rectangle(vis, (cx0, cy0), (cx1, cy1), (0, 0, 255), 4)  # red = crop rect
         cv2.imwrite(os.path.join(args.out, f"roi_{name}"), vis)
     print(f"wrote overlays for {min(len(files), args.limit)} images → {args.out}")
     print(f"images with marker polygon: {n_with}, without (would fall back): {n_without}, total in plot: {len(polys)}")

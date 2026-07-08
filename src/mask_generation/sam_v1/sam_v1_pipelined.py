@@ -39,7 +39,7 @@ import wandb
 from segment_anything import sam_model_registry, SamPredictor
 
 from wheat_utils.path_utils import get_mask_generation_result_path
-from mask_generation.roi_mask import apply_roi
+from mask_generation.roi_mask import apply_roi, roi_crop_box
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -110,7 +110,8 @@ def print_sam_plot_summary(num_images, total_time):
 
 def _load_image_and_bbox(image_file, bbox_folder, cfg):
     """Load one image from disk and its corresponding bbox .pt tensor.
-    Returns (image_name, save_name, image_rgb, bbox_or_None) — None signals a missing bbox file."""
+    Returns (image_name, save_name, image_rgb, bbox_or_None, crop_or_None) — bbox None signals a
+    missing bbox file; crop is the (x0,y0,x1,y1) ROI-crop rect (None unless roi.crop_before_inference)."""
     image_name = os.path.basename(image_file)
     save_name = os.path.splitext(image_name)[0]
     # Load with PIL (not cv2.imread): both use libjpeg-turbo so pixels are equivalent, but PIL decodes
@@ -121,28 +122,53 @@ def _load_image_and_bbox(image_file, bbox_folder, cfg):
     # ROI: grey-out outside the plot polygon (buffered, no-op unless roi.enabled) so SAM masks
     # don't bleed into neighbour-plot wheat. The boxes were already ROI-filtered in the YOLO/SAHI phase.
     image = apply_roi(image, image_file, cfg)
+    # ROI-crop: rect to crop the frame to the plot so SAM sees it at higher res (no-op unless
+    # roi.crop_before_inference). Boxes are offset into crop coords in the GPU step; masks pasted back.
+    h, w = image.shape[:2]
+    crop = roi_crop_box(image_file, cfg, w, h)
     bbox_path = os.path.join(bbox_folder, save_name + ".pt")
     if not os.path.exists(bbox_path):
-        return image_name, save_name, image, None  # None signals missing bbox
+        return image_name, save_name, image, None, crop  # None signals missing bbox
     bbox = torch.load(bbox_path)
-    return image_name, save_name, image, bbox
+    return image_name, save_name, image, bbox, crop
 
 
-def _save_image_results(masks_np, image, save_name, image_name, mask_folder, sam_vis_folder, max_threads):
-    """Save all mask PNGs and the overlay visualization for one image. Returns t_save."""
+def _save_image_results(masks_np, image, save_name, image_name, mask_folder, sam_vis_folder,
+                        crop, max_threads, save_masks=True):
+    """Save all mask PNGs (unless save_masks=False) and the overlay visualization for one image.
+    Returns t_save. With an ROI crop, masks_np are in CROP coords → each is pasted into a full-frame
+    canvas before writing so the saved PNGs + overlay stay aligned to the original image (the 3D
+    segmentation reads full-image masks). Building the label map on the full frame + expanding masks
+    one-at-a-time in the save threads avoids ever holding N full-size masks in RAM at once."""
     t_start_save = time.perf_counter()
+    H, W = image.shape[:2]
+    if crop is not None:
+        cx0, cy0, cx1, cy1 = crop
 
-    # 4. Saving & Visualization (Parallel CPU Saving)
-    objects = np.zeros((masks_np.shape[1], masks_np.shape[2]), dtype=np.uint16)
+    def _expand(m):
+        """Crop mask -> full-frame canvas (identity when there's no crop)."""
+        if crop is None:
+            return m
+        full = np.zeros((H, W), dtype=m.dtype)
+        full[cy0:cy1, cx0:cx1] = m
+        return full
+
+    # 4. Saving & Visualization (Parallel CPU Saving) — label map is always full-frame
+    objects = np.zeros((H, W), dtype=np.uint16)
     save_tasks = []
 
     for idx, mask_np in enumerate(masks_np):
-        objects[mask_np > 0] = idx + 1
-        out_path = os.path.join(mask_folder, f"{save_name}_{idx:03}.png")
-        save_tasks.append((out_path, mask_np))
+        if crop is None:
+            objects[mask_np > 0] = idx + 1
+        else:
+            objects[cy0:cy1, cx0:cx1][mask_np > 0] = idx + 1  # view assignment writes back into objects
+        if save_masks:
+            out_path = os.path.join(mask_folder, f"{save_name}_{idx:03}.png")
+            save_tasks.append((out_path, mask_np))
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_threads) as executor:
-        list(executor.map(lambda arg: cv2.imwrite(arg[0], arg[1]), save_tasks))
+    if save_tasks:  # skipped entirely when save_masks=False (fast A/B: overlay + counts only)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_threads) as executor:
+            list(executor.map(lambda arg: cv2.imwrite(arg[0], _expand(arg[1])), save_tasks))
 
     # Reverted to your highly efficient sparse NumPy math
     color_mask = visualize_obj(objects) / 255.0
@@ -210,6 +236,7 @@ def run_sam_phase(image_folders, cfg):
 
         start_sam_plot = time.perf_counter()
         n_images = len(image_files)
+        save_masks_flag = cfg.get("save_masks", True)  # false = skip per-head PNGs (fast A/B, overlay only)
         save_futures = []  # collect save futures so we can harvest t_save at the end
         # BACKPRESSURE cap: how many image-saves may sit in the queue at once. Each queued save still
         # holds that image's full-res masks (~12 MB per head -> a few GB at hundreds of phone heads),
@@ -232,7 +259,7 @@ def run_sam_phase(image_folders, cfg):
                 # --- PRE-PROCESSING: collect load results for the current image ---
                 # .result() blocks until the parallel load is done — usually already finished
                 # since it ran during the previous GPU call.
-                image_name, save_name, image, bbox = load_future.result()
+                image_name, save_name, image, bbox, crop = load_future.result()
 
                 if os.path.exists(os.path.join(sam_vis_folder, image_name)):
                     continue
@@ -246,7 +273,8 @@ def run_sam_phase(image_folders, cfg):
                 # Also starts immediately and runs in parallel while the GPU works below.
                 # _save_image_results writes all mask PNGs + the overlay visualization.
                 if prev_save_data is not None:
-                    sf = executor.submit(_save_image_results, *prev_save_data, cfg.method.max_threads)
+                    sf = executor.submit(_save_image_results, *prev_save_data,
+                                         cfg.method.max_threads, save_masks_flag)
                     save_futures.append(sf)
                     prev_save_data = None  # drop reference so RAM can be freed once save is done
                     # backpressure: if the save queue is deeper than the cap, block on the oldest
@@ -265,12 +293,24 @@ def run_sam_phase(image_folders, cfg):
 
                 bbox = bbox.to(DEVICE)
 
+                # ROI-crop: feed SAM the cropped plot (higher head resolution) and shift the boxes
+                # into crop coords. masks come back at crop size → pasted back to full frame on save.
+                if crop is not None:
+                    cx0, cy0, cx1, cy1 = crop
+                    sam_image = image[cy0:cy1, cx0:cx1]
+                    bbox_in = bbox.clone()
+                    bbox_in[:, [0, 2]] = (bbox_in[:, [0, 2]] - cx0).clamp(0, cx1 - cx0)
+                    bbox_in[:, [1, 3]] = (bbox_in[:, [1, 3]] - cy0).clamp(0, cy1 - cy0)
+                else:
+                    sam_image = image
+                    bbox_in = bbox
+
                 # --- GPU INFERENCE: image embedding (the heavy bottleneck) ---
                 # Main thread blocks here. load(N+1) and save(N-1) run on CPU in parallel.
                 t_start_img = time.perf_counter()
 
                 # 2. Image Embedding (heavy part). The encoder always takes one image at a time.
-                predictor.set_image(image)
+                predictor.set_image(sam_image)
                 torch.cuda.synchronize()
                 t_embed = time.perf_counter() - t_start_img
 
@@ -280,7 +320,7 @@ def run_sam_phase(image_folders, cfg):
                 # 3. Predict Masks — one box at a time through the decoder. The decoder *can* batch
                 # boxes, but with hundreds of heads on a full-res image that spikes VRAM (each box ->
                 # a full H x W mask), so we keep it one-at-a-time which is the safe, proven default.
-                transformed_boxes = predictor.transform.apply_boxes_torch(bbox, image.shape[:2])
+                transformed_boxes = predictor.transform.apply_boxes_torch(bbox_in, sam_image.shape[:2])
                 all_masks_np = []
 
                 with torch.no_grad():
@@ -315,7 +355,7 @@ def run_sam_phase(image_folders, cfg):
                 total_sam_images += 1
 
                 # store results so we can submit the save on the next loop iteration
-                prev_save_data = (masks_np, image, save_name, image_name, mask_folder, sam_vis_folder)
+                prev_save_data = (masks_np, image, save_name, image_name, mask_folder, sam_vis_folder, crop)
 
                 # Cleanup loop to prevent VRAM overflow
                 predictor.reset_image()
@@ -326,7 +366,8 @@ def run_sam_phase(image_folders, cfg):
             # No next GPU call to overlap with, but we still submit so it runs in the background
             # while the executor waits for all futures to finish on __exit__.
             if prev_save_data is not None:
-                sf = executor.submit(_save_image_results, *prev_save_data, cfg.method.max_threads)
+                sf = executor.submit(_save_image_results, *prev_save_data,
+                                     cfg.method.max_threads, save_masks_flag)
                 save_futures.append(sf)
 
             # Collect t_save from all completed save futures and add to total

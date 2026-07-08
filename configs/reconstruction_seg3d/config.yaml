@@ -56,6 +56,9 @@ framerate: 20
 # camera elevation angle in degrees above the scene
 elevation: 45
 
+# 360° video resolution = training image / render_360_downscale (1 = full res, 2 = half [default])
+render_360_downscale: 2
+
 # viewer settings
 # "full" = colored segmentation viewer (needs step 4 output), "single" = plain Gaussian viewer (works after step 1)
 viewer_type: "full"

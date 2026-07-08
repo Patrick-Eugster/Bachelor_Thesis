@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 import time
+import threading
 import datetime
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -25,6 +26,106 @@ def fmt_time(seconds):
     m = int((seconds % 3600) // 60)
     s = int(seconds % 60)
     return f"{h}:{m:02d}:{s:02d}"
+
+
+def _fmt_mib(mib):
+    """MiB -> 'X.XG' string for the report table, or '-' when unmeasured (None/0)."""
+    if not mib:
+        return "-"
+    return f"{mib / 1024:.1f}G"
+
+
+def _descendant_rss_mib(root_pid):
+    """Sum RSS (MiB) of root_pid's descendants (NOT root itself), read from /proc. 0 if unavailable.
+    During a pipeline step the orchestrator's only descendants are that step's subprocess tree, so
+    this is the STEP's RAM — and it drops back when the step's process exits (unlike cgroup memory,
+    which keeps sticky page cache and would bleed across steps)."""
+    try:
+        page = os.sysconf("SC_PAGE_SIZE")
+    except (ValueError, OSError, AttributeError):
+        page = 4096
+    children, rss = {}, {}
+    try:
+        pids = [e for e in os.listdir("/proc") if e.isdigit()]
+    except OSError:
+        return 0.0
+    for entry in pids:
+        pid = int(entry)
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                data = f.read()
+            # comm (field 2) can contain spaces/parens → parse after the last ')'
+            fields = data[data.rfind(")") + 2:].split()
+            ppid = int(fields[1])                 # ppid is field 4 = index 1 after state
+            with open(f"/proc/{pid}/statm") as f:
+                resident_pages = int(f.read().split()[1])
+        except (FileNotFoundError, ProcessLookupError, IndexError, ValueError, OSError):
+            continue
+        children.setdefault(ppid, []).append(pid)
+        rss[pid] = resident_pages * page
+    # DFS from root's children (exclude the orchestrator itself)
+    total, seen, stack = 0, set(), list(children.get(root_pid, []))
+    while stack:
+        pid = stack.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        total += rss.get(pid, 0)
+        stack.extend(children.get(pid, []))
+    return total / (1024 * 1024)
+
+
+class _ResourceSampler:
+    """Background thread that polls PEAK GPU VRAM + PEAK RAM of the currently-running step, so the
+    run-report can show per-step (Train vs Render vs Metrics vs Seg …) peaks instead of one global
+    number that the biggest step masks. Each pipeline step runs as its OWN subprocess (fresh CUDA
+    context, freed on exit), so windowing the sampler around one step gives that step's true peak.
+      VRAM = nvidia-smi memory.used (whole GPU — accurate per-step on an EXCLUSIVE GPU, e.g. Euler
+             --gpus=rtx_4090:1; on a shared GPU it would include other users). None if no nvidia-smi.
+      RAM  = summed RSS of this process's descendant tree = the step's subprocess (see above)."""
+    def __init__(self, interval=1.0):
+        self.interval = interval
+        self._stop = threading.Event()
+        self._thread = None
+        self.vram_peak_mib = None      # None = no GPU / nvidia-smi missing
+        self.ram_peak_mib = 0.0
+        self._root = os.getpid()
+
+    def _gpu_used_mib(self):
+        """Whole-GPU used memory in MiB via nvidia-smi, or None if unavailable."""
+        try:
+            out = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=5)
+            vals = [int(x) for x in out.stdout.split() if x.strip().isdigit()]
+            return max(vals) if vals else None
+        except Exception:
+            return None
+
+    def _sample(self):
+        """Take one VRAM + RAM reading and fold it into the running peaks."""
+        g = self._gpu_used_mib()
+        if g is not None:
+            self.vram_peak_mib = g if self.vram_peak_mib is None else max(self.vram_peak_mib, g)
+        self.ram_peak_mib = max(self.ram_peak_mib, _descendant_rss_mib(self._root))
+
+    def _run(self):
+        self._sample()   # one immediate sample so even a very short step gets a number
+        while not self._stop.wait(self.interval):
+            self._sample()
+
+    def start(self):
+        """Spawn the daemon sampling thread."""
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self):
+        """Stop sampling and return (vram_peak_mib, ram_peak_mib)."""
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=self.interval + 5)
+        return self.vram_peak_mib, self.ram_peak_mib
 
 
 def _save_config(model_path, cfg):
@@ -130,12 +231,15 @@ class RunContext:
             return depends_on
         return None
 
-    def record(self, key, name, status, seconds, blocked_by, tail):
-        """Store one step's outcome. tqdm lines are collapsed to their final \\r-segment."""
+    def record(self, key, name, status, seconds, blocked_by, tail, vram_mib=None, ram_mib=None):
+        """Store one step's outcome. tqdm lines are collapsed to their final \\r-segment.
+        vram_mib/ram_mib = this step's peak GPU/RAM (None when not measured, e.g. skipped)."""
         self.status[key] = status
         self.records.append({
             "key": key, "name": name, "status": status,
             "seconds": round(seconds, 2), "blocked_by": blocked_by,
+            "vram_peak_mib": (round(vram_mib) if vram_mib else None),
+            "ram_peak_mib": (round(ram_mib) if ram_mib else None),
             "output_tail": [t.split("\r")[-1] for t in tail],
         })
 
@@ -156,22 +260,27 @@ def run_step(ctx, key, step_name, command_list, log_file, depends_on=None, cwd=N
         return
 
     tail = []
+    sampler = _ResourceSampler().start()   # per-step peak VRAM + RAM (this step's own subprocess)
     t0 = time.perf_counter()
     rc = run_command(command_list, log_file, cwd=cwd, capture=tail)
     elapsed = time.perf_counter() - t0
+    vram_mib, ram_mib = sampler.stop()
     ctx.timings[step_name] = elapsed
 
+    peak_str = f" | peak VRAM {_fmt_mib(vram_mib)} / RAM {_fmt_mib(ram_mib)}"
     # allow_interrupt (viewer): a non-zero exit just means the user closed it → treat as ok
     if rc == 0 or allow_interrupt:
         if allow_interrupt and rc != 0:
             print(f"\n>>> {step_name} closed (exit code {rc})")
         else:
-            print(f"\n>>> {step_name} finished in {fmt_time(elapsed)}")
-        ctx.record(key, step_name, "ok", elapsed, blocked_by=None, tail=tail)
+            print(f"\n>>> {step_name} finished in {fmt_time(elapsed)}{peak_str}")
+        ctx.record(key, step_name, "ok", elapsed, blocked_by=None, tail=tail,
+                   vram_mib=vram_mib, ram_mib=ram_mib)
     else:
-        print(f"\n>>> !!! {step_name} FAILED (exit code {rc}) after {fmt_time(elapsed)} "
+        print(f"\n>>> !!! {step_name} FAILED (exit code {rc}) after {fmt_time(elapsed)}{peak_str} "
               f"— continuing; any steps that depend on it will be skipped.")
-        ctx.record(key, step_name, "failed", elapsed, blocked_by=None, tail=tail)
+        ctx.record(key, step_name, "failed", elapsed, blocked_by=None, tail=tail,
+                   vram_mib=vram_mib, ram_mib=ram_mib)
 
 
 class _Tee:
@@ -225,14 +334,20 @@ def _print_and_write_report(ctx, model_path, cfg, exp_name):
         lines.append(f"  slurm job   : {job}")
     lines.append(f"  model_path  : {model_path}")
     lines.append("-" * 64)
-    lines.append(f"  {'STEP':<24}{'STATUS':<8}{'TIME':>10}")
+    lines.append(f"  {'STEP':<24}{'STATUS':<8}{'TIME':>10}{'VRAM':>9}{'RAM':>9}")
     lines.append("-" * 64)
     for r in ctx.records:
         icon  = _STATUS_ICON.get(r["status"], "?")
         extra = f"   (blocked by {r['blocked_by']})" if r["blocked_by"] else ""
-        lines.append(f"  {r['name']:<24}{icon:<8}{fmt_time(r['seconds']):>10}{extra}")
+        lines.append(f"  {r['name']:<24}{icon:<8}{fmt_time(r['seconds']):>10}"
+                     f"{_fmt_mib(r.get('vram_peak_mib')):>9}{_fmt_mib(r.get('ram_peak_mib')):>9}{extra}")
     lines.append("-" * 64)
-    lines.append(f"  {'TOTAL':<24}{'':<8}{fmt_time(total_seconds):>10}")
+    # only one step runs at a time, so the whole-job peak = the MAX step peak
+    peak_vram = max((r.get("vram_peak_mib") or 0) for r in ctx.records) if ctx.records else 0
+    peak_ram  = max((r.get("ram_peak_mib") or 0) for r in ctx.records) if ctx.records else 0
+    lines.append(f"  {'TOTAL':<24}{'':<8}{fmt_time(total_seconds):>10}"
+                 f"{_fmt_mib(peak_vram):>9}{_fmt_mib(peak_ram):>9}")
+    lines.append(f"  {'(VRAM/RAM = peak per step; TOTAL = max across steps)':<40}")
     lines.append("=" * 64)
     lines.append(f"  VERDICT: {verdict}")
     if failed:
@@ -350,7 +465,8 @@ def _run_pipeline(cfg):
     if cfg.run_metrics:
         run_step(ctx, "metrics", "3. Metrics", [
             "python", "src/reconstruction/metrics.py",
-            "-m", model_path
+            "-m", model_path,
+            "-s", dataset_path,   # enables the ROI + marker masked passes (COLMAP frame; Agisoft auto-skips)
         ], log_file, depends_on="render")
 
     # Step 4: 3D Segmentation — assign wheat head IDs to Gaussians
@@ -398,6 +514,7 @@ def _run_pipeline(cfg):
             "--n_frames", str(cfg.n_frames),
             "--framerate", str(cfg.framerate),
             "--elevation", str(cfg.elevation),
+            "--downscale", str(cfg.get("render_360_downscale", 2)),
         ] + fast_render_flag + white_bg_flag + data_device_flag + pp_flag, log_file, depends_on="seg")
 
     # Step 6: Evaluate 3D segmentation quality — saves overlay PNGs per camera

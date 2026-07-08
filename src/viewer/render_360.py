@@ -20,7 +20,7 @@ from gaussians.scene import Scene
 from gaussians.scene.cameras import MiniCam
 from gaussians.utils.general_utils import safe_state
 from gaussians.utils.graphics_utils import getProjectionMatrix, getWorld2View2
-from gaussians.utils.wheatgs_helper import render_360, render_360_fast
+from gaussians.utils.wheatgs_helper import render_360, render_360_fast, estimate_scene_up
 
 #### Begin of 360-degree camera trajectory copied from gsgen ####
 # These two functions are adapted from the implementation in:
@@ -139,7 +139,7 @@ def render_wheat_head(dataset : ModelParams, pipeline : PipelineParams, exp_name
                 shutil.rmtree(render_path)
 
 def render_wheat_field(dataset : ModelParams, pipeline : PipelineParams, exp_name,
-                       n_frames=100, framerate=10, elevation=45, save_frames=False, load_iteration=-1, fast_render=False):
+                       n_frames=100, framerate=10, elevation=45, save_frames=False, load_iteration=-1, fast_render=False, downscale=2):
     seg2d_dir = os.path.join(dataset.model_path, "segmentation_3d", exp_name, "2DSeg")
     out_dir = os.path.join(dataset.model_path, "segmentation_3d", exp_name, "3DSeg")
     os.makedirs(out_dir, exist_ok=True)
@@ -159,32 +159,48 @@ def render_wheat_field(dataset : ModelParams, pipeline : PipelineParams, exp_nam
     # viewpoint_stack += viewpoint_stack_eval
     print(f"Length of viewpoint stack: {len(viewpoint_stack)}")
 
-    # Build all_obj_labels from the per-head PLY files saved by run_3d_seg.py (step 4).
-    # The whole-scene FlashSplat accumulation gives useless labels because background
-    # contributions dominate wheat head contributions for every Gaussian in the scene.
-    # The per-head PLY files contain 700-3000 Gaussians per head from step 4's targeted
-    # optimization. Their positions match gaussians.ply (the fine-tuned full scene model
-    # saved at the end of step 4) with 100% exact match — but NOT iteration_15000 (original
-    # model), because step 4 fine-tuning moves Gaussian positions.
+    # Labels for the colored render. PREFER the step-4 all_obj_labels.pth: it assigns each Gaussian to
+    # exactly ONE head (overlaps resolved by reset_label during step 4) → a clean partition. The per-head
+    # ply/wh_*.ply files store each head's RAW pre-resolution set, which OVERLAP heavily (a Gaussian can
+    # land in ~30 heads) plus spurious marker/background Gaussians that step 4 later pruned — rebuilding
+    # from them mis-colors the render (overlap → arbitrary "last head wins" color; markers get colored).
+    # So we only rebuild from the plys as a fallback when the .pth is missing, and never overwrite it.
     ply_dir = os.path.join(dataset.model_path, "segmentation_3d", exp_name, "ply")
     scene_ply = os.path.join(dataset.model_path, "segmentation_3d", exp_name, "gaussians.ply")
-    if os.path.exists(scene_ply) and os.path.exists(ply_dir):
-        # reload gaussians from fine-tuned model so positions match per-head PLYs
-        print(f"Loading fine-tuned scene model from step 4 ({scene_ply})...")
-        gaussians.load_ply(scene_ply)
-        print(f"Fine-tuned model: {len(gaussians.get_xyz)} Gaussians")
+    labels_path = os.path.join(dataset.model_path, "segmentation_3d", exp_name, "all_obj_labels.pth")
+    if not os.path.exists(scene_ply):
+        print("WARNING: gaussians.ply not found — cannot render. Aborting.")
+        return
+    # reload gaussians from the fine-tuned step-4 model (positions match the labels + per-head plys)
+    print(f"Loading fine-tuned scene model from step 4 ({scene_ply})...")
+    gaussians.load_ply(scene_ply)
+    print(f"Fine-tuned model: {len(gaussians.get_xyz)} Gaussians")
 
-        # build position → index lookup for O(1) matching
+    all_obj_labels = None
+    if os.path.exists(labels_path):
+        lab = torch.load(labels_path)
+        if lab.shape[1] == len(gaussians.get_xyz):
+            all_obj_labels = lab
+            n_lab = int(all_obj_labels[1:].any(dim=0).sum())
+            overlap = int((all_obj_labels[1:].sum(dim=0) > 1).sum())
+            print(f"Using step-4 all_obj_labels.pth: {all_obj_labels.shape[0]-1} heads, "
+                  f"{n_lab}/{lab.shape[1]} Gaussians labeled, overlap={overlap}.")
+        else:
+            print(f"all_obj_labels.pth size {lab.shape[1]} != model {len(gaussians.get_xyz)} — rebuilding from plys.")
+
+    if all_obj_labels is None:
+        # FALLBACK: rebuild from per-head plys (heavier overlap — see note above; only used if no .pth)
+        if not os.path.isdir(ply_dir):
+            print("WARNING: no all_obj_labels.pth and no ply/ dir — cannot build labels. Aborting.")
+            return
+        print("No usable all_obj_labels.pth — rebuilding labels from per-head plys (fallback)...")
         fine_xyz_np = gaussians.get_xyz.detach().cpu().numpy()
         pos_to_idx = {fine_xyz_np[i].tobytes(): i for i in range(len(fine_xyz_np))}
-
-        # collect all per-head PLY files and find max head ID
         head_plys = sorted(glob.glob(os.path.join(ply_dir, "wh_*.ply")))
         def _head_id(path):
             """Parse head ID from wh_0001.ply or wh_0001_a.ply → 1"""
             return int(os.path.splitext(os.path.basename(path))[0].split('_')[1])
         max_head_id = max(_head_id(p) for p in head_plys)
-
         all_obj_labels = torch.zeros(max_head_id + 1, len(fine_xyz_np), dtype=torch.bool)
         head_gs = GaussianModel(dataset.sh_degree)
         for ply_file in head_plys:
@@ -195,20 +211,23 @@ def render_wheat_field(dataset : ModelParams, pipeline : PipelineParams, exp_nam
                 idx = pos_to_idx.get(head_xyz_np[i].tobytes(), -1)
                 if idx >= 0:
                     all_obj_labels[head_id, idx] = True
-
         n_labeled = all_obj_labels[1:].any(dim=0).sum().item()
-        print(f"Gaussians labeled from {len(head_plys)} PLY files: {n_labeled}/{len(fine_xyz_np)} ({100*n_labeled/len(fine_xyz_np):.1f}%)")
-    else:
-        print("WARNING: gaussians.ply or ply/ not found — cannot build labels. Aborting.")
-        return
+        print(f"Rebuilt labels from {len(head_plys)} plys: {n_labeled}/{len(fine_xyz_np)} labeled")
+        # only save when we actually rebuilt (never clobber a good step-4 all_obj_labels.pth)
+        labels_mb = all_obj_labels.numel() * all_obj_labels.element_size() / 1e6
+        print(f"Saving rebuilt all_obj_labels ({labels_mb:.0f} MB)...")
+        torch.save(all_obj_labels.detach().cpu(), labels_path)
 
-    labels_mb = all_obj_labels.numel() * all_obj_labels.element_size() / 1e6
-    print(f"Saving all_obj_labels ({labels_mb:.0f} MB)...")
-    torch.save(all_obj_labels.detach().cpu(), os.path.join(dataset.model_path, "segmentation_3d", exp_name, "all_obj_labels.pth"))
     print("Starting render loop...")
+    # Estimate the scene up axis from the cameras so the orbit circles the plot like a turntable.
+    # Phone COLMAP frames aren't gravity-aligned → world-Z orbit loops over the top; FIP returns None
+    # here (≈gravity-aligned) and keeps the original world-Z path.
+    gs_centroid = torch.mean(gaussians.get_xyz.detach(), dim=0).cpu().numpy()
+    scene_up = estimate_scene_up(viewpoint_stack, gs_centroid)
+    print(f"Scene up axis: {'world-Z (default)' if scene_up is None else scene_up.tolist()}")
     render_fn = render_360_fast if fast_render else render_360
     output_video = render_fn(viewpoint_stack[0], scene.cameras_extent, out_dir, n_frames, framerate, gaussians, pipeline, background,
-                             all_obj_labels=all_obj_labels, all_counts=None, elevation=elevation)
+                             all_obj_labels=all_obj_labels, all_counts=None, elevation=elevation, up=scene_up, downscale=downscale)
     if not save_frames: # if not specified then remove the saved frames for generating video
         shutil.rmtree(out_dir)
 
@@ -226,11 +245,12 @@ if __name__ == "__main__":
     parser.add_argument("--elevation", type=int, default=45, help="elevation angle for the camera trajectory rotating around the scene")
     parser.add_argument("--save_frames", action="store_true", help="If specified, save frames in addition to output video")
     parser.add_argument("--fast_render", action="store_true", help="Use single colored render per frame instead of N_heads flashsplat renders (~N_heads× faster)")
+    parser.add_argument("--downscale", type=int, default=2, help="render resolution divisor of the training image: 1 = full res, 2 = half (default)")
     args = get_combined_args(parser)
     print(f"Rendering {args.model_path} for 3D segmentation experiment {args.exp_name}, Option: {args.render_type}")
     if args.render_type == "field":
         print("Render the 3D segmentation on the whole wheat field")
-        render_wheat_field(model.extract(args), pipeline.extract(args), args.exp_name, args.n_frames, args.framerate, args.elevation, args.save_frames, fast_render=args.fast_render)
+        render_wheat_field(model.extract(args), pipeline.extract(args), args.exp_name, args.n_frames, args.framerate, args.elevation, args.save_frames, fast_render=args.fast_render, downscale=args.downscale)
     elif args.render_type == "head":
         print("Render each individual segmented wheat head")
         render_wheat_head(model.extract(args), pipeline.extract(args), args.exp_name, args.n_frames, args.framerate, args.elevation, args.save_frames)

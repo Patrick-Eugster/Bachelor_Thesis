@@ -23,11 +23,12 @@ import shutil
 
 import numpy as np
 import cv2
+from PIL import Image
 import torch
 from ultralytics import YOLO
 
 from wheat_utils.path_utils import get_mask_generation_result_path
-from mask_generation.roi_mask import apply_roi, roi_keep_mask
+from mask_generation.roi_mask import apply_roi, roi_keep_mask, roi_crop_box
 
 
 def reset_folder(folder_path):
@@ -65,7 +66,13 @@ def process_one_image(model, img_path, cfg, bbox_folder, bboxes_with_conf_folder
     """Run YOLOv11 on one image, ROI-filter, split good/bad by conf, save .pt + overlay.
     Returns (good_count, bad_count)."""
     save_name = os.path.splitext(os.path.basename(img_path))[0]
-    img_bgr = cv2.imread(img_path)  # BGR (what ultralytics expects for a numpy input)
+    # Load via PIL then convert RGB->BGR: byte-identical to cv2.imread but SILENT on the
+    # Samsung-firmware phone JPEGs (cv2 prints "Invalid SOS parameters for sequential JPEG").
+    # ultralytics wants BGR for a numpy input, so we convert. Same trick as the SAM phase.
+    try:
+        img_bgr = cv2.cvtColor(np.array(Image.open(img_path).convert("RGB")), cv2.COLOR_RGB2BGR)
+    except Exception:
+        img_bgr = None
     if img_bgr is None:
         print(f"   UNREADABLE  {save_name}")
         torch.save(torch.tensor([]), os.path.join(bbox_folder, f"{save_name}.pt"))
@@ -74,15 +81,28 @@ def process_one_image(model, img_path, cfg, bbox_folder, bboxes_with_conf_folder
     img_bgr = apply_roi(img_bgr, img_path, cfg)
     orig_h, orig_w = img_bgr.shape[:2]
 
+    # ROI-crop (no-op unless roi.crop_before_inference): crop to the plot region so it fills imgsz
+    # (bigger heads + less VRAM). Boxes come back in crop coords → offset to full-image px below.
+    crop = roi_crop_box(img_path, cfg, orig_w, orig_h)
+    if crop is not None:
+        cx0, cy0, cx1, cy1 = crop
+        infer_img = img_bgr[cy0:cy1, cx0:cx1]
+    else:
+        cx0, cy0 = 0, 0
+        infer_img = img_bgr
+
     # ultralytics does letterbox+NMS internally and returns boxes in ORIGINAL pixels.
     # conf = the NMS floor so low-conf boxes survive for metrics; we split good/bad ourselves below.
-    r = model.predict(img_bgr, imgsz=cfg.method.imgsz, conf=cfg.method.conf_threshold_nms_floor,
+    r = model.predict(infer_img, imgsz=cfg.method.imgsz, conf=cfg.method.conf_threshold_nms_floor,
                       iou=cfg.method.iou_threshold_nms, max_det=cfg.method.max_det,
                       classes=list(cfg.method.classes_to_detect), device=device, verbose=False)[0]
 
     if r.boxes is not None and len(r.boxes) > 0:
         xyxy = r.boxes.xyxy.cpu().numpy().astype(np.float32)
         conf = r.boxes.conf.cpu().numpy().astype(np.float32)
+        if crop is not None:  # crop → full-image coords so SAM/eval/overlay all agree
+            xyxy[:, [0, 2]] += cx0
+            xyxy[:, [1, 3]] += cy0
     else:
         xyxy = np.zeros((0, 4), dtype=np.float32)
         conf = np.zeros((0,), dtype=np.float32)

@@ -61,7 +61,8 @@ def print_final_configuration_report(cfg, total_seconds, sam_seconds, total_imag
     """Print the boxed end-of-run summary (settings, detection strategy, dataset totals, timing).
     The detection block differs per method: yolo_sam_v1 letterboxes the whole image to one size,
     sahi_yolo_sam tiles it at native resolution (no resize) — so they need different lines."""
-    minutes, seconds = divmod(total_seconds, 60)
+    hours, rem = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(rem, 60)
     print("\n" + "="*50)
     print("      FINAL MASK GENERATION SUMMARY REPORT")
     print("="*50)
@@ -112,7 +113,9 @@ def print_final_configuration_report(cfg, total_seconds, sam_seconds, total_imag
         print(f"{'Average Heads Per Image:':<25} {total_heads / total_images:.1f}")
     print("-" * 50)
     # 4. Final Timing
-    print(f"{'TOTAL SCRIPT RUNTIME:':<25} {int(minutes)}m {seconds:.2f}s")
+    runtime_str = (f"{int(hours)}h {int(minutes):02d}m {seconds:04.1f}s" if hours
+                   else f"{int(minutes)}m {seconds:.2f}s")
+    print(f"{'TOTAL SCRIPT RUNTIME:':<25} {runtime_str}")
     if total_images > 0:
         print(f"{'Average Time Per Image:':<25} {total_seconds / total_images:.2f}s")
         print(f"{'Avg Time (SAM Only):':<25} {sam_seconds / total_images:.2f}s")
