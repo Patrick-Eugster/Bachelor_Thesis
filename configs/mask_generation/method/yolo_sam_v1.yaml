@@ -7,6 +7,26 @@ name: yolo_sam_v1
 wheat_yolo_model: "wheat_head_detection_model.pt"  # YOLO model trained on wheat head detection
 sam_checkpoint: "sam_vit_h_4b8939.pth"             # SAM ViT-H checkpoint (~2.4 GB)
 
+# --- SAM backend switch (SAM1 vs SAM2 vs SAM3 A/B) ---
+# which segmenter turns the YOLO boxes into masks. Box prompts + image + eval are held fixed, so
+# the versions compare fairly. NO dependency change: SAM2/SAM3 ship inside our installed ultralytics.
+#   sam1 (default) = original ViT-H SamPredictor (uses sam_checkpoint above) — byte-identical to before
+#   sam2           = Meta SAM2 via ultralytics; weight auto-downloads on first use
+#   sam3           = Meta SAM3 via ultralytics; weight is GATED (request access on HF facebook/sam3,
+#                    download sam3.pt into src/mask_generation/weights/)
+sam_backend: sam1
+sam_sam2_weight: "sam2.1_b.pt"   # ultralytics SAM2 checkpoint (auto-downloaded)
+sam_sam3_weight: "sam3.pt"       # ultralytics SAM3 checkpoint (gated; place in weights/ once approved)
+
+# SAM2/SAM3 VRAM control (ultralytics path only). Default all-at-once decode upsamples EVERY box's
+# full-res mask together → ~23 GB on ~300 heads (spills/OOMs on 16 GB). Set >0 to instead ENCODE the
+# image once and decode boxes in batches of this many → bounds VRAM to encoder + one batch.
+#   0  = original all-at-once (unchanged default)
+#   32 = recommended for SAM2 (encoder ~5 GB → total ~7 GB, fits 16 GB, no spill = fast)
+# NOTE: does NOT rescue SAM3 (its encoder alone is ~26 GB — needs a >=40 GB GPU or lower imgsz).
+sam_ul_decode_batch: 0
+sam_ul_chunk_on_oom: 64          # box-chunk size for the all-at-once path's hard-OOM fallback
+
 # floor confidence applied during NMS — all boxes above this survive NMS and are passed to SAM
 # set low (0.01) for metrics to capture the full confidence range for AP/PR curve
 conf_threshold_nms_floor: 0.2

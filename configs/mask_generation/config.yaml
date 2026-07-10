@@ -39,6 +39,12 @@ save_bboxes_conf: false
 # for quick visual A/Bs (e.g. ROI-crop on vs off) where you only want to eyeball the masks.
 save_masks: true
 
+# save_union_mask: write ONE binary foreground union PNG per image (<stem>_union.png) instead of the
+# thousands of per-head PNGs — enough for the SAM-backend A/B (binary IoU vs GT via score_sam_masks.py)
+# and avoids the page-cache RAM balloon from writing ~8k full-res masks per backend. Independent of
+# save_masks. Default off (normal runs still write per-head masks for the 3D pipeline).
+save_union_mask: false
+
 # log SAM progress to wandb.ai dashboard (requires wandb login first)
 wandb_enabled: false
 

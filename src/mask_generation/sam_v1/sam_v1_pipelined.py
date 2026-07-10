@@ -29,6 +29,8 @@ import glob
 import time
 import concurrent.futures
 import gc
+import json
+import resource
 import numpy as np
 import cv2
 from PIL import Image
@@ -134,12 +136,15 @@ def _load_image_and_bbox(image_file, bbox_folder, cfg):
 
 
 def _save_image_results(masks_np, image, save_name, image_name, mask_folder, sam_vis_folder,
-                        crop, max_threads, save_masks=True):
+                        crop, max_threads, save_masks=True, save_union=False):
     """Save all mask PNGs (unless save_masks=False) and the overlay visualization for one image.
     Returns t_save. With an ROI crop, masks_np are in CROP coords → each is pasted into a full-frame
     canvas before writing so the saved PNGs + overlay stay aligned to the original image (the 3D
     segmentation reads full-image masks). Building the label map on the full frame + expanding masks
-    one-at-a-time in the save threads avoids ever holding N full-size masks in RAM at once."""
+    one-at-a-time in the save threads avoids ever holding N full-size masks in RAM at once.
+    save_union=True writes ONE binary foreground union PNG per image (<save_name>_union.png) instead of
+    thousands of per-head PNGs — enough for the SAM-backend A/B (binary IoU) and avoids the page-cache
+    balloon from writing ~8k full-res masks per backend."""
     t_start_save = time.perf_counter()
     H, W = image.shape[:2]
     if crop is not None:
@@ -170,6 +175,12 @@ def _save_image_results(masks_np, image, save_name, image_name, mask_folder, sam
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_threads) as executor:
             list(executor.map(lambda arg: cv2.imwrite(arg[0], _expand(arg[1])), save_tasks))
 
+    # one binary union foreground PNG per image (for the SAM-backend A/B scorer) — cheap, avoids the
+    # thousands-of-per-head-PNGs page-cache balloon. `_union` suffix won't match the per-head glob.
+    if save_union:
+        cv2.imwrite(os.path.join(mask_folder, f"{save_name}_union.png"),
+                    ((objects > 0).astype(np.uint8) * 255))
+
     # Reverted to your highly efficient sparse NumPy math
     color_mask = visualize_obj(objects) / 255.0
     color_img = image / 255.0
@@ -189,6 +200,168 @@ def _save_image_results(masks_np, image, save_name, image_name, mask_folder, sam
 
 
 # =====================================================================
+# -------- SAM BACKEND SWITCH (SAM1 / SAM2 / SAM3) --------
+# =====================================================================
+
+def _build_sam_backend(cfg, weights_dir):
+    """Build the chosen SAM backend and return (backend_name, state_dict).
+    'sam1' (default) = the original ViT-H SamPredictor — byte-identical to before.
+    'sam2'/'sam3'    = Meta SAM2/SAM3 loaded through ultralytics (already installed; NO dependency
+                       change — the classes ship in our ultralytics build). Only the segmenter
+                       changes; the box prompts + images + eval are held fixed so the A/B is fair."""
+    backend = cfg.method.get("sam_backend", "sam1")
+    if backend == "sam1":
+        ckpt = os.path.join(weights_dir, cfg.method.sam_checkpoint)
+        sam = sam_model_registry["vit_h"](checkpoint=ckpt).to(device=DEVICE)
+        sam = torch.compile(sam)
+        predictor = SamPredictor(sam)
+        torch.cuda.synchronize()
+        return backend, {"sam": sam, "predictor": predictor}
+    if backend in ("sam2", "sam3"):
+        from ultralytics import SAM  # lazy import: only when actually used (default sam1 never imports it)
+        key        = "sam_sam2_weight" if backend == "sam2" else "sam_sam3_weight"
+        default_w  = "sam2.1_b.pt"     if backend == "sam2" else "sam3.pt"
+        weight     = cfg.method.get(key, default_w)
+        wpath      = os.path.join(weights_dir, weight)
+        # if the weight sits in our weights/ dir use it; else hand the bare name to ultralytics
+        # (sam2 auto-downloads; sam3 is GATED so it must already be on disk — see the run doc)
+        model = SAM(wpath if os.path.exists(wpath) else weight)
+        chunk = int(cfg.method.get("sam_ul_chunk_on_oom", 64))  # box-chunk size for the OOM fallback
+        # 0 = original all-at-once decode (default, unchanged); >0 = encode-once + decode in batches of
+        # this many boxes (bounds VRAM — fixes SAM2's spill; does not help SAM3, encoder alone ~26GB).
+        decode_batch = int(cfg.method.get("sam_ul_decode_batch", 0))
+        return backend, {"model": model, "chunk": chunk, "decode_batch": decode_batch}
+    raise ValueError(f"unknown sam_backend '{backend}' (expected sam1 / sam2 / sam3)")
+
+
+def _ultra_predict_boxes(model, img_bgr, boxes_np, hw, chunk_on_oom=64):
+    """ultralytics SAM (sam2/sam3) box-prompt inference for ONE image, OOM-safe.
+    Tries ALL boxes in one predict call (encodes once → fast + fair timing). On CUDA OOM — FIP has up
+    to ~300 heads on a 4k frame, and ultralytics decodes every box's full-res mask at once, which can
+    exceed a 16 GB GPU — it falls back to decoding the boxes in chunks (re-encodes per chunk, slower)
+    so the run COMPLETES instead of crashing. Returns (masks_np [N,H,W] uint8 0/255, chunked_flag)."""
+    Hc, Wc = hw
+
+    def _decode(res):
+        """One predict Result -> (N,H,W) uint8 masks aligned to the input image."""
+        r = res[0]
+        if r.masks is None or r.masks.data is None or len(r.masks.data) == 0:
+            return np.zeros((0, Hc, Wc), dtype=np.uint8)
+        m = r.masks.data.detach().cpu().numpy()          # (N, h, w), box-prompt order
+        mb = (m > 0.5).astype(np.uint8) * 255
+        if mb.shape[1:] != (Hc, Wc) and len(mb):         # upsample to input size if ultralytics didn't
+            mb = np.stack([cv2.resize(x, (Wc, Hc), interpolation=cv2.INTER_NEAREST) for x in mb])
+        return mb
+
+    if len(boxes_np) == 0:
+        return np.zeros((0, Hc, Wc), dtype=np.uint8), False
+    try:
+        return _decode(model.predict(img_bgr, bboxes=boxes_np, verbose=False, save=False)), False
+    except torch.cuda.OutOfMemoryError:
+        # bounded-VRAM fallback: decode the boxes in chunks (each predict re-encodes the image)
+        torch.cuda.empty_cache()
+        gc.collect()
+        parts = []
+        for i in range(0, len(boxes_np), chunk_on_oom):
+            parts.append(_decode(model.predict(img_bgr, bboxes=boxes_np[i:i + chunk_on_oom],
+                                               verbose=False, save=False)))
+            torch.cuda.empty_cache()
+        masks_np = np.concatenate(parts, axis=0) if parts else np.zeros((0, Hc, Wc), dtype=np.uint8)
+        print(f"    [OOM-safe] decoded {len(boxes_np)} boxes in chunks of {chunk_on_oom} "
+              f"(all-at-once OOMed) — timing for this image includes extra re-encodes")
+        return masks_np, True
+
+
+def _ultra_predict_boxes_batched(model, img_bgr, boxes_np, hw, batch=32):
+    """SEPARATE opt-in path (sam_ul_decode_batch>0): ENCODE the image ONCE, then decode the boxes in
+    batches — instead of the default all-at-once `model.predict` that upsamples every box's full-res
+    mask together (the 23 GB spike). Bounds VRAM to encoder + one batch of masks.
+      Measured: SAM2 encoder ~5 GB → this keeps SAM2 at ~7 GB (fits 16 GB, no WSL spill = fast).
+      SAM3 encoder alone is ~26 GB, so this does NOT rescue SAM3 (a hardware wall, not a code issue).
+    The default all-at-once path (_ultra_predict_boxes) is left untouched — this only runs when the
+    sam_ul_decode_batch knob is set."""
+    Hc, Wc = hw
+    if len(boxes_np) == 0:
+        return np.zeros((0, Hc, Wc), dtype=np.uint8)
+    # lazily init the predictor (one tiny predict creates model.predictor + loads the model)
+    if getattr(model, "predictor", None) is None:
+        model.predict(img_bgr, bboxes=boxes_np[:1], verbose=False, save=False)
+    pred = model.predictor
+    pred.set_image(img_bgr)                                   # ENCODE ONCE (features cached on pred)
+    im = pred.preprocess(pred.batch[1])                       # preprocessed tensor for decode/postprocess
+    parts = []
+    for i in range(0, len(boxes_np), batch):                 # decode a batch at a time (reuses features)
+        preds = pred.prompt_inference(im, bboxes=boxes_np[i:i + batch], multimask_output=False)
+        results = pred.postprocess(preds, im, [img_bgr])      # upsample this batch to full res
+        md = results[0].masks
+        if md is not None and md.data is not None and len(md.data):
+            m = md.data.detach().cpu().numpy()
+            mb = (m > 0.5).astype(np.uint8) * 255
+            if mb.shape[1:] != (Hc, Wc) and len(mb):
+                mb = np.stack([cv2.resize(x, (Wc, Hc), interpolation=cv2.INTER_NEAREST) for x in mb])
+            parts.append(mb)
+        del preds, results, md
+        torch.cuda.empty_cache()
+    pred.reset_image()
+    return np.concatenate(parts, axis=0) if parts else np.zeros((0, Hc, Wc), dtype=np.uint8)
+
+
+def _infer_masks(backend, state, sam_image, bbox_in):
+    """Run one image's boxes through the chosen SAM backend. Returns
+    (masks_np [N,H,W] uint8 0/255, t_embed, t_pred), masks aligned to sam_image. The image + boxes are
+    identical across backends (fair swap) — only the model differs. SAM2/3 report t_embed=0 because
+    ultralytics encodes+decodes in one call (per-image total time t_embed+t_pred stays comparable)."""
+    Hc, Wc = sam_image.shape[:2]
+
+    if backend == "sam1":
+        predictor = state["predictor"]
+        # 2. Image Embedding (heavy part). The encoder always takes one image at a time.
+        t0 = time.perf_counter()
+        predictor.set_image(sam_image)
+        torch.cuda.synchronize()
+        t_embed = time.perf_counter() - t0
+
+        # 3. Predict Masks — one box at a time through the decoder. The decoder *can* batch boxes, but
+        # with hundreds of heads on a full-res image that spikes VRAM (each box -> a full H x W mask),
+        # so we keep it one-at-a-time which is the safe, proven default.
+        t1 = time.perf_counter()
+        transformed_boxes = predictor.transform.apply_boxes_torch(bbox_in, sam_image.shape[:2])
+        all_masks_np = []
+        with torch.no_grad():
+            for b_idx in range(len(transformed_boxes)):
+                single_box = transformed_boxes[b_idx : b_idx + 1]  # keep the [1,4] shape
+                masks, _, _ = predictor.predict_torch(
+                    point_coords=None, point_labels=None,
+                    boxes=single_box, multimask_output=False)
+                # squeeze(1) -> [1, H, W]; move to CPU + uint8 immediately to free VRAM
+                all_masks_np.append((masks.squeeze(1).cpu().numpy() * 255).astype(np.uint8))
+        masks_np = (np.concatenate(all_masks_np, axis=0) if all_masks_np
+                    else np.zeros((0, Hc, Wc), dtype=np.uint8))
+        torch.cuda.synchronize()
+        t_pred = time.perf_counter() - t1
+        predictor.reset_image()
+        return masks_np, t_embed, t_pred
+
+    # --- sam2 / sam3 via ultralytics ---
+    model = state["model"]
+    boxes_np = bbox_in.detach().cpu().numpy()
+    # ultralytics takes numpy images as BGR (cv2 convention); our sam_image is RGB -> convert.
+    img_bgr = np.ascontiguousarray(sam_image[:, :, ::-1])
+    t0 = time.perf_counter()
+    if state.get("decode_batch", 0) > 0:
+        # opt-in encode-once + batched decode (bounds VRAM — the SAM2 fix). Default path untouched below.
+        masks_np = _ultra_predict_boxes_batched(model, img_bgr, boxes_np, (Hc, Wc),
+                                                batch=state["decode_batch"])
+    else:
+        # DEFAULT (original): one call encodes + decodes all boxes at once (OOM-safe chunk fallback).
+        masks_np, _chunked = _ultra_predict_boxes(model, img_bgr, boxes_np, (Hc, Wc),
+                                                  chunk_on_oom=state.get("chunk", 64))
+    torch.cuda.synchronize()
+    t_pred = time.perf_counter() - t0
+    return masks_np, 0.0, t_pred
+
+
+# =====================================================================
 # MAIN SAM INFERENCE (ALL PLOTS)
 # =====================================================================
 def run_sam_phase(image_folders, cfg):
@@ -196,8 +369,7 @@ def run_sam_phase(image_folders, cfg):
     print(" PHASE 2: LOADING SAM AND PROCESSING ALL PLOTS")
     print("="*50)
 
-    weights_dir    = os.path.join(os.path.dirname(__file__), "..", "weights")
-    sam_checkpoint = os.path.join(weights_dir, cfg.method.sam_checkpoint)
+    weights_dir = os.path.join(os.path.dirname(__file__), "..", "weights")
 
     if cfg.wandb_enabled:
         wandb.init(
@@ -205,15 +377,22 @@ def run_sam_phase(image_folders, cfg):
             config={"device": DEVICE},
         )
 
-    # Load SAM Model ONCE
+    # reset the CUDA peak counter so max_memory_allocated below is THIS SAM phase's true peak VRAM
+    # (includes the model load + inference). Each backend runs in its own process → clean per-backend #.
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+
+    # Load the chosen SAM backend ONCE (sam1 default = original ViT-H SamPredictor, byte-identical)
     print("Loading SAM (this takes a few seconds)...")
     start_sam_load = time.perf_counter()
-    sam = sam_model_registry["vit_h"](checkpoint=sam_checkpoint).to(device=DEVICE)
-    sam = torch.compile(sam)
-    predictor = SamPredictor(sam)
-    torch.cuda.synchronize()
+    backend, state = _build_sam_backend(cfg, weights_dir)
     sam_load_time = time.perf_counter() - start_sam_load
-    print(f"-> SAM Model loaded on {DEVICE} in {sam_load_time:.2f}s")
+    print(f"-> SAM backend '{backend}' loaded on {DEVICE} in {sam_load_time:.2f}s")
+
+    # save_union: one binary union PNG per image (A/B scorer) instead of ~8k per-head PNGs → no page-cache
+    # balloon (the RAM spike seen mid-run). Independent of save_masks (which controls the per-head PNGs).
+    save_union_flag = cfg.get("save_union_mask", False)
+    last_base_result_path = None
 
     total_sam_pure_time = 0.0
     total_sam_images = 0
@@ -224,6 +403,7 @@ def run_sam_phase(image_folders, cfg):
         print(f"\n[SAM Phase] Processing Plot: {plot_name}")
 
         base_result_path = get_mask_generation_result_path(cfg, plot_name)
+        last_base_result_path = base_result_path
         bbox_folder    = os.path.join(base_result_path, "bboxes")   # read bboxes written by YOLO phase
         sam_vis_folder = os.path.join(base_result_path, "sam_vis")
         mask_folder    = os.path.join(base_result_path, "masks")
@@ -274,7 +454,7 @@ def run_sam_phase(image_folders, cfg):
                 # _save_image_results writes all mask PNGs + the overlay visualization.
                 if prev_save_data is not None:
                     sf = executor.submit(_save_image_results, *prev_save_data,
-                                         cfg.method.max_threads, save_masks_flag)
+                                         cfg.method.max_threads, save_masks_flag, save_union_flag)
                     save_futures.append(sf)
                     prev_save_data = None  # drop reference so RAM can be freed once save is done
                     # backpressure: if the save queue is deeper than the cap, block on the oldest
@@ -305,42 +485,10 @@ def run_sam_phase(image_folders, cfg):
                     sam_image = image
                     bbox_in = bbox
 
-                # --- GPU INFERENCE: image embedding (the heavy bottleneck) ---
-                # Main thread blocks here. load(N+1) and save(N-1) run on CPU in parallel.
-                t_start_img = time.perf_counter()
-
-                # 2. Image Embedding (heavy part). The encoder always takes one image at a time.
-                predictor.set_image(sam_image)
-                torch.cuda.synchronize()
-                t_embed = time.perf_counter() - t_start_img
-
-                # --- GPU INFERENCE: predict one mask per box ---
-                t_start_pred = time.perf_counter()
-
-                # 3. Predict Masks — one box at a time through the decoder. The decoder *can* batch
-                # boxes, but with hundreds of heads on a full-res image that spikes VRAM (each box ->
-                # a full H x W mask), so we keep it one-at-a-time which is the safe, proven default.
-                transformed_boxes = predictor.transform.apply_boxes_torch(bbox_in, sam_image.shape[:2])
-                all_masks_np = []
-
-                with torch.no_grad():
-                    for b_idx in range(len(transformed_boxes)):
-                        single_box = transformed_boxes[b_idx : b_idx + 1]  # keep the [1,4] shape
-                        masks, _, _ = predictor.predict_torch(
-                            point_coords=None,
-                            point_labels=None,
-                            boxes=single_box,
-                            multimask_output=False
-                        )
-                        # squeeze(1) removes the empty dimension, leaving [1, H, W]
-                        # immediately move to CPU and convert to uint8 to free up VRAM
-                        masks_batch_np = (masks.squeeze(1).cpu().numpy() * 255).astype(np.uint8)
-                        all_masks_np.append(masks_batch_np)
-
-                # Combine all chunks back into one numpy array
-                masks_np = np.concatenate(all_masks_np, axis=0)
-                torch.cuda.synchronize()
-                t_pred = time.perf_counter() - t_start_pred
+                # --- GPU INFERENCE via the chosen SAM backend ---
+                # Main thread blocks here; load(N+1) and save(N-1) run on CPU in parallel.
+                # Same sam_image + bbox_in for every backend → only the segmenter differs (fair swap).
+                masks_np, t_embed, t_pred = _infer_masks(backend, state, sam_image, bbox_in)
 
                 if cfg.method.show_time_sam:
                     print_sam_step_report(i, n_images, image_name, len(bbox), t_embed, t_pred)
@@ -357,8 +505,7 @@ def run_sam_phase(image_folders, cfg):
                 # store results so we can submit the save on the next loop iteration
                 prev_save_data = (masks_np, image, save_name, image_name, mask_folder, sam_vis_folder, crop)
 
-                # Cleanup loop to prevent VRAM overflow
-                predictor.reset_image()
+                # Cleanup loop to prevent VRAM overflow (sam1's reset_image happens inside _infer_masks)
                 torch.cuda.empty_cache()
                 gc.collect()
 
@@ -367,7 +514,7 @@ def run_sam_phase(image_folders, cfg):
             # while the executor waits for all futures to finish on __exit__.
             if prev_save_data is not None:
                 sf = executor.submit(_save_image_results, *prev_save_data,
-                                     cfg.method.max_threads, save_masks_flag)
+                                     cfg.method.max_threads, save_masks_flag, save_union_flag)
                 save_futures.append(sf)
 
             # Collect t_save from all completed save futures and add to total
@@ -380,8 +527,33 @@ def run_sam_phase(image_folders, cfg):
             print_sam_plot_summary(len(image_files), sam_total_plot)
         print(f"  Finished Plot: {plot_name}")
 
-    # End of SAM MAIN -> Free SAM memory
-    del sam, predictor
+    # --- per-backend PEAK VRAM + RAM report (each backend runs in its own process → clean numbers) ---
+    peak_vram_alloc = torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else 0.0
+    peak_vram_resv  = torch.cuda.max_memory_reserved() / 1e9 if torch.cuda.is_available() else 0.0
+    peak_ram_rss    = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6  # KB->GB on Linux
+    avg_s = (total_sam_pure_time / total_sam_images) if total_sam_images else 0.0
+    print("\n" + "=" * 52)
+    print(f"   SAM BACKEND PEAK RESOURCES — '{backend}'")
+    print("=" * 52)
+    print(f"{'Peak VRAM (allocated):':<26} {peak_vram_alloc:>7.2f} GB")
+    print(f"{'Peak VRAM (reserved):':<26} {peak_vram_resv:>7.2f} GB")
+    print(f"{'Peak RAM (RSS):':<26} {peak_ram_rss:>7.2f} GB")
+    print(f"{'Avg SAM time / image:':<26} {avg_s:>7.2f} s   ({total_sam_images} imgs)")
+    print("=" * 52 + "\n")
+    if last_base_result_path:
+        try:
+            with open(os.path.join(last_base_result_path, "sam_perf.json"), "w") as f:
+                json.dump({"backend": backend,
+                           "peak_vram_alloc_gb": round(peak_vram_alloc, 3),
+                           "peak_vram_reserved_gb": round(peak_vram_resv, 3),
+                           "peak_ram_rss_gb": round(peak_ram_rss, 3),
+                           "avg_sec_per_image": round(avg_s, 3),
+                           "n_images": total_sam_images}, f, indent=2)
+        except Exception as e:
+            print(f"WARNING: could not write sam_perf.json: {e}")
+
+    # End of SAM MAIN -> Free SAM memory (backend-aware: sam1 holds sam+predictor, sam2/3 hold model)
+    state.clear()
     torch.cuda.empty_cache()
     gc.collect()
 
