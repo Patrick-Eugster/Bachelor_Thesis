@@ -67,25 +67,67 @@ def to_sparse(full_mask):
 
 
 class Session:
-    """Holds the one active image and its instances."""
+    """Holds the one active image and its named mask-SETS. `instances`/`next_id` are properties that proxy
+    to the ACTIVE set, so all the rest of the code works on the active set without changes. Sets let you
+    keep e.g. a YOLO-SAM set and a manual set side by side and switch between them."""
 
     def __init__(self):
         self.field = self.date = self.stem = None
         self.img = None                 # RGB uint8 HxW3
-        self.instances = []             # {id, seed_box, mask(sparse), points:[[x,y,l]]}
-        self.next_id = 1
+        self.sets = {}                  # {name: {"instances": [...], "next_id": int}}
+        self.active = None              # active set name
         self.pending_boxes = []         # seed boxes waiting for the (separate) seed pass
+        self.backup = []                # snapshot kept by Clear so it can be undone
+        self.reset_sets()
+
+    def reset_sets(self):
+        """Start fresh with a single empty set (used when a new image loads)."""
+        self.sets = {"set 1": {"instances": [], "next_id": 1}}
+        self.active = "set 1"
+        self.backup = []
+
+    @property
+    def instances(self):
+        return self.sets[self.active]["instances"]
+
+    @instances.setter
+    def instances(self, v):
+        self.sets[self.active]["instances"] = v
+
+    @property
+    def next_id(self):
+        return self.sets[self.active]["next_id"]
+
+    @next_id.setter
+    def next_id(self, v):
+        self.sets[self.active]["next_id"] = v
+
+    def add_set(self):
+        """Create a new empty set, make it active, return its name."""
+        n = 1
+        while f"set {n}" in self.sets:
+            n += 1
+        name = f"set {n}"
+        self.sets[name] = {"instances": [], "next_id": 1}
+        self.active = name
+        self.backup = []
+        return name
+
+    def sets_info(self):
+        """List of {name, n} + active — for the client's set dropdown."""
+        return {"sets": [{"name": k, "n": len(v["instances"])} for k, v in self.sets.items()],
+                "active": self.active}
 
     def add(self, sparse, seed_box=None, points=None):
-        """Register a new instance, return its id."""
+        """Register a new instance in the active set, return its id."""
         iid = self.next_id
-        self.next_id += 1
+        self.next_id = iid + 1
         self.instances.append({"id": iid, "seed_box": seed_box, "mask": sparse,
                                "points": points or [], "hidden": False, "locked": False})
         return iid
 
     def find(self, iid):
-        """Instance dict by id, or None."""
+        """Instance dict by id in the active set, or None."""
         return next((it for it in self.instances if it["id"] == iid), None)
 
 
@@ -165,6 +207,80 @@ def _load_state(in_dir):
     return True
 
 
+def _dump_instances(instances, next_id, png_path, json_path):
+    """Write one set's instances to (png, json). Same format as _dump_state but for an arbitrary set."""
+    H, W = SESS.img.shape[:2]
+    inst_map = np.zeros((H, W), np.uint16)
+    meta_inst = []
+    for it in instances:
+        sp = it["mask"]
+        if sp is None:
+            continue
+        x0, y0, x1, y1 = sp["bbox"]
+        inst_map[y0:y1, x0:x1][sp["sub"]] = it["id"]
+        meta_inst.append({"id": it["id"], "bbox": [x0, y0, x1, y1], "seed_box": it["seed_box"],
+                          "points": it["points"], "locked": it["locked"]})
+    cv2.imwrite(png_path, inst_map)
+    json.dump({"stem": SESS.stem, "next_id": next_id, "instances": meta_inst},
+              open(json_path, "w"), indent=1)
+
+
+def _load_instances(png_path, json_path):
+    """Read one set back from (png, json). Returns (instances_list, next_id) or None."""
+    if not (os.path.exists(png_path) and os.path.exists(json_path)):
+        return None
+    inst_map = cv2.imread(png_path, cv2.IMREAD_UNCHANGED)
+    meta = json.load(open(json_path))
+    insts = []
+    for m in meta["instances"]:
+        x0, y0, x1, y1 = m["bbox"]
+        sub = np.ascontiguousarray(inst_map[y0:y1, x0:x1] == m["id"])
+        if sub.any():
+            insts.append({"id": m["id"], "seed_box": m["seed_box"],
+                          "mask": {"bbox": [x0, y0, x1, y1], "sub": sub},
+                          "points": m.get("points", []), "hidden": False,
+                          "locked": bool(m.get("locked", False))})
+    ids = [m["id"] for m in meta["instances"]]
+    return insts, meta.get("next_id", (max(ids) + 1) if ids else 1)
+
+
+def _save_all_sets():
+    """Persist EVERY mask-set to manual_label/<stem>_sets/ + a manifest, so all sets (incl. backups from
+    Clear) survive a reload. The active set's union is what eval reads as the GT."""
+    sets_dir = os.path.join(_save_dir(), f"{SESS.stem}_sets")
+    if os.path.isdir(sets_dir):
+        for f in os.listdir(sets_dir):
+            os.remove(os.path.join(sets_dir, f))          # drop stale set files from a previous save
+    os.makedirs(sets_dir, exist_ok=True)
+    manifest = {"active": SESS.active, "sets": []}
+    for i, (name, s) in enumerate(SESS.sets.items()):
+        _dump_instances(s["instances"], s["next_id"],
+                        os.path.join(sets_dir, f"set{i}_instances.png"),
+                        os.path.join(sets_dir, f"set{i}_seed.json"))
+        manifest["sets"].append({"name": name, "file": f"set{i}"})
+    json.dump(manifest, open(os.path.join(sets_dir, "manifest.json"), "w"), indent=1)
+
+
+def _load_all_sets():
+    """Restore every mask-set from manual_label/<stem>_sets/. Returns True if a saved set-state existed."""
+    sets_dir = os.path.join(_save_dir(), f"{SESS.stem}_sets")
+    mp = os.path.join(sets_dir, "manifest.json")
+    if not os.path.exists(mp):
+        return False
+    manifest = json.load(open(mp))
+    sets = {}
+    for entry in manifest["sets"]:
+        r = _load_instances(os.path.join(sets_dir, f"{entry['file']}_instances.png"),
+                            os.path.join(sets_dir, f"{entry['file']}_seed.json"))
+        if r is not None:
+            sets[entry["name"]] = {"instances": r[0], "next_id": r[1]}
+    if not sets:
+        return False
+    SESS.sets = sets
+    SESS.active = manifest["active"] if manifest.get("active") in sets else next(iter(sets))
+    return True
+
+
 ROI_BUFFER_FRAC = 0.05   # matches make_gt_labeling_images.py's grey-out buffer (roi.buffer_frac default)
 
 
@@ -193,43 +309,62 @@ def compute_roi_poly():
         return None
 
 
-def load_image(field, date, stem):
-    """Load the image, then restore instances from disk if we've seen this image before (saved GT first,
-    then the seed cache) — that skips the ~30 s re-decode. Only a never-seen image needs a seed pass."""
+def load_image(field, date, stem, auto_seed=True):
+    """Load the image and restore SAVED work (manual_label) — that ALWAYS comes back and is never touched.
+    If there's no saved work: with auto_seed on, restore the cached seed draft (fast) if present; with
+    auto_seed off, start BLANK (0 masks) so you can label manually. The YOLO+SAM seeds can be pulled in
+    any time with add_seeds() — which only APPENDS, never deletes."""
     path = os.path.join(PHONE, field, date, "images", f"{stem}.jpg")
     img = np.array(Image.open(path).convert("RGB"))         # PIL = silent on Samsung JPEGs
     H, W = img.shape[:2]
 
     SESS.field, SESS.date, SESS.stem = field, date, stem
     SESS.img = img
-    SESS.instances = []
-    SESS.next_id = 1
+    SESS.reset_sets()
     SESS.pending_boxes = []
 
     out = {"w": W, "h": H, "field": field, "date": date, "stem": stem, "roi": compute_roi_poly()}
-    if _load_state(_save_dir()):                            # your saved corrections come back
-        return {**out, "n": len(SESS.instances), "nboxes": 0, "cached": "saved"}
-    if _load_state(_cache_dir()):                           # the cached draft (seeded before, not saved)
-        return {**out, "n": len(SESS.instances), "nboxes": 0, "cached": "draft"}
-    SESS.pending_boxes = _load_seed_boxes(field, date, stem, W, H)
-    return {**out, "n": 0, "nboxes": len(SESS.pending_boxes), "cached": False}
+    if _load_all_sets():                                    # SAVED multi-set work — all sets restored
+        return {**out, **SESS.sets_info(), "n": len(SESS.instances), "nboxes": 0, "cached": "saved"}
+    if _load_state(_save_dir()):                            # legacy single-set save — restored as set 1
+        return {**out, **SESS.sets_info(), "n": len(SESS.instances), "nboxes": 0, "cached": "saved"}
+    if auto_seed and _load_state(_cache_dir()):            # cached seed draft (only when auto-seed is on)
+        return {**out, **SESS.sets_info(), "n": len(SESS.instances), "nboxes": 0, "cached": "draft"}
+    nboxes = len(_load_seed_boxes(field, date, stem, W, H))
+    return {**out, **SESS.sets_info(), "n": 0, "nboxes": nboxes, "cached": False}   # BLANK
 
 
-def seed_current():
-    """Run the SAM seed (only for a never-seen image), then CACHE the draft to disk so the next open of
-    this image is instant."""
+def add_seeds():
+    """APPEND the YOLO+SAM seed masks to the current instances. Never removes anything already there
+    (your worked-on / saved masks stay). Uses the cached seed draft for speed if present, else runs SAM
+    once and caches it (only when starting from a blank image, so the cache stays a pure seed draft)."""
     if SESS.img is None:
-        return {"n": 0}
-    boxes = SESS.pending_boxes
-    SESS.pending_boxes = []
-    if boxes:
-        masks = get_engine().seed_boxes(SESS.img, boxes)
-        for box, m in zip(boxes, masks):
+        return {"added": 0, "n": 0}
+    H, W = SESS.img.shape[:2]
+    was_empty = (len(SESS.instances) == 0)
+    n0 = len(SESS.instances)
+    cache_png = os.path.join(_cache_dir(), f"{SESS.stem}_instances.png")
+    cache_js = os.path.join(_cache_dir(), f"{SESS.stem}_seed.json")
+
+    if os.path.exists(cache_png) and os.path.exists(cache_js):     # append from cached seed draft (fast)
+        lab = cv2.imread(cache_png, cv2.IMREAD_UNCHANGED)
+        meta = json.load(open(cache_js))
+        for inst in meta["instances"]:
+            if "bbox" not in inst:
+                continue
+            x0, y0, x1, y1 = inst["bbox"]
+            sub = np.ascontiguousarray(lab[y0:y1, x0:x1] == inst["id"])
+            if sub.any():
+                SESS.add({"bbox": [x0, y0, x1, y1], "sub": sub}, seed_box=inst["seed_box"])
+    else:                                                          # no cache -> run SAM once
+        boxes = _load_seed_boxes(SESS.field, SESS.date, SESS.stem, W, H)
+        for box, m in zip(boxes, get_engine().seed_boxes(SESS.img, boxes)):
             sp = to_sparse(m)
             if sp is not None:
                 SESS.add(sp, seed_box=[float(v) for v in box])
-        _dump_state(_cache_dir())                          # cache the decode -> fast reopen
-    return {"n": len(SESS.instances)}
+        if was_empty:                                             # only cache a pure (blank-start) seed draft
+            _dump_state(_cache_dir())
+    return {"added": len(SESS.instances) - n0, "n": len(SESS.instances)}
 
 
 def _outline(over, sp, color, thick):
@@ -287,15 +422,55 @@ def hit_test(x, y):
 
 
 def refine_instance(it):
-    """Re-run SAM on this instance's accumulated points (per-head crop) and update its mask."""
+    """Re-run SAM on this instance's accumulated points (per-head crop). Keeps SAM2's 3 candidate masks on
+    the instance (it["cands"]) so the UI can cycle them, and sets the mask to the auto-picked best."""
     pts = [[p[0], p[1]] for p in it["points"]]
     lbl = [p[2] for p in it["points"]]
     if not pts:
         it["mask"] = None
+        it["cands"] = []; it["cand_idx"] = 0
         return 0
-    m = get_engine().refine_points(SESS.img, pts, lbl, box_hint=it["seed_box"])
-    it["mask"] = to_sparse(m)
-    return int(m.sum())
+    masks, idx = get_engine().refine_points_all(SESS.img, pts, lbl, box_hint=it["seed_box"])
+    it["cands"] = [to_sparse(m) for m in masks]      # transient (not saved to disk) — for cycling only
+    it["cand_idx"] = idx
+    it["mask"] = it["cands"][idx] if it["cands"] else None
+    return int(it["mask"]["sub"].sum()) if it["mask"] else 0
+
+
+def _rasterize_strokes(strokes, H, W):
+    """Turn brush strokes (each = a list of image-space points + radius + erase flag) into two bool
+    masks: pixels to ADD and pixels to ERASE. A stroke is drawn as round dabs at every point plus thick
+    lines between them, so a fast drag still paints a continuous band."""
+    add = np.zeros((H, W), np.uint8)
+    ers = np.zeros((H, W), np.uint8)
+    for s in strokes:
+        tgt = ers if s.get("erase") else add
+        r = max(1, int(round(s.get("r", 12))))
+        pts = s.get("pts", [])
+        for i, (px, py) in enumerate(pts):
+            x, y = int(round(px)), int(round(py))
+            cv2.circle(tgt, (x, y), r, 1, -1)                 # round cap / dab at each point
+            if i > 0:                                         # thick line to the previous point
+                x0, y0 = int(round(pts[i - 1][0])), int(round(pts[i - 1][1]))
+                cv2.line(tgt, (x0, y0), (x, y), 1, 2 * r)
+    return add.astype(bool), ers.astype(bool)
+
+
+def apply_draw(it, add_bool, erase_bool):
+    """Union ADD pixels into and subtract ERASE pixels from one instance's mask, then re-sparsify.
+    This is how manual brush/polygon edits land in the SAME binary mask SAM would have produced."""
+    H, W = SESS.img.shape[:2]
+    full = np.zeros((H, W), bool)
+    sp = it["mask"]
+    if sp is not None:
+        x0, y0, x1, y1 = sp["bbox"]
+        full[y0:y1, x0:x1] = sp["sub"]
+    if add_bool is not None:
+        full |= add_bool
+    if erase_bool is not None:
+        full &= ~erase_bool
+    it["mask"] = to_sparse(full)
+    return int(full.sum())
 
 
 def save_gt():
@@ -305,7 +480,8 @@ def save_gt():
         return {"error": "no image loaded"}
     H, W = SESS.img.shape[:2]
     out = _save_dir()
-    _dump_state(out)                                       # <stem>_instances.png + <stem>_seed.json (resumable)
+    os.makedirs(out, exist_ok=True)
+    _save_all_sets()                                       # persist every set (resumable, incl. backups)
 
     union = np.zeros((H, W), np.uint8)
     n = 0
@@ -401,31 +577,43 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?")[0]
         try:
+            b = self._body()   # ALWAYS read the body (even if a handler ignores it) — otherwise an
+            #                    unread body stays in the keep-alive buffer and corrupts the NEXT request
             with _lock:
                 if path == "/api/load":
-                    b = self._body()
-                    return self._send(200, load_image(b["field"], b["date"], b["stem"]))
-                if path == "/api/seed":
-                    return self._send(200, seed_current())
+                    return self._send(200, load_image(b["field"], b["date"], b["stem"],
+                                                      auto_seed=b.get("auto_seed", True)))
+                if path == "/api/seed":            # append the YOLO+SAM seeds (auto on load, or the button)
+                    return self._send(200, add_seeds())
                 if path == "/api/select":
-                    b = self._body()
                     iid = hit_test(b["x"], b["y"])
                     it = SESS.find(iid) if iid else None
                     return self._send(200, {"id": iid, "locked": bool(it and it["locked"]),
-                                            "points": it["points"] if it else []})
+                                            "points": it["points"] if it else [],
+                                            "ncands": len(it.get("cands", [])) if it else 0,
+                                            "cand_idx": it.get("cand_idx", 0) if it else 0})
                 if path == "/api/set_points":
                     # commit an accumulated point set and run SAM once (the "Run" action)
-                    b = self._body()
                     it = SESS.find(b["id"])
                     if not it:
                         return self._send(404, {"error": "no instance"})
                     if it["locked"]:                        # locked = protected from edits
                         return self._send(200, {"id": it["id"], "locked": True})
                     it["points"] = [[float(p[0]), float(p[1]), int(p[2])] for p in b["points"]]
-                    return self._send(200, {"id": it["id"], "area": refine_instance(it),
-                                            "npoints": len(it["points"])})
+                    area = refine_instance(it)
+                    return self._send(200, {"id": it["id"], "area": area, "npoints": len(it["points"]),
+                                            "ncands": len(it.get("cands", [])), "cand_idx": it.get("cand_idx", 0)})
+                if path == "/api/candidate":        # switch which of SAM's 3 candidate masks this head uses
+                    it = SESS.find(b["id"])
+                    if not it or it["locked"] or not it.get("cands"):
+                        return self._send(200, {"ok": False})
+                    n = len(it["cands"])
+                    idx = int(b["idx"]) % n
+                    it["cand_idx"] = idx
+                    it["mask"] = it["cands"][idx]
+                    area = int(it["mask"]["sub"].sum()) if it["mask"] else 0
+                    return self._send(200, {"id": it["id"], "idx": idx, "n": n, "area": area})
                 if path == "/api/flag":                     # toggle 'hidden' or 'locked' on one instance
-                    b = self._body()
                     it = SESS.find(b["id"])
                     if not it:
                         return self._send(404, {"error": "no instance"})
@@ -436,9 +624,8 @@ class Handler(BaseHTTPRequestHandler):
                 if path == "/api/new":
                     # empty instance; the client places points then commits via /api/set_points
                     iid = SESS.add(None, seed_box=None, points=[])
-                    return self._send(200, {"id": iid})
+                    return self._send(200, {"id": iid, "n": len(SESS.instances)})
                 if path == "/api/undo_point":
-                    b = self._body()
                     it = SESS.find(b["id"])
                     if it and it["points"]:
                         it["points"].pop()
@@ -450,13 +637,61 @@ class Handler(BaseHTTPRequestHandler):
                                                 "npoints": len(it["points"])})
                     return self._send(200, {"ok": True})
                 if path == "/api/delete":
-                    b = self._body()
                     it = SESS.find(b["id"])
                     if it and it["locked"]:                 # locked = protected from delete
-                        return self._send(200, {"locked": True})
+                        return self._send(200, {"locked": True, "n": len(SESS.instances)})
                     if it:
                         SESS.instances.remove(it)
-                    return self._send(200, {"ok": True})
+                    return self._send(200, {"ok": True, "n": len(SESS.instances)})
+                if path == "/api/set_add":          # create a new empty mask-set and make it active
+                    SESS.add_set()
+                    return self._send(200, {**SESS.sets_info(), "n": len(SESS.instances)})
+                if path == "/api/set_switch":       # switch the active mask-set
+                    name = b.get("name")
+                    if name in SESS.sets:
+                        SESS.active = name
+                        SESS.backup = []
+                    return self._send(200, {**SESS.sets_info(), "n": len(SESS.instances)})
+                if path == "/api/clear":            # move masks into a NEW backup set (kept in the dropdown);
+                    cleared = [it for it in SESS.instances if not it["locked"]]   # locked stay in place
+                    kept = [it for it in SESS.instances if it["locked"]]
+                    bname = None
+                    if cleared:
+                        src = SESS.active
+                        bname = f"⟲ {src}"; k = 2
+                        while bname in SESS.sets:
+                            bname = f"⟲ {src} ({k})"; k += 1
+                        SESS.sets[bname] = {"instances": cleared, "next_id": SESS.sets[src]["next_id"]}
+                        SESS.sets[src]["instances"] = kept
+                    return self._send(200, {**SESS.sets_info(), "n": len(SESS.instances), "backup_set": bname})
+                if path == "/api/brush":
+                    # paint/erase into the SELECTED head's mask (or a fresh head if none selected).
+                    # Client accumulates strokes and only posts them here on commit (Enter / Create mask).
+                    it = SESS.find(b["id"]) if b.get("id") else None
+                    if it is None:                               # brushing with nothing selected -> new head
+                        it = SESS.find(SESS.add(None, seed_box=None))
+                    if it["locked"]:                            # locked = protected from edits
+                        return self._send(200, {"id": it["id"], "locked": True})
+                    add, ers = _rasterize_strokes(b.get("strokes", []), *SESS.img.shape[:2])
+                    area = apply_draw(it, add, ers)
+                    it["cands"] = []; it["cand_idx"] = 0        # manual edit -> SAM candidates are now stale
+                    if it["mask"] is None:                      # erased down to nothing -> drop the head
+                        SESS.instances.remove(it)
+                        return self._send(200, {"removed": True, "n": len(SESS.instances)})
+                    return self._send(200, {"id": it["id"], "area": area, "n": len(SESS.instances)})
+                if path == "/api/polygon":
+                    # fill a hand-drawn polygon into a brand-new head (draw a head SAM couldn't get)
+                    verts = b.get("verts", [])
+                    if len(verts) < 3:
+                        return self._send(200, {"error": "need 3+ points"})
+                    H, W = SESS.img.shape[:2]
+                    m = np.zeros((H, W), np.uint8)
+                    cv2.fillPoly(m, [np.array(verts, np.int32)], 1)
+                    sp = to_sparse(m.astype(bool))
+                    if sp is None:
+                        return self._send(200, {"error": "empty polygon"})
+                    iid = SESS.add(sp, seed_box=None)
+                    return self._send(200, {"id": iid, "area": int(m.sum()), "n": len(SESS.instances)})
                 if path == "/api/save":
                     return self._send(200, save_gt())
             return self._send(404, {"error": "not found"})

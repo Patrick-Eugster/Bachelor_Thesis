@@ -1,103 +1,80 @@
 # Point-GT tool
 
-Interactive tool to create **pixel mask ground truth** for phone wheat heads by correcting a SAM draft
-with point prompts. Local, browser-based, zero new dependencies (stdlib HTTP server). Design + rationale:
+Interactive local tool to create **pixel mask ground truth** for phone wheat heads with **SAM2.1 point
+prompts**. Browser-based, zero new deps (stdlib HTTP server). Design + rationale + the two important bugs:
 [../../../docs/mask_generation/POINT_GT_TOOL.md](../../../docs/mask_generation/POINT_GT_TOOL.md).
 
 ## Run
 
 ```bash
-# in the dev container (base env: torch + ultralytics already there)
+# in the dev container (base env: torch + ultralytics)
 python -m mask_generation.gt_tool.server
-# then open http://localhost:8000 in your Windows browser
+# open http://localhost:8000 in the Windows browser
 ```
+Env: `GT_SAM_WEIGHT` (default `sam2.1_l.pt`), `GT_DECODE_BATCH` (8), `GT_PORT` (8000).
 
-Config via env vars (optional):
-- `GT_SAM_WEIGHT` — SAM checkpoint (default `sam2.1_l.pt` in the repo root)
-- `GT_DECODE_BATCH` — seed-pass batch size (default `8`; controls the VRAM of the one-time auto-seed)
-- `GT_PORT` — port (default `8000`)
-
-> **After restarting the server, hard-reload the tab (`Ctrl+Shift+R`).** The server keeps its state in
-> memory and resets on restart; a stale tab and a fresh server disagree until you reload.
+> **Backend change → restart the server** (`Ctrl+C` + rerun). **Frontend change → hard-reload** the page
+> (`Ctrl+Shift+R`). The page is served fresh each load; `server.py` is loaded once at startup.
 
 ## Workflow
 
-1. Pick a GT image in the left list. **First time only**, the server SAM-seeds every YOLO/SAHI box into a
-   draft mask (~200–300 heads, ~20–30 s — see *Caching* below). The **image shows immediately**; the masks
-   fill in when the seed finishes.
-2. **Fix the bad heads:** left-click a mask to **select** it, then **left-click = positive point**,
-   **right-click = negative point** (put negatives on the occluding neighbour). The mask re-segments on
-   each click, on a tight per-head crop.
-3. **N** starts a **new** head (next left-click seeds it); keep clicking to add points.
-4. **Del** deletes the selected instance. **Esc** deselects.
-5. **Ctrl+S** saves → writes into `input_plots/phone/<field>/<date>/manual_label/`:
-   `<stem>_gt_mask.png` (binary union, for `eval_seg_2d`), `<stem>_instances.png` (uint16 instance map),
-   `<stem>_seed.json` (per-head boxes/points — resumable + replayable through another SAM), `<stem>_meta.json`.
-
-## Reading the UI
-
-### Left sidebar
-- Grouped by **session** (`field_A/20250618`), with a divider bar and a **`done/total`** count per session.
-- Per-image status icon:
-  | icon | meaning |
-  |---|---|
-  | **`•`** grey | never opened — the one-time ~30 s seed will run when you open it |
-  | **`◐`** amber ("half moon") | **seeded & cached** — reopens **instantly** from disk, no re-decode |
-  | **`✔`** green | **saved GT** exists (`<stem>_gt_mask.png` written) |
-- **`☰`** (top-left) or the **`B`** key hides/shows the sidebar to give the canvas full width.
-
-### Top status bar
-- **image path** — `field/date/stem` of what's loaded.
-- **instances: N** — how many head masks are currently in the image.
-- **sel: #id (Npt)** — the selected instance and how many points you've placed on it (`none` if nothing selected).
-- **mode:** `SELECT` (clicks pick a head) · `EDIT` (a head is selected, clicks add points to it) · `NEW`
-  (next click starts a new head).
-- **`● unsaved`** (orange) — you have edits not yet written to disk. `Ctrl+S` clears it. Switching image or
-  closing the tab while this shows will warn you first.
-- **`⏳ seeding N heads…`** — the one-time SAM seed is running (image is already visible during it).
-- **`ROI`** button (or **`R`** key) — toggles a **cyan dashed outline** of the plot's marker-hull region
-  (the same area the pipeline greyed out when making the seed boxes), so you can see which heads are
-  in-plot. Lights up blue when on. If the plot's markers weren't all triangulated, there's no ROI and it
-  says so instead of drawing a partial border.
-
-## Caching & resume (why re-opening is fast)
-
-The SAM decode of all ~200–300 masks happens **once per image**. After the seed, the draft is written to
-`input_plots/phone/<field>/<date>/gt_cache/` (`<stem>_instances.png` + `<stem>_seed.json`). From then on:
-- **Re-opening a seeded image** reloads from that cache in ~0.2 s — no GPU, no wait (the `◐` icon marks these).
-- **Re-opening a saved image** restores your **saved corrections** (from `manual_label/`), not the raw seed.
-- Only a **never-opened** image (`•`) pays the one-time seed.
-
-Notes:
-- The cache lives under `input_plots/` (already gitignored) — not committed.
-- If you regenerate the seed boxes, delete that image's entry in `gt_cache/` to force a fresh seed.
-- **Unsaved** point-edits live only in memory: switching image / closing the tab warns you; if you discard,
-  you get the cached draft (or last save) back, never your discarded edits.
+1. Pick a GT image in the left list. With **`⚙ auto-seed` OFF (default)** it opens **blank**; with it ON (or
+   after **`＋ seeds`**) it opens with the YOLO+SAM masks. Saved work always reloads.
+2. **Label heads** (see controls): click a head → `E` → drop **⊕ positive** points on it (and **⊖ negative**
+   on neighbours it bleeds into) → **`Enter` / ▶ Run SAM** to segment. A toast confirms `✓ SAM done — N px`.
+   For a head with no mask, just click empty ground in edit mode (or `N`). After Run, SAM offers **3
+   candidate masks** — the best-fitting one is auto-shown; press **`Tab`** (or the `⟳ i/3` button) to cycle to
+   the other two and keep whichever looks right.
+   - **When SAM can't get it (overlapping heads, low-res/compressed):** don't fight the points. Use the
+     **manual tools** — `F` **Brush** to paint/erase pixels straight onto the selected mask (fix SAM's
+     spillover or add a missing tip; Alt-drag erases), or `G` **Polygon** to trace a clean new head from
+     scratch. Both **accumulate a live preview and only write the binary mask when you press `Enter`** — so
+     you draw freely and nothing commits mid-stroke. A hand-drawn head is identical on disk to a SAM one.
+3. **Fix seeds** (if seeded): select a loose mask → `E` → a couple points → Run; `Del` false ones; `L` lock
+   the good ones.
+4. **💾 Save** → writes into `input_plots/phone/<field>/<date>/manual_label/` (`<stem>_gt_mask.png` = union
+   of the **active set** = the eval GT; plus `<stem>_sets/` with every set; `<stem>_meta.json`).
 
 ## Controls
 
-| | |
+| action | how |
 |---|---|
-| select / +point | left-click |
-| −point | right-click |
-| new head | `N` then left-click |
-| delete selected | `Del` |
-| undo last point | `Ctrl+Z` |
-| deselect | `Esc` |
-| save | `Ctrl+S` |
-| pan | wheel (vert), Shift+wheel (horiz), Space+drag |
-| zoom | Alt+wheel (or Ctrl+wheel), `+` / `-` |
+| **select** a mask | left-click (SELECT mode) |
+| **points** edit selected (SAM prompts) | `E` / `✎ Points` (glows red) |
+| **⊕ positive / ⊖ negative** point | left-click in edit / **`Q`** swaps · **Shift-click = +** · **Alt-click = −** |
+| **delete a placed point** | click on it (it glows on hover) |
+| **brush** paint/erase the selected mask | `F` / `🖌 Brush` — drag = paint, **Alt-drag = erase**; set size via the toolbar **slider / px field** (or `[` `]` on US layouts) |
+| **polygon** draw a new head from scratch | `G` / `⬡ Polygon` — click vertices, `Backspace` undo vertex |
+| **commit the edit** | `Enter` / the commit button (Run SAM / Apply brush / Create head) |
+| **cycle SAM's 3 candidate masks** | `Tab` / `Shift+Tab` / the `⟳ i/3` button (after Run SAM) |
+| **new head** | click empty ground in edit, or `N` then click |
+| back to select | `↖ Select` / `Esc` |
+| delete selected mask | `Del` |
+| lock / unlock (protect + survive hide-all) | `L` / `🔒` |
+| hide selected mask | `X` |
+| show/hide overlay | `M` / `👁 masks` |
+| hide all but locked | `H` / `👁 hide all` |
+| ROI border | `R` / `▦ ROI` |
+| pan | wheel · **WASD** (Shift = faster) · **right-drag** · Space+drag |
+| zoom | Alt+wheel · `+` / `-` |
 | prev / next image | `,` / `.` |
-| show/hide sidebar | `B` (or the `☰` button) |
-| toggle ROI border | `R` (or the `ROI` button) |
+| sidebar | `B` / `☰` |
+| **save** | `Ctrl+S` / `💾 Save` |
+
+## Mask-sets (versions) + safe clearing
+
+- **`set:` dropdown + `＋`** (top bar) — keep multiple mask-sets per image; switch between them, add a new
+  empty one. The **active** set is edited and saved.
+- **`＋ seeds`** — load the YOLO+SAM masks into the active set (**appends**, never deletes).
+- **`🗑 clear`** (click to arm → click to confirm) — moves the set's masks into a **`⟲ set N` backup set**
+  (kept in the dropdown; locked masks stay).
+- **`💾 Save` persists ALL sets to disk**, so sets + `⟲` backups **survive reload**. The GT that eval reads is
+  the **active set at save time** — switch to the set you want as GT before saving.
 
 ## Notes
 
-- **Draft model = SAM2.1-large** by default; the per-head crop (not the model) is the resolution lever
-  for tiny/overlapping heads. Swap the draft with `GT_SAM_WEIGHT`.
-- Single active image / single user by design; SAM calls are serialized on one GPU. Loading an image bursts
-  VRAM to ~12 GB during the seed, then drops to ~1–2 GB; each point-click after that is sub-second.
-- This is the **mask-GT** track (feeds `eval_seg_2d`). The **box-GT** track (CVAT → `eval_yolo_boxes`)
-  is separate and unchanged.
-- Phase-1 MVP scope: select / point-refine / new / delete / undo-point / save / cache+resume / ROI border /
-  collapsible sidebar. Not yet: full op-stack undo of deletes, box-drag new instance, opacity/hide toggles.
+- **SAM2.1-large**, per-head crop (the resolution lever). First seed of an image ~48 s (cached; reopen fast);
+  each point-click is sub-second.
+- Single active image / single user; SAM calls serialized on one GPU (~6 GB interactive).
+- This is the **mask-GT** track (feeds `eval_seg_2d`). The **box-GT** track (CVAT → `eval_yolo_boxes`) is
+  separate — see `../../../docs/mask_generation/PHONE_GT_LABELING.md`.

@@ -11,7 +11,7 @@
             border-radius: 4px; cursor: pointer; font-size: 14px; padding: 3px 10px; }
   #topbars button:hover { background: #454545; }
   #roiBtn.on, #maskBtn.on, #selBtn.on { background: #0e639c; border-color: #1177bb; color: #fff; }
-  #editBtn.on { background: #b5432e; border-color: #d4623e; color: #fff; }   /* edit mode = red */
+  #editBtn.on, #brushBtn.on, #polyBtn.on { background: #b5432e; border-color: #d4623e; color: #fff; }   /* an edit tool active = red */
   .ic { width: 15px; height: 15px; vertical-align: -3px; fill: none; stroke: currentColor; stroke-width: 2; }
   /* custom tooltips (native title delay is too long / not adjustable) — show after 0.5s */
   #topbars button[data-tip] { position: relative; }
@@ -21,6 +21,17 @@
     padding: 4px 9px; font-size: 12px; font-weight: 400; white-space: nowrap; z-index: 30;
     opacity: 0; pointer-events: none; transition: opacity .12s; transition-delay: 0s; }
   #topbars button[data-tip]:hover::after { opacity: 1; transition-delay: .5s; }
+  #saveBtn.dirty { background: #8a6d3b; border-color: #c0a060; color: #fff; }
+  #autoSeedBtn.on { background: #0e639c; border-color: #1177bb; color: #fff; }
+  #clearBtn.armed { background: #a01c1c; border-color: #d43a3a; color: #fff; }
+  /* toast notification (Run / Save feedback) */
+  #toast { position: absolute; top: 84px; left: 50%; transform: translateX(-50%) translateY(-8px);
+    background: #14361a; color: #d6f5d6; border: 1px solid #3a7a3a; border-radius: 6px;
+    padding: 9px 18px; font-size: 15px; z-index: 40; opacity: 0; pointer-events: none;
+    transition: opacity .18s, transform .18s; box-shadow: 0 3px 12px rgba(0,0,0,.5); }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast.warn { background: #3a2c14; color: #f5dda0; border-color: #7a5f3a; }
+  #toast.err  { background: #3a1616; color: #f5b0b0; border-color: #7a3a3a; }
   #lockBtn.on { background: #b8860b; border-color: #d7ba7d; color: #fff; }
   #hideBtn.on { background: #6a4a9c; border-color: #8a6abb; color: #fff; }
   #runBtn { background: #2d7d2d; border-color: #3a9a3a; color: #fff; }
@@ -48,6 +59,8 @@
   #bar { gap: 16px; }
   #bar2 { gap: 10px; }
   .sep { width: 1px; height: 20px; background: #555; margin: 0 6px; }
+  #setSelect { background: #333; color: #ddd; border: 1px solid #555; border-radius: 4px;
+               font-size: 13px; padding: 2px 4px; }
   #bar b { color: #dcdcaa; }
   #busy { color: #f48771; display: none; }
   #help { position: absolute; bottom: 0; left: 0; right: 0; padding: 6px 8px;
@@ -65,11 +78,14 @@
 </div>
 <div id="main">
   <canvas id="cv"></canvas>
+  <div id="toast"></div>
   <div id="topbars">
     <div id="bar">
       <button id="toggle" title="show/hide sidebar (B)">☰</button>
       <span id="s_img">— no image —</span>
-      <span>instances: <b id="s_n">0</b></span>
+      <span>set: <select id="setSelect" title="active mask-set"></select>
+        <button id="setAddBtn" title="add a new empty mask-set (keeps the others)">＋</button></span>
+      <span title="number of masks (wheat heads) in the active set">masks: <b id="s_n">0</b></span>
       <span>sel: <b id="s_sel">none</b></span>
       <span>mode: <b id="s_mode" class="mode-SELECT">SELECT</b></span>
       <span id="s_dirty" style="color:#f48771"></span>
@@ -77,23 +93,40 @@
     </div>
     <div id="bar2">
       <button id="selBtn" class="on" title="select mode — clicks pick a mask (Esc)">↖ Select</button>
-      <button id="editBtn" title="edit selected mask — clicks place points (E)">✎ Edit</button>
-      <button id="ptModeBtn" title="what a click places: add / remove point">＋ point</button>
-      <button id="runBtn" title="run SAM on the placed points (Enter)">▶ Run SAM</button>
+      <button id="editBtn" title="points mode — clicks place SAM points on the selected mask (E)">✎ Points</button>
+      <button id="brushBtn" title="brush — paint/erase pixels directly on the SELECTED mask. Drag = paint, Alt-drag = erase, [ / ] size. Enter to apply (F)">🖌 Brush</button>
+      <button id="polyBtn" title="polygon — click outline vertices to draw a NEW head from scratch. Enter to create, Backspace undo vertex (G)">⬡ Polygon</button>
+      <span id="brushSize" style="display:none; color:#ccc; font-size:13px;">brush
+        <input id="brushRange" type="range" min="1" max="300" value="18" style="width:90px; vertical-align:middle;">
+        <input id="brushNum" type="number" min="1" max="300" value="18"
+               style="width:56px; background:#333; color:#ddd; border:1px solid #555; border-radius:4px; padding:2px 4px;">px</span>
+      <button id="ptModeBtn" title="point polarity: ⊕ positive (include) / ⊖ negative (exclude) — Q swaps. Click an existing point to delete it.">⊕ positive</button>
+      <button id="runBtn" title="commit the current edit — Run SAM (points) or create the mask (brush/polygon) (Enter)">▶ Run SAM</button>
+      <button id="candBtn" title="cycle SAM's 3 candidate masks for the selected head (Tab / Shift+Tab)" style="display:none">⟳ 1/3</button>
+      <button id="saveBtn" title="save ground truth for this image (Ctrl+S)">💾 Save</button>
       <span class="sep"></span>
       <button id="maskBtn" class="on" title="show/hide the mask overlay (M)">👁 masks</button>
       <button id="hideBtn" title="hide all masks except locked (H)">👁 hide all</button>
       <button id="lockBtn" title="lock/unlock selected mask (L)">🔒 lock</button>
       <button id="roiBtn" title="toggle ROI border (R)">▦ ROI</button>
+      <span class="sep"></span>
+      <button id="autoSeedBtn" title="auto-load YOLO+SAM masks when opening an image (off = open blank for manual labeling)">⚙ auto-seed</button>
+      <button id="loadSeedsBtn" title="load the YOLO+SAM seed masks now — ADDS to the current masks, never deletes your work">＋ seeds</button>
+      <button id="clearBtn" title="clear this set — moves the masks into a new backup set (kept in the dropdown). Click once to arm, again to confirm.">🗑 clear</button>
     </div>
   </div>
   <div id="help">
     <span class="chip"><b>L-click</b>select</span>
-    <span class="chip"><b>E</b>edit</span>
-    <span class="chip"><b>Q</b>swap ＋∕−</span>
-    <span class="chip"><b>Shift-click</b>＋point</span>
-    <span class="chip"><b>Alt-click</b>−point</span>
-    <span class="chip"><b>Enter</b>Run SAM</span>
+    <span class="chip"><b>E</b>points</span>
+    <span class="chip"><b>F</b>brush</span>
+    <span class="chip"><b>G</b>polygon</span>
+    <span class="chip"><b>brush size</b>slider / field in toolbar</span>
+    <span class="chip"><b>Alt-drag</b>brush erase</span>
+    <span class="chip"><b>Backspace</b>undo vtx/stroke</span>
+    <span class="chip"><b>Q</b>swap ⊕∕⊖</span>
+    <span class="chip"><b>click a point</b>delete it</span>
+    <span class="chip"><b>Enter</b>commit edit</span>
+    <span class="chip"><b>Tab</b>cycle SAM candidate</span>
     <span class="chip"><b>N</b>new head</span>
     <span class="chip"><b>Del</b>delete</span>
     <span class="chip"><b>Ctrl+Z</b>undo pt</span>
@@ -115,35 +148,40 @@ const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
 const EYE = `<svg class="ic" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
 const EYEOFF = `<svg class="ic" viewBox="0 0 24 24"><path d="M17.9 17.9A10 10 0 0 1 12 20C5 20 1 12 1 12a18.5 18.5 0 0 1 5.1-6M9.9 4.2A9 9 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.2 3.2m-6.7-1.1a3 3 0 1 1-4.2-4.2"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
 // colored point cursor for edit mode (green + for add, red − for remove)
-function cursorURL(add){
-  // small reticle with an OPEN CENTER so the target pixel stays visible.
-  // add = green 4-tick crosshair (＋); remove = two solid red pills (−), fully black-bordered.
-  let shapes;
-  if(add){
-    const ticks = "M13 4v4 M13 18v4 M4 13h4 M18 13h4";
-    shapes = `<path d='${ticks}' stroke='#000' stroke-width='4' fill='none' stroke-linecap='round'/>`
-           + `<path d='${ticks}' stroke='#33ff33' stroke-width='1.8' fill='none' stroke-linecap='round'/>`;
-  } else {
-    shapes = `<rect x='1.5' y='10.5' width='7.5' height='5' rx='2.5' fill='#ff2020' stroke='#000' stroke-width='1.5'/>`
-           + `<rect x='17' y='10.5' width='7.5' height='5' rx='2.5' fill='#ff2020' stroke='#000' stroke-width='1.5'/>`;
-  }
-  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='26' height='26'>${shapes}</svg>`;
+function cursorURL(positive){
+  // open-center reticle so the target pixel stays visible; color = point polarity
+  // (green ⊕ = positive/include, red = negative/exclude). Deleting a point is by hovering it, not the cursor.
+  const c = positive ? '#33ff33' : '#ff3030';
+  const ticks = "M13 4v4 M13 18v4 M4 13h4 M18 13h4";
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='26' height='26'>`
+    + `<path d='${ticks}' stroke='#000' stroke-width='4' fill='none' stroke-linecap='round'/>`
+    + `<path d='${ticks}' stroke='${c}' stroke-width='1.9' fill='none' stroke-linecap='round'/></svg>`;
   return `url("data:image/svg+xml,${encodeURIComponent(svg)}") 13 13, crosshair`;
 }
 function updateCursor(){
   if(spaceDown){ cv.style.cursor = 'grab'; return; }
-  cv.style.cursor = editing ? cursorURL(!!pointMode) : 'default';
+  if(editing && tool === 'points'){ cv.style.cursor = cursorURL(!!pointMode); return; }
+  if(editing && (tool === 'brush' || tool === 'polygon')){ cv.style.cursor = 'crosshair'; return; }
+  cv.style.cursor = 'default';
 }
 let img = new Image(), overlay = new Image();
 let meta = null, scale = 1, offX = 0, offY = 0;
 let selectedId = null, newMode = false, localPoints = [], spaceDown = false, shiftDown = false;
 let editing = false, pointMode = 1;  // editing = clicks place points; pointMode 1=add / 0=remove
+let tool = 'points';                 // active edit tool while editing: 'points' | 'brush' | 'polygon'
+let brushRadius = 18;                // brush radius in IMAGE pixels ([ / ] adjust)
+let drawOps = [];                    // committed-but-not-yet-applied brush strokes: [{pts:[[x,y]..], r, erase}]
+let curStroke = null, brushing = false;   // stroke currently being dragged
+let polyVerts = [];                  // polygon vertices being placed (before Enter creates the head)
+let mouseImg = null;                 // last cursor position in image coords (brush ring / polygon rubber-band)
+let candN = 0, candIdx = 0;          // SAM candidate masks for the selected head (Tab cycles them)
 let hoverIdx = -1;                    // index of the placed point under the cursor (remove mode)
 let listItems = [], curIdx = -1;
 let dirty = false;   // unsaved changes since last load/save -> warn before leaving
 let roiPoly = null, roiOn = false;   // ROI marker-hull polygon overlay
 let overlayVisible = true;           // masks button: show/hide the whole overlay (client-side)
 let hideAll = false;                 // hide-all button: server hides all but locked
+let autoSeed = localStorage.getItem('gt_autoseed') === '1';  // open images with YOLO+SAM seeds? (default no = blank)
 
 // native "unsaved changes" prompt on tab close (browsers only allow their generic dialog, no custom Save button)
 window.addEventListener('beforeunload', (ev)=>{
@@ -200,16 +238,40 @@ function setSelectMode(){                       // Select button / Esc: clicks p
 }
 document.getElementById('selBtn').onclick = setSelectMode;
 
-function toggleEdit(){                          // Edit button / E: clicks place points (pick a mask on 1st click)
-  editing = !editing;
-  if(editing) pointMode = 1;                    // entering edit always starts in ADD-point mode
-  setStatus(); draw();
+function clearDrawBuffers(){                    // drop any un-committed brush strokes / polygon vertices
+  drawOps = []; curStroke = null; brushing = false; polyVerts = [];
+}
+function setTool(t){                            // switch the active edit tool (enters edit mode)
+  tool = t; editing = true; newMode = false;
+  if(t === 'points') pointMode = 1;
+  clearDrawBuffers(); setStatus(); draw();
+}
+function toggleEdit(){                          // Points button / E: toggle points-edit vs select
+  if(editing && tool === 'points') setSelectMode(); else setTool('points');
 }
 document.getElementById('editBtn').onclick = toggleEdit;
+document.getElementById('brushBtn').onclick = ()=> (editing && tool==='brush') ? setSelectMode() : setTool('brush');
+document.getElementById('polyBtn').onclick  = ()=> (editing && tool==='polygon') ? setSelectMode() : setTool('polygon');
 
 function togglePointMode(){ pointMode = pointMode ? 0 : 1; setStatus(); }
 document.getElementById('ptModeBtn').onclick = togglePointMode;
-document.getElementById('runBtn').onclick = runSam;
+
+function commit(){                              // Enter / the commit button — dispatch on the active tool
+  if(!editing) return;
+  if(tool === 'points') return runSam();
+  if(tool === 'brush')  return commitBrush();
+  if(tool === 'polygon') return commitPolygon();
+}
+document.getElementById('runBtn').onclick = (e)=>{ e.preventDefault(); commit(); };
+
+// brush size: slider + typed number field, kept in sync ([ / ] also work on US layouts)
+const brushRange = document.getElementById('brushRange');
+const brushNum = document.getElementById('brushNum');
+const clampBrush = (v)=> Math.max(1, Math.min(300, Math.round(v) || 1));
+function syncBrushInputs(){ brushRange.value = brushRadius; brushNum.value = brushRadius; }
+brushRange.oninput = ()=>{ brushRadius = clampBrush(+brushRange.value); brushNum.value = brushRadius; setStatus(); draw(); };
+brushNum.oninput   = ()=>{ brushRadius = clampBrush(+brushNum.value); brushRange.value = brushRadius; setStatus(); draw(); };
+brushNum.onchange  = ()=>{ brushNum.value = brushRadius; };   // normalise the field on blur/Enter
 
 function updateLockBtn(locked){
   const b = document.getElementById('lockBtn');
@@ -230,16 +292,34 @@ function busy(on, msg){ const b = document.getElementById('busy');
 function setStatus(){
   document.getElementById('s_img').textContent = meta ? `${meta.field}/${meta.date}/${meta.stem}` : '— no image —';
   document.getElementById('s_n').textContent = meta ? meta.n : 0;
+  const _ss = document.getElementById('setSelect');       // keep active set's count fresh in the dropdown
+  if(meta && _ss.selectedOptions[0]) _ss.selectedOptions[0].textContent = `${_ss.value} (${meta.n})`;
   document.getElementById('s_sel').textContent = selectedId ? `#${selectedId} (${localPoints.length}pt)` : 'none';
-  const m = newMode ? 'NEW' : (editing ? ('EDIT ' + (pointMode ? '＋' : '−')) : 'SELECT');
+  let m;
+  if(newMode) m = '＋ NEW HEAD (click empty ground)';
+  else if(editing && tool === 'brush') m = `BRUSH ${curStroke||drawOps.length ? '(unapplied)' : ''} r=${brushRadius}`;
+  else if(editing && tool === 'polygon') m = `POLYGON (${polyVerts.length} pts)`;
+  else if(editing) m = 'POINTS ' + (pointMode ? '⊕' : '⊖');
+  else m = 'SELECT';
   const el = document.getElementById('s_mode'); el.textContent = m;
   el.className = 'mode-' + (newMode ? 'NEW' : editing ? 'EDIT' : 'SELECT');
   document.getElementById('s_dirty').textContent = dirty ? '● unsaved' : '';
-  // mode button group
-  document.getElementById('editBtn').classList.toggle('on', editing);
+  document.getElementById('saveBtn').classList.toggle('dirty', dirty);  // highlight Save when unsaved
+  // edit-tool button group (only one active at a time; Select when not editing)
+  document.getElementById('editBtn').classList.toggle('on', editing && tool === 'points');
+  document.getElementById('brushBtn').classList.toggle('on', editing && tool === 'brush');
+  document.getElementById('polyBtn').classList.toggle('on', editing && tool === 'polygon');
   document.getElementById('selBtn').classList.toggle('on', !editing && !newMode);
+  // commit button relabels to match the active tool
+  document.getElementById('runBtn').textContent =
+    (editing && tool === 'brush') ? '✓ Apply brush' :
+    (editing && tool === 'polygon') ? '✓ Create head' : '▶ Run SAM';
+  const cb = document.getElementById('candBtn');           // candidate cycler: only when >1 candidate
+  if(candN > 1){ cb.style.display = ''; cb.textContent = `⟳ ${candIdx+1}/${candN}`; }
+  else cb.style.display = 'none';
+  document.getElementById('brushSize').style.display = (editing && tool === 'brush') ? '' : 'none';
   const pm = document.getElementById('ptModeBtn');
-  pm.textContent = pointMode ? '＋ point' : '− point';
+  pm.textContent = pointMode ? '⊕ positive' : '⊖ negative';
   pm.classList.toggle('remove', !pointMode);
   // dynamic show/hide toggle buttons (eye / eye-with-slash icon)
   const mb = document.getElementById('maskBtn');
@@ -273,9 +353,9 @@ function draw(){
     ctx.lineWidth = 3/scale; ctx.strokeStyle = '#00e5ff';
     ctx.setLineDash([14/scale, 9/scale]); ctx.stroke(); ctx.setLineDash([]);
   }
-  // point markers only while editing (keeps SELECT view clean)
-  if(editing) for(let i=0; i<localPoints.length; i++){
-    const p = localPoints[i], hov = (i === hoverIdx && !pointMode);
+  // point markers only while editing with the POINTS tool (keeps other views clean)
+  if(editing && tool === 'points') for(let i=0; i<localPoints.length; i++){
+    const p = localPoints[i], hov = (i === hoverIdx);
     if(hov){                                         // glow ring: this point will be deleted on click
       ctx.beginPath(); ctx.arc(p.x, p.y, 9/scale, 0, 7);
       ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 2/scale; ctx.stroke();
@@ -284,6 +364,36 @@ function draw(){
     ctx.fillStyle = p.l ? '#33dd33' : '#ff4444';
     ctx.strokeStyle = hov ? '#fff' : '#000'; ctx.lineWidth = (hov?2.5:1.5)/scale;
     ctx.fill(); ctx.stroke();
+  }
+  // BRUSH preview: queued strokes + the one under the cursor, green=paint / red=erase, + a size ring
+  if(editing && tool === 'brush'){
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    for(const s of drawOps.concat(curStroke ? [curStroke] : [])){
+      ctx.strokeStyle = s.erase ? 'rgba(255,70,70,.5)' : 'rgba(70,255,70,.5)';
+      ctx.lineWidth = 2*s.r;
+      ctx.beginPath(); ctx.moveTo(s.pts[0][0], s.pts[0][1]);
+      for(let i=1;i<s.pts.length;i++) ctx.lineTo(s.pts[i][0], s.pts[i][1]);
+      if(s.pts.length===1) ctx.lineTo(s.pts[0][0]+0.01, s.pts[0][1]);   // single dab
+      ctx.stroke();
+    }
+    if(mouseImg){                                    // brush-size ring following the cursor
+      ctx.beginPath(); ctx.arc(mouseImg.x, mouseImg.y, brushRadius, 0, 7);
+      ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 1.5/scale; ctx.stroke();
+    }
+  }
+  // POLYGON preview: the outline so far + a rubber-band edge to the cursor + vertex dots
+  if(editing && tool === 'polygon' && polyVerts.length){
+    ctx.beginPath(); ctx.moveTo(polyVerts[0][0], polyVerts[0][1]);
+    for(let i=1;i<polyVerts.length;i++) ctx.lineTo(polyVerts[i][0], polyVerts[i][1]);
+    if(mouseImg) ctx.lineTo(mouseImg.x, mouseImg.y);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(60,180,255,.22)'; ctx.fill();
+    ctx.strokeStyle = 'rgba(60,180,255,.95)'; ctx.lineWidth = 2/scale; ctx.stroke();
+    for(const v of polyVerts){
+      ctx.beginPath(); ctx.arc(v[0], v[1], 4/scale, 0, 7);
+      ctx.fillStyle = '#3cb4ff'; ctx.strokeStyle = '#000'; ctx.lineWidth = 1/scale;
+      ctx.fill(); ctx.stroke();
+    }
   }
 }
 
@@ -302,19 +412,21 @@ function fitView(){
 async function loadImage(idx){
   const it = listItems[idx]; if(!it) return;
   if(dirty && !confirm('You have unsaved changes on this image.\nDiscard them and switch?')) return;
-  curIdx = idx; selectedId = null; newMode = false; editing = false; localPoints = []; dirty = false;
+  curIdx = idx; selectedId = null; newMode = false; editing = false; localPoints = []; dirty = false; candN = 0;
   renderList();
   // 1. load the image only (fast) -> show it immediately
   const r = await fetch('/api/load', {method:'POST', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({field:it.field, date:it.date, stem:it.stem})});
+            body: JSON.stringify({field:it.field, date:it.date, stem:it.stem, auto_seed: autoSeed})});
   meta = await r.json();
+  populateSets(meta);                                      // fill the set dropdown
   roiPoly = meta.roi;                                      // marker-hull polygon (or null if unavailable)
   document.getElementById('roiBtn').classList.toggle('on', roiOn && !!roiPoly);
   img.onload = ()=>{ fitView(); draw(); };
   img.src = `/image?field=${it.field}&date=${it.date}&stem=${it.stem}`;
   refreshOverlay(); setStatus();
-  // 2. seed ONLY if this image was never decoded before; a cached draft/saved GT comes back instantly
-  if(meta.cached){ return; }
+  // 2. saved work / cached draft already came back; a blank image auto-seeds only if the setting is on
+  if(meta.cached) return;                                  // saved GT or cached seed draft loaded
+  if(!autoSeed) return;                                    // start BLANK for manual labeling
   busy(true, `⏳ seeding ${meta.nboxes} heads (first time only)…`);
   const s = await (await fetch('/api/seed', {method:'POST', headers:{'Content-Type':'application/json'},
             body: '{}'})).json();
@@ -343,15 +455,130 @@ function addPoint(p, label){
 }
 async function newInstance(){                        // start a fresh empty head, ready for points
   const j = await post('/api/new', {});
-  selectedId = j.id; newMode = false; editing = true; pointMode = 1; localPoints = [];
+  selectedId = j.id; newMode = false; editing = true; pointMode = 1; localPoints = []; candN = 0;
+  if(meta && j.n!=null) meta.n = j.n;                 // keep the masks counter + set dropdown live
   updateLockBtn(false); markDirty(); setStatus(); draw();
 }
 async function runSam(){                             // commit placed points -> SAM once, back to select
-  if(!selectedId || !localPoints.length) return;
-  await post('/api/set_points', {id:selectedId, points: localPoints.map(p=>[p.x,p.y,p.l])});
+  if(!selectedId){ flash('select a head first'); return; }
+  if(!localPoints.length){ flash('no points placed'); return; }
+  const j = await post('/api/set_points', {id:selectedId, points: localPoints.map(p=>[p.x,p.y,p.l])});
   editing = false;                                   // committed -> leave edit so clicks select again
+  candN = j.ncands||0; candIdx = j.cand_idx||0;      // SAM's 3 candidates -> Tab to cycle
+  markDirty(); refreshOverlay(); setStatus(); draw();
+  if(j && j.area === 0) toast('⚠ SAM ran — mask is empty, adjust points', 'warn');
+  else if(candN > 1) toast(`✓ SAM — candidate ${candIdx+1}/${candN} (Tab to cycle) — ${j.area.toLocaleString()} px`);
+  else if(j && j.area != null) toast(`✓ SAM done — ${j.area.toLocaleString()} px`);
+  else toast('✓ SAM done');
+}
+async function cycleCandidate(dir){                  // switch which of SAM's 3 candidate masks the head uses
+  if(!selectedId || candN <= 1) return;
+  candIdx = ((candIdx + dir) % candN + candN) % candN;
+  const j = await post('/api/candidate', {id:selectedId, idx:candIdx});
+  if(j.ok === false){ candN = 0; setStatus(); return; }   // no candidates (e.g. after reload) or locked
+  candIdx = j.idx; markDirty(); refreshOverlay(); setStatus();
+  toast(`⟳ candidate ${candIdx+1}/${candN} — ${(j.area||0).toLocaleString()} px`);
+}
+document.getElementById('candBtn').onclick = ()=>cycleCandidate(1);
+async function commitBrush(){                        // apply the accumulated brush strokes to the mask
+  if(curStroke){ drawOps.push(curStroke); curStroke = null; }   // fold in a stroke still under the cursor
+  if(!drawOps.length){ flash('nothing painted'); return; }
+  const j = await post('/api/brush', {id: selectedId, strokes: drawOps});
+  drawOps = []; candN = 0;                            // manual edit -> SAM candidates no longer apply
+  if(j.locked){ toast('🔒 mask is locked — unlock to edit', 'warn'); return; }
+  if(j.removed){ selectedId = null; if(meta) meta.n = j.n; toast('🖌 mask erased away'); }
+  else { if(j.id) selectedId = j.id; if(meta && j.n!=null) meta.n = j.n; toast(`🖌 mask updated — ${(j.area||0).toLocaleString()} px`); }
   markDirty(); refreshOverlay(); setStatus(); draw();
 }
+async function commitPolygon(){                      // fill the polygon into a NEW head
+  if(polyVerts.length < 3){ flash('need 3+ polygon points'); return; }
+  const j = await post('/api/polygon', {verts: polyVerts});
+  polyVerts = []; candN = 0;
+  if(j.error){ flash(j.error); return; }
+  selectedId = j.id; updateLockBtn(false); if(meta) meta.n = j.n;
+  markDirty(); refreshOverlay(); setStatus(); draw();
+  toast(`⬡ head created — ${(j.area||0).toLocaleString()} px`);
+}
+function flash(msg){                                 // brief status message (helps see why Run did nothing)
+  const b = document.getElementById('busy'); b.style.display='inline'; b.textContent = msg;
+  setTimeout(()=>{ b.style.display='none'; b.textContent='⏳ SAM…'; }, 1300);
+}
+let toastTimer = null;
+function toast(msg, kind){                            // bubble notification (Run / Save feedback)
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.className = 'show' + (kind ? ' ' + kind : '');
+  clearTimeout(toastTimer); toastTimer = setTimeout(()=>{ t.className = ''; }, 3000);
+}
+async function saveGT(){                              // Save button / Ctrl+S
+  busy(true); const j = await post('/api/save', {}); busy(false);
+  dirty = false; if(curIdx >= 0) listItems[curIdx].done = true; renderList();
+  toast(`💾 saved ${j.count} heads`); setStatus();
+}
+document.getElementById('saveBtn').onclick = saveGT;
+
+function toggleAutoSeed(){                            // whether opening an image auto-loads the seeds
+  autoSeed = !autoSeed;
+  localStorage.setItem('gt_autoseed', autoSeed ? '1' : '0');
+  document.getElementById('autoSeedBtn').classList.toggle('on', autoSeed);
+  toast(autoSeed ? '⚙ auto-seed ON — images open with YOLO+SAM masks'
+                 : '⚙ auto-seed OFF — images open blank (manual)');
+}
+document.getElementById('autoSeedBtn').onclick = toggleAutoSeed;
+
+async function loadSeeds(){                           // ADD the YOLO+SAM seeds to the current masks (never deletes)
+  if(!meta) return;
+  busy(true, '⏳ loading seeds…');
+  const s = await (await fetch('/api/seed', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})).json();
+  busy(false);
+  meta.n = s.n; markDirty(); if(curIdx>=0){ listItems[curIdx].cached = true; } renderList();
+  refreshOverlay(); setStatus(); toast(`＋ added ${s.added} seed masks`);
+}
+document.getElementById('loadSeedsBtn').onclick = loadSeeds;
+
+let clearArmed = false, clearTimer = null;
+function disarmClear(){
+  clearArmed = false; clearTimeout(clearTimer);
+  const b = document.getElementById('clearBtn'); b.textContent = '🗑 clear'; b.classList.remove('armed');
+}
+async function clearMasks(){                          // 1st click arms (red), 2nd click within 4s clears
+  if(!meta) return;
+  if(!clearArmed){
+    clearArmed = true;
+    const b = document.getElementById('clearBtn'); b.textContent = '⚠ confirm clear?'; b.classList.add('armed');
+    clearTimer = setTimeout(disarmClear, 4000);
+    return;
+  }
+  disarmClear();
+  const j = await post('/api/clear', {});
+  meta.n = j.n; selectedId = null; editing = false; localPoints = []; candN = 0; markDirty();
+  populateSets(j); refreshOverlay(); setStatus();
+  toast(j.backup_set ? `🗑 cleared — old masks kept in set "${j.backup_set}" (pick it in the dropdown)`
+                     : '🗑 nothing to clear');
+}
+document.getElementById('clearBtn').onclick = clearMasks;
+
+// ---- mask-sets (versions) ----
+function populateSets(info){
+  const sel = document.getElementById('setSelect'); sel.innerHTML = '';
+  (info.sets || []).forEach(s=>{
+    const o = document.createElement('option'); o.value = s.name;
+    o.textContent = `${s.name} (${s.n})`; if(s.name === info.active) o.selected = true;
+    sel.appendChild(o);
+  });
+}
+async function switchSet(name){
+  const j = await post('/api/set_switch', {name});
+  meta.n = j.n; selectedId = null; editing = false; localPoints = []; hoverIdx = -1; candN = 0;
+  populateSets(j); refreshOverlay(); setStatus();
+}
+document.getElementById('setSelect').onchange = (e)=>switchSet(e.target.value);
+async function addSet(){
+  const j = await post('/api/set_add', {});
+  meta.n = j.n; selectedId = null; editing = false; localPoints = [];
+  populateSets(j); markDirty(); refreshOverlay(); setStatus();
+  toast('＋ new empty set — now active');
+}
+document.getElementById('setAddBtn').onclick = addSet;
 
 // ---- mouse ----
 let panning = false, panStart = null;
@@ -359,6 +586,7 @@ async function selectAt(p){                        // pick the mask under the cu
   const j = await post('/api/select', {x:p.x, y:p.y});
   selectedId = j.id;
   localPoints = (j.points||[]).map(q=>({x:q[0], y:q[1], l:q[2]}));
+  candN = j.ncands||0; candIdx = j.cand_idx||0;    // candidates available to cycle for this head (if any)
   updateLockBtn(j.locked); refreshOverlay(); setStatus();
 }
 cv.addEventListener('mousedown', async (ev)=>{
@@ -366,14 +594,22 @@ cv.addEventListener('mousedown', async (ev)=>{
     panning = true; panStart = {x:ev.clientX-offX, y:ev.clientY-offY}; cv.style.cursor='grabbing'; return; }
   if(!meta) return;
   const p = toImg(ev);
-  if(newMode){ await newInstance(); return; }
-  if(ev.shiftKey){ if(!selectedId) await selectAt(p); addPoint(p, 1); return; }  // Shift+click = add point
-  if(ev.altKey){ if(!selectedId) await selectAt(p); addPoint(p, 0); return; }    // Alt+click   = remove point
-  if(editing){                                      // EDIT: click places a point (auto-selects the mask if none yet)
-    if(!pointMode && hoverIdx !== -1){              // remove mode + hovering a point -> delete THAT point
+  if(editing && tool === 'brush'){                  // start a brush stroke (Alt = erase). Applied on Enter.
+    brushing = true; curStroke = {pts:[[p.x, p.y]], r: brushRadius, erase: ev.altKey};
+    draw(); return; }
+  if(editing && tool === 'polygon'){                // drop a polygon vertex. Enter fills it into a new head.
+    polyVerts.push([p.x, p.y]); markDirty(); setStatus(); draw(); return; }
+  if(newMode){ await newInstance(); addPoint(p, 1); return; }   // N then click = new head + first point
+  if(ev.shiftKey){ if(!selectedId) await selectAt(p); addPoint(p, 1); return; }  // Shift+click = positive point
+  if(ev.altKey){ if(!selectedId) await selectAt(p); addPoint(p, 0); return; }    // Alt+click   = negative point
+  if(editing){                                      // EDIT: click places a point
+    if(hoverIdx !== -1){                            // clicking on an existing point deletes it (either polarity)
       localPoints.splice(hoverIdx, 1); hoverIdx = -1; markDirty(); setStatus(); draw(); return;
     }
-    if(!selectedId){ await selectAt(p); if(!selectedId) return; }  // clicked a mask -> select it, then place
+    if(!selectedId){                               // nothing picked yet:
+      await selectAt(p);                            //   click on a mask -> edit it
+      if(!selectedId) await newInstance();          //   click on empty ground -> start a NEW head here
+    }
     addPoint(p, pointMode); return;
   }
   await selectAt(p);                                // SELECT (default): never adds a point
@@ -381,18 +617,28 @@ cv.addEventListener('mousedown', async (ev)=>{
 cv.addEventListener('contextmenu', (ev)=> ev.preventDefault());   // no menu; right-drag pans instead
 window.addEventListener('mousemove', (ev)=>{
   if(panning){ offX = ev.clientX - panStart.x; offY = ev.clientY - panStart.y; draw(); return; }
-  // in remove mode, highlight the placed point under the cursor (it'll be deleted on click)
+  mouseImg = toImg(ev);
+  if(brushing){ curStroke.pts.push([mouseImg.x, mouseImg.y]); draw(); return; }   // extend the current stroke
+  if(editing && (tool === 'brush' || tool === 'polygon')){ draw(); return; }      // update ring / rubber-band
+  // POINTS tool: highlight the placed point under the cursor (a click on it deletes it) — either polarity
   let idx = -1;
-  if(editing && !pointMode && localPoints.length){
-    const p = toImg(ev), thr = 11/scale; let best = thr;
+  if(editing && tool === 'points' && localPoints.length){
+    const thr = 10/scale; let best = thr;
     for(let i=0;i<localPoints.length;i++){
-      const d = Math.hypot(localPoints[i].x-p.x, localPoints[i].y-p.y);
+      const d = Math.hypot(localPoints[i].x-mouseImg.x, localPoints[i].y-mouseImg.y);
       if(d < best){ best = d; idx = i; }
     }
   }
   if(idx !== hoverIdx){ hoverIdx = idx; draw(); }
 });
-window.addEventListener('mouseup', ()=>{ if(panning){ panning = false; updateCursor(); } });
+window.addEventListener('mouseup', ()=>{
+  if(panning){ panning = false; updateCursor(); return; }
+  if(brushing){                                    // finish the stroke -> queue it (applied on Enter)
+    brushing = false;
+    if(curStroke && curStroke.pts.length){ drawOps.push(curStroke); }
+    curStroke = null; markDirty(); setStatus(); draw();
+  }
+});
 
 // ---- wheel: pan / zoom ----
 cv.addEventListener('wheel', (ev)=>{
@@ -411,32 +657,43 @@ cv.addEventListener('wheel', (ev)=>{
 // ---- keyboard ----
 window.addEventListener('keydown', async (ev)=>{
   shiftDown = ev.shiftKey;                        // keep Shift state current for the WASD speed boost
+  const tag = ev.target.tagName;                  // typing in the size field / set dropdown -> ignore canvas keys
+  if(tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
   if(ev.code === 'Space'){ spaceDown = true; cv.style.cursor='grab'; ev.preventDefault(); return; }
+  if(ev.key === 'Tab'){ ev.preventDefault(); cycleCandidate(ev.shiftKey ? -1 : 1); return; }  // cycle SAM candidates
   if(ev.key === 'b' || ev.key === 'B'){ toggleSidebar(); return; }
   if(ev.key === 'r' || ev.key === 'R'){ toggleRoi(); return; }
   if(ev.key === 'h' || ev.key === 'H'){ toggleHideAll(); return; }
   if(ev.key === 'm' || ev.key === 'M'){ toggleMasks(); return; }
   if(ev.key === 'e' || ev.key === 'E'){ toggleEdit(); return; }
+  if(ev.key === 'f' || ev.key === 'F'){ (editing && tool==='brush') ? setSelectMode() : setTool('brush'); return; }
+  if(ev.key === 'g' || ev.key === 'G'){ (editing && tool==='polygon') ? setSelectMode() : setTool('polygon'); return; }
+  if((ev.key === '[' || ev.key === ']') && editing && tool==='brush'){      // brush size (US layouts)
+    brushRadius = clampBrush(brushRadius + (ev.key===']' ? 3 : -3));
+    syncBrushInputs(); setStatus(); draw(); return; }
   if((ev.key === 'q' || ev.key === 'Q') && editing){ togglePointMode(); draw(); return; }  // swap add/remove
-  if(ev.key === 'Enter'){ ev.preventDefault(); runSam(); return; }
+  if(ev.key === 'Backspace' && editing){                                    // undo last polygon vertex / brush stroke
+    ev.preventDefault();
+    if(tool==='polygon' && polyVerts.length) polyVerts.pop();
+    else if(tool==='brush' && drawOps.length) drawOps.pop();
+    setStatus(); draw(); return; }
+  if(ev.key === 'Enter'){ ev.preventDefault(); commit(); return; }
   if((ev.key === 'x' || ev.key === 'X') && selectedId){ flagSelected('hidden'); return; }
   if((ev.key === 'l' || ev.key === 'L') && selectedId){ flagSelected('locked'); return; }
   if(ev.key === 'Escape'){
-    if(editing){ editing = false; }                            // 1st Esc leaves edit (keeps selection)
-    else { selectedId = null; localPoints = []; updateLockBtn(false); refreshOverlay(); }
+    if(newMode){ newMode = false; }                           // cancel pending new-head
+    else if(editing){ editing = false; localPoints = []; hoverIdx = -1; clearDrawBuffers(); }  // leave edit, drop un-committed edits
+    else { selectedId = null; localPoints = []; candN = 0; updateLockBtn(false); refreshOverlay(); }  // deselect
     setStatus(); draw(); return; }
   if((ev.key === 'n' || ev.key === 'N')){ newMode = !newMode; setStatus(); return; }
   if(ev.key === 'Delete' && selectedId){
-    await post('/api/delete', {id:selectedId});
-    selectedId=null; editing=false; localPoints=[]; updateLockBtn(false); markDirty(); refreshOverlay(); setStatus(); return; }
+    const jd = await post('/api/delete', {id:selectedId});
+    if(meta && jd.n!=null) meta.n = jd.n;              // keep the masks counter + set dropdown live
+    selectedId=null; editing=false; localPoints=[]; candN=0; updateLockBtn(false); markDirty(); refreshOverlay(); setStatus(); return; }
   if(ev.ctrlKey && (ev.key === 'z' || ev.key === 'Z') && editing){   // undo last placed point (before Run)
     ev.preventDefault();
     localPoints.pop(); setStatus(); draw(); return; }
-  if(ev.ctrlKey && ev.key === 's'){
-    ev.preventDefault(); busy(true);
-    const j = await post('/api/save', {}); busy(false);
-    dirty = false; listItems[curIdx].done = true; renderList();
-    alert(`saved ${j.count} heads →\n${j.path}`); setStatus(); return; }
+  if(ev.ctrlKey && ev.key === 's'){ ev.preventDefault(); saveGT(); return; }
   if(ev.key === ','){ if(curIdx>0) loadImage(curIdx-1); return; }
   if(ev.key === '.'){ if(curIdx<listItems.length-1) loadImage(curIdx+1); return; }
   if(ev.key === '+' || ev.key === '='){ scale*=1.15; draw(); return; }
@@ -476,9 +733,12 @@ function renderList(){
   });
 }
 async function init(){
-  // move button title -> data-tip so our fast custom tooltip shows instead of the slow native one
-  document.querySelectorAll('#topbars button[title]').forEach(b=>{
-    b.dataset.tip = b.getAttribute('title'); b.removeAttribute('title'); });
+  // make every toolbar button a plain button (never a form-submit) + move title -> fast custom tooltip
+  document.querySelectorAll('#topbars button').forEach(b=>{
+    b.type = 'button';
+    if(b.title){ b.dataset.tip = b.title; b.removeAttribute('title'); }
+  });
+  document.getElementById('autoSeedBtn').classList.toggle('on', autoSeed);
   resize();
   listItems = await (await fetch('/api/list')).json();
   renderList();
