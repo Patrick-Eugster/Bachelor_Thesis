@@ -29,7 +29,8 @@ STATIC = os.path.join(HERE, "static")
 SELECTION = os.path.join(PHONE, "gt_selection.json")
 
 # config (env-overridable)
-WEIGHT = os.environ.get("GT_SAM_WEIGHT", os.path.join(REPO, "sam2.1_l.pt"))
+WEIGHT = os.environ.get("GT_SAM_WEIGHT",
+                        os.path.join(HERE, "..", "weights", "sam2.1_l.pt"))   # src/mask_generation/weights/
 DECODE_BATCH = int(os.environ.get("GT_DECODE_BATCH", "8"))
 PORT = int(os.environ.get("GT_PORT", "8000"))
 
@@ -380,28 +381,38 @@ def _is_visible(it, hide_all):
     return (not it["hidden"]) and (it["locked"] or not hide_all)
 
 
-def render_overlay(selected_id=None, hide_all=False):
+def render_overlay(selected_id=None, hide_all=False, style="color", solid=False):
     """Composite instance masks into a BGRA PNG. Individually-hidden masks are skipped; with hide_all on,
-    only LOCKED masks stay. Locked = gold outline, selected = white outline."""
+    only LOCKED masks stay.
+      style="color"  -> per-id colours (distinct wheat heads);  "binary" -> all masks white.
+      solid=False    -> translucent (for viewing over the photo);  solid=True -> opaque (for the black/
+                        white background modes, so every mask is fully visible like a mask image).
+    In solid COLOUR mode each instance also gets a thin dark outline so touching heads stay separable."""
     if SESS.img is None:                              # overlay asked for before any image loaded
         ok, buf = cv2.imencode(".png", np.zeros((1, 1, 4), np.uint8))
         return buf.tobytes()
     H, W = SESS.img.shape[:2]
     over = np.zeros((H, W, 4), np.uint8)
+    binary = (style == "binary")
     for it in SESS.instances:
         sp = it["mask"]
         if sp is None or not _is_visible(it, hide_all):
             continue
         x0, y0, x1, y1 = sp["bbox"]
-        b, g, r = color_for(it["id"])
-        a = 170 if it["id"] == selected_id else 90
+        b, g, r = (255, 255, 255) if binary else color_for(it["id"])
+        a = 255 if solid else (170 if it["id"] == selected_id else 90)
         over[y0:y1, x0:x1][sp["sub"]] = (b, g, r, a)
-    for it in SESS.instances:                            # gold outline on locked (visible) instances
-        if it["mask"] is not None and it["locked"] and _is_visible(it, hide_all):
-            _outline(over, it["mask"], (0, 215, 255, 255), 2)
-    it = SESS.find(selected_id) if selected_id else None   # white outline on the selected instance
-    if it and it["mask"] is not None:
-        _outline(over, it["mask"], (255, 255, 255, 255), 3)
+    if solid and not binary:                             # separate touching heads with a 1px dark border
+        for it in SESS.instances:
+            if it["mask"] is not None and _is_visible(it, hide_all):
+                _outline(over, it["mask"], (0, 0, 0, 255), 1)
+    if not binary:                                       # selection/lock cues only in colour mode (keep
+        for it in SESS.instances:                        # the binary view a clean mask image)
+            if it["mask"] is not None and it["locked"] and _is_visible(it, hide_all):
+                _outline(over, it["mask"], (0, 215, 255, 255), 2)   # gold = locked
+        it = SESS.find(selected_id) if selected_id else None
+        if it and it["mask"] is not None:
+            _outline(over, it["mask"], (255, 255, 255, 255), 3)     # white = selected
     ok, buf = cv2.imencode(".png", over)
     return buf.tobytes()
 
@@ -474,8 +485,14 @@ def apply_draw(it, add_bool, erase_bool):
 
 
 def save_gt():
-    """Write the finished GT: the resumable state (instance map + JSON, via _dump_state) PLUS the binary
-    union mask that eval_seg_2d reads + a small meta. Saving here also makes the image reload from disk."""
+    """Write the finished GT. Three artifacts, all under manual_label/:
+      - <stem>_sets/set<N>_instances.png (+ set<N>_seed.json + manifest.json) via _save_all_sets() —
+        the uint16 INSTANCE MAP per set. This is the AUTHORITATIVE GT: read it via manifest.json's
+        "active" set. (An older version also wrote a top-level <stem>_instances.png via _dump_state();
+        it no longer does — any such leftover is STALE, see archive/gt_tool_stale_instances/.)
+      - <stem>_gt_mask.png — the binary UNION of the active set (what eval_seg_2d reads).
+      - <stem>_meta.json — count/size/backend.
+    Saving also makes the image reload from disk on the next open."""
     if SESS.img is None:
         return {"error": "no image loaded"}
     H, W = SESS.img.shape[:2]
@@ -563,8 +580,10 @@ class Handler(BaseHTTPRequestHandler):
                 q = self._qs()
                 sel = int(q["sel"]) if q.get("sel", "") not in ("", "null") else None
                 hide_all = q.get("hideall", "0") == "1"
+                style = "binary" if q.get("style") == "binary" else "color"
+                solid = q.get("solid", "0") == "1"
                 with _lock:
-                    png = render_overlay(sel, hide_all)
+                    png = render_overlay(sel, hide_all, style=style, solid=solid)
                 return self._send(200, png, "image/png")
             return self._send(404, {"error": "not found"})
         except (BrokenPipeError, ConnectionResetError):

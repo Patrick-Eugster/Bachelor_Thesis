@@ -25,6 +25,7 @@ from omegaconf import DictConfig, OmegaConf
 from mask_generation.yolo_sam_v1.yolo_v1_pipelined import run_yolo_phase
 from mask_generation.sahi_yolo_sam.sahi_yolo_pipelined import run_yolo_phase_sahi
 from mask_generation.yolo11_sam.yolo11_pipelined import run_yolo_phase_yolo11
+from mask_generation.yolo11_seg.yolo11_seg_pipelined import run_yolo11_seg_phase
 from mask_generation.sam_v1.sam_v1_pipelined import run_sam_phase
 from wheat_utils.path_utils import get_mask_generation_result_path
 
@@ -39,6 +40,7 @@ DETECTORS = {
     "yolo_sam_v1":   run_yolo_phase,
     "sahi_yolo_sam": run_yolo_phase_sahi,
     "yolo11_sam":    run_yolo_phase_yolo11,
+    "yolo11_seg":    run_yolo11_seg_phase,   # instance-seg (masks directly); its config sets only_yolo=true
 }
 
 

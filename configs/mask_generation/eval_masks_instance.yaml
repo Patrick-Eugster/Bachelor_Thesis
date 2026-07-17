@@ -1,0 +1,43 @@
+# @package _global_
+defaults:
+  - /dataset: phone            # instance-mask GT currently only exists for phone; override: dataset=fip
+  - method: sahi_yolo_sam      # which method's masks to score; override: method=yolo_sam_v1
+  - override /hydra/job_logging: disabled    # don't create a .log file in CWD — we print()
+  - override /hydra/hydra_logging: disabled
+  - _self_
+
+# which mask-generation run to score — a folder in results/mask_generation/{dataset}/{plot}/{method.name}/
+# (it reads the masks/ inside it). Produce one first with: python src/mask_generation/run_mask_generation.py
+mask_gen_experiment: "initial"
+
+# score a results folder whose method has no registered method config — e.g. the standalone
+# src/analysis/run_yolo11_seg.py writes to .../yolo11_seg/ but is not a production method.
+# leave null to use method.name. example: method_name=yolo11_seg
+method_name: null
+
+# name for this evaluation's output folder — can differ from mask_gen_experiment, so you can re-run the
+# eval with a different matching_iou_threshold on the same masks
+eval_experiment: "initial"
+
+# set true to prepend today's date to eval_experiment: "2026-07-15_initial"
+prepend_date: false
+
+# IoU threshold for matching a predicted mask to a GT head mask — the headline operating point
+matching_iou_threshold: 0.5
+
+# extra thresholds also reported (cheap — the IoU matrix is only computed once)
+extra_iou_thresholds: [0.25, 0.5, 0.75]
+
+# a prediction MERGES heads if >= 2 GT heads each have >= this fraction of their area inside it
+merge_frac: 0.5
+# a GT head is SPLIT if >= 2 predictions each have >= this fraction of their OWN area inside that head
+split_frac: 0.5
+
+# write a per-image colour-coded overlay (green=TP, red=FP, blue=missed GT, magenta=merge, orange=split)
+save_viz: true
+
+# hydra: don't create an outputs/ folder
+hydra:
+  output_subdir: null
+  run:
+    dir: .

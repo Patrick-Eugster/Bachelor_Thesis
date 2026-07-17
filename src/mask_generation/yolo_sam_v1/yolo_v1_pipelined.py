@@ -39,6 +39,7 @@ import shutil
 
 from wheat_utils.path_utils import get_mask_generation_result_path
 from mask_generation.roi_mask import apply_roi, roi_keep_mask
+from mask_generation.gt_labels import gt_labeled_stems
 
 # map YAML string → PIL resize constant
 _RESIZE_METHODS = {
@@ -278,8 +279,7 @@ def run_yolo_phase(image_folders, cfg):
         if cfg.only_labeled_images:
             # only keep images that have a manual label for metrics testing and ignores limit_images
             label_dir = os.path.join(base_plot_path, 'manual_label')  # manual labels stay in input_plots/
-            labeled_stems = {os.path.splitext(f)[0] for f in os.listdir(
-                label_dir) if f.endswith('.txt')} if os.path.isdir(label_dir) else set()
+            labeled_stems = gt_labeled_stems(label_dir)   # .txt boxes OR mask-GT (_sets/, _gt_mask.png)
             if cfg.limit_images > 0:
                 print(f"---ONLY_LABELED_IMAGES=True: ignoring LIMIT_IMAGES={cfg.limit_images}")
             image_files = [f for f in image_files if os.path.splitext(os.path.basename(f))[0] in labeled_stems]

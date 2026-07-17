@@ -50,16 +50,27 @@ Everything lives under the experiment's model dir:
 
 ### Option A — via the orchestrator (recommended: it resolves all the paths for you)
 
-Turn every other step off and just enable the viewer. Use the **same** `plot` / `experiment_name` /
-`segmentation_3d.exp_name` you trained+segged with:
+Use the **same** `plot` / `date` / `experiment_name` / `segmentation_3d.exp_name` you trained+segged with.
+All `run_*` toggles default to **false** in `configs/reconstruction_seg3d/config.yaml`, so you only need to
+turn the viewer on — no need to spell out the other steps:
 
 ```bash
-# phone example
+# phone — a real, working example (field_A/20250715, the phone_sahi run, seg_cull_v3 = known-good seg)
 python src/run_reconstruction.py dataset=phone plot=field_A date=20250715 \
-  experiment_name=<recon_exp> segmentation_3d.exp_name=<seg_exp> \
-  run_train=false run_render=false run_metrics=false run_seg=false \
-  run_render_360=false run_eval=false run_eval_2d=false run_viewer=true
+  experiment_name=phone_sahi segmentation_3d.exp_name=seg_cull_v3 \
+  run_viewer=true
 ```
+
+```bash
+# FIP equivalent (no date= for fip)
+python src/run_reconstruction.py plot=plot_461 \
+  experiment_name=<recon_exp> segmentation_3d.exp_name=<seg_exp> \
+  run_viewer=true
+```
+
+> **Phone gotcha:** `plot=` is the *field* and `date=` is the session — the path is
+> `input_plots/phone/<plot>/<date>/`. `experiment_name` must match the training run and
+> `segmentation_3d.exp_name` the seg run, or it won't find `gaussians.ply` / `all_obj_labels.pth`.
 
 Steps toggled off are assumed already-present on disk, so `run_viewer=true` alone works on a rsynced result.
 It prints `Open http://localhost:8080` — open that in your browser. **Ctrl+C** in the terminal stops it.
@@ -91,9 +102,10 @@ where `<model>` = `results/reconstruction/<dataset>/<plot>/vanilla_3dgs/<recon_e
 ### Option A — orchestrator
 
 ```bash
+# phone — a real, working example (same session/exps as the viewer above)
 python src/run_reconstruction.py dataset=phone plot=field_A date=20250715 \
-  experiment_name=<recon_exp> segmentation_3d.exp_name=<seg_exp> \
-  run_train=false run_seg=false run_viewer=false run_render_360=true
+  experiment_name=phone_sahi segmentation_3d.exp_name=seg_cull_v3 \
+  run_render_360=true
 ```
 Output: `.mp4` in the experiment's `segmentation_3d/<seg_exp>/3DSeg/` folder. Toggles:
 `n_frames: 200`, `framerate: 20`, `elevation: 45`, `fast_render_360: true`, `white_background_360: true`,

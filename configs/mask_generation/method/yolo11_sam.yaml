@@ -44,3 +44,16 @@ show_time_total: true
 
 # true = skip SAM entirely, only run YOLOv11 detection (metrics / quick box inspection)
 only_yolo: false
+
+# --- shared SAM phase: backend (version) + granularity (read by sam_v1_pipelined.py) ---
+sam_backend: sam1           # sam1 (ViT-H, default) | sam2 | sam3
+sam_sam2_weight: "sam2.1_l.pt"   # ultralytics SAM2.1-large (grid uses -l)
+sam_sam3_weight: "sam3.pt"       # gated — must be on disk (Euler)
+sam_ul_chunk_on_oom: 64
+sam_ul_decode_batch: 0
+sam_crop_mode: full_frame   # full_frame (default) | per_tile | per_head
+sam_tile_size: 1280
+sam_tile_overlap: 0.2
+sam_tile_pad_frac: 0.02
+sam_head_margin_frac: 0.4
+sam_head_min_pad: 16

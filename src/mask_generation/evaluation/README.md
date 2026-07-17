@@ -2,7 +2,8 @@
 
 | file | what it does |
 |---|---|
-| [`eval_yolo_boxes.py`](eval_yolo_boxes.py) | score **one** method (YOLO *or* SAHI) vs GT — P/R/F1/AP, match_viz, IoU histograms, FP/FN heatmaps, PR curves |
+| [`eval_masks_instance.py`](eval_masks_instance.py) | ⭐ **instance-level MASK eval** vs the per-head GT instance map — mask-IoU matching → P/R/F1 + **merge/split counts** + PQ + union-IoU (for contrast). The one that can SEE merges (union eval can't). Reads GT via `manual_label/<stem>_sets/manifest.json`. `method_name=` scores unregistered folders. Plan: [`../../../docs/mask_generation/PHONE_MASKGEN_EXPERIMENTS.md`](../../../docs/mask_generation/PHONE_MASKGEN_EXPERIMENTS.md) |
+| [`eval_yolo_boxes.py`](eval_yolo_boxes.py) | score **one** method (YOLO *or* SAHI) vs GT — P/R/F1/AP, match_viz, IoU histograms, FP/FN heatmaps, PR curves (BOX-level, needs `.txt` box GT) |
 | [`eval_compare_3way.py`](eval_compare_3way.py) | **SAHI vs YOLO vs GT**, head-by-head (7-region Venn) — coverage tables (tertiles+COCO), split/merge, FP breakdown, coverage/FP overlays |
 | [`eval_compare_nogt.py`](eval_compare_nogt.py) | **SAHI vs YOLO agreement, no GT** (FIP + phone) — agree / YOLO-only / SAHI-only + overlay |
 | [`sahi_merge_debug.py`](../sahi_yolo_sam/sahi_merge_debug.py) | inspect SAHI's tile **merge** — tiles / before / after / clusters + N_raw→N_final counts (re-runs SAHI) |

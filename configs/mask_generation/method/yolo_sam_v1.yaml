@@ -15,7 +15,7 @@ sam_checkpoint: "sam_vit_h_4b8939.pth"             # SAM ViT-H checkpoint (~2.4 
 #   sam3           = Meta SAM3 via ultralytics; weight is GATED (request access on HF facebook/sam3,
 #                    download sam3.pt into src/mask_generation/weights/)
 sam_backend: sam1
-sam_sam2_weight: "sam2.1_b.pt"   # ultralytics SAM2 checkpoint (auto-downloaded)
+sam_sam2_weight: "sam2.1_l.pt"   # ultralytics SAM2.1-large (best quality; fits 16 GB)
 sam_sam3_weight: "sam3.pt"       # ultralytics SAM3 checkpoint (gated; place in weights/ once approved)
 
 # SAM2/SAM3 VRAM control (ultralytics path only). Default all-at-once decode upsamples EVERY box's
@@ -85,3 +85,12 @@ show_time_total: true
 
 # true = skip SAM entirely, only run YOLO detection (used for metrics — SAM not needed there)
 only_yolo: false
+
+# --- shared SAM granularity (read by src/mask_generation/sam_v1/sam_v1_pipelined.py) ---
+# how much of the frame SAM ENCODES per head → the head's resolution at SAM's fixed ~1024 encode.
+sam_crop_mode: full_frame   # full_frame (default, unchanged) | per_tile | per_head
+sam_tile_size: 1280         # per_tile: encode-crop size (heads at ~tile res)
+sam_tile_overlap: 0.2       # per_tile: tile step overlap
+sam_tile_pad_frac: 0.02     # per_tile: extra pad around each tile crop
+sam_head_margin_frac: 0.4   # per_head: crop pad as a fraction of the box's longer side
+sam_head_min_pad: 16        # per_head: minimum crop pad (px)

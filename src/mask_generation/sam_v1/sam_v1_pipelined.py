@@ -220,7 +220,7 @@ def _build_sam_backend(cfg, weights_dir):
     if backend in ("sam2", "sam3"):
         from ultralytics import SAM  # lazy import: only when actually used (default sam1 never imports it)
         key        = "sam_sam2_weight" if backend == "sam2" else "sam_sam3_weight"
-        default_w  = "sam2.1_b.pt"     if backend == "sam2" else "sam3.pt"
+        default_w  = "sam2.1_l.pt"     if backend == "sam2" else "sam3.pt"   # large by default (best quality)
         weight     = cfg.method.get(key, default_w)
         wpath      = os.path.join(weights_dir, weight)
         # if the weight sits in our weights/ dir use it; else hand the bare name to ultralytics
@@ -362,6 +362,116 @@ def _infer_masks(backend, state, sam_image, bbox_in):
 
 
 # =====================================================================
+# -------- SAM GRANULARITY (full_frame / per_tile / per_head) --------
+# how much of the frame SAM ENCODES per head → the head's resolution at SAM's fixed ~1024 encode.
+#   full_frame : encode the whole frame ONCE, decode all boxes   (default, byte-identical to before)
+#   per_tile   : tile the frame, encode each tile, decode its boxes  (~tile-res heads)
+#   per_head   : encode a tight crop PER head, decode its box        (~1024px heads — quality ceiling)
+# Both new modes reuse the SAME backend decoders as full_frame, so SAM1/SAM2/SAM3 all work unchanged.
+# =====================================================================
+
+def _backend_masks_on_crop(backend, state, crop_rgb, boxes_local):
+    """Run the chosen SAM backend on ONE crop with boxes already in crop-local xyxy px. Returns
+    [K, ch, cw] uint8 0/255 (aligned to the crop). SAM always encodes at ~1024 internally, so a tight
+    crop makes the head fill the encode = the resolution lever."""
+    ch, cw = crop_rgb.shape[:2]
+    boxes_local = np.asarray(boxes_local, dtype=np.float32).reshape(-1, 4)
+    if len(boxes_local) == 0:
+        return np.zeros((0, ch, cw), dtype=np.uint8)
+    if backend == "sam1":
+        predictor = state["predictor"]
+        predictor.set_image(crop_rgb)                        # encode this crop (ResizeLongestSide→1024²)
+        tb = predictor.transform.apply_boxes_torch(
+            torch.as_tensor(boxes_local, dtype=torch.float, device=DEVICE), (ch, cw))
+        out = []
+        with torch.no_grad():
+            for k in range(len(tb)):
+                m, _, _ = predictor.predict_torch(point_coords=None, point_labels=None,
+                                                  boxes=tb[k:k + 1], multimask_output=False)
+                out.append((m.squeeze(1).cpu().numpy() * 255).astype(np.uint8))
+        predictor.reset_image()
+        return np.concatenate(out, axis=0) if out else np.zeros((0, ch, cw), dtype=np.uint8)
+    # sam2 / sam3 via ultralytics — same OOM-safe decoder as full_frame, just on the crop
+    model = state["model"]
+    crop_bgr = np.ascontiguousarray(crop_rgb[:, :, ::-1])
+    masks_np, _ = _ultra_predict_boxes(model, crop_bgr, boxes_local, (ch, cw),
+                                       chunk_on_oom=state.get("chunk", 64))
+    return masks_np
+
+
+def _infer_masks_per_head(backend, state, sam_image, bbox_in, margin_frac=0.4, min_pad=16):
+    """Encode a tight padded crop around EACH box and decode just that box, then paste the mask into a
+    full-frame canvas. One encode per head (slow) but the head fills SAM's ~1024 encode → tight masks.
+    Same return contract as _infer_masks: (masks_np [N,H,W] uint8, t_embed=0, t_pred)."""
+    H, W = sam_image.shape[:2]
+    boxes = bbox_in.detach().cpu().numpy().astype(np.float32)
+    masks_full = np.zeros((len(boxes), H, W), dtype=np.uint8)
+    t0 = time.perf_counter()
+    for i, (x0, y0, x1, y1) in enumerate(boxes):
+        pad = max(min_pad, int(margin_frac * max(x1 - x0, y1 - y0)))
+        cx0, cy0 = max(0, int(x0 - pad)), max(0, int(y0 - pad))
+        cx1, cy1 = min(W, int(x1 + pad)), min(H, int(y1 + pad))
+        crop = sam_image[cy0:cy1, cx0:cx1]
+        box_local = np.array([[x0 - cx0, y0 - cy0, x1 - cx0, y1 - cy0]], dtype=np.float32)
+        m = _backend_masks_on_crop(backend, state, crop, box_local)
+        if len(m):
+            masks_full[i, cy0:cy1, cx0:cx1] = m[0]
+    return masks_full, 0.0, time.perf_counter() - t0
+
+
+def _infer_masks_per_tile(backend, state, sam_image, bbox_in, tile=1280, overlap=0.2, pad_frac=0.02):
+    """Group boxes by tile cell (by centre), then encode ONE crop per non-empty tile and decode all its
+    boxes. The crop = the tile cell grown to `tile` px AND expanded to fully contain its boxes (+pad), so
+    no head is cut. ~tile-resolution heads for far fewer encodes than per_head. Same return contract."""
+    from collections import defaultdict
+    H, W = sam_image.shape[:2]
+    boxes = bbox_in.detach().cpu().numpy().astype(np.float32)
+    N = len(boxes)
+    masks_full = np.zeros((N, H, W), dtype=np.uint8)
+    if N == 0:
+        return masks_full, 0.0, 0.0
+    step = max(1, int(tile * (1 - overlap)))
+    cx = (boxes[:, 0] + boxes[:, 2]) / 2.0
+    cy = (boxes[:, 1] + boxes[:, 3]) / 2.0
+    groups = defaultdict(list)
+    for i in range(N):
+        groups[(int(cx[i] // step), int(cy[i] // step))].append(i)   # unique tile cell per box centre
+
+    t0 = time.perf_counter()
+    for (gx, gy), idxs in groups.items():
+        gb = boxes[idxs]
+        tx0, ty0 = gx * step, gy * step
+        # crop = tile cell (grown to `tile`) ∪ this group's boxes, + a small pad, clamped to the frame
+        x0 = min(tx0, gb[:, 0].min()); y0 = min(ty0, gb[:, 1].min())
+        x1 = max(tx0 + tile, gb[:, 2].max()); y1 = max(ty0 + tile, gb[:, 3].max())
+        pad = int(pad_frac * tile)
+        cx0, cy0 = max(0, int(x0 - pad)), max(0, int(y0 - pad))
+        cx1, cy1 = min(W, int(x1 + pad)), min(H, int(y1 + pad))
+        crop = sam_image[cy0:cy1, cx0:cx1]
+        bl = gb.copy(); bl[:, [0, 2]] -= cx0; bl[:, [1, 3]] -= cy0
+        m = _backend_masks_on_crop(backend, state, crop, bl)
+        for j, gi in enumerate(idxs):
+            if j < len(m):
+                masks_full[gi, cy0:cy1, cx0:cx1] = m[j]
+    return masks_full, 0.0, time.perf_counter() - t0
+
+
+def _infer_masks_dispatch(backend, state, sam_image, bbox_in, cfg):
+    """Pick the SAM granularity from cfg.method.sam_crop_mode (default full_frame = unchanged path)."""
+    mode = cfg.method.get("sam_crop_mode", "full_frame")
+    if mode == "per_head":
+        return _infer_masks_per_head(backend, state, sam_image, bbox_in,
+                                     margin_frac=float(cfg.method.get("sam_head_margin_frac", 0.4)),
+                                     min_pad=int(cfg.method.get("sam_head_min_pad", 16)))
+    if mode == "per_tile":
+        return _infer_masks_per_tile(backend, state, sam_image, bbox_in,
+                                     tile=int(cfg.method.get("sam_tile_size", 1280)),
+                                     overlap=float(cfg.method.get("sam_tile_overlap", 0.2)),
+                                     pad_frac=float(cfg.method.get("sam_tile_pad_frac", 0.02)))
+    return _infer_masks(backend, state, sam_image, bbox_in)   # full_frame (default, byte-identical)
+
+
+# =====================================================================
 # MAIN SAM INFERENCE (ALL PLOTS)
 # =====================================================================
 def run_sam_phase(image_folders, cfg):
@@ -485,10 +595,11 @@ def run_sam_phase(image_folders, cfg):
                     sam_image = image
                     bbox_in = bbox
 
-                # --- GPU INFERENCE via the chosen SAM backend ---
+                # --- GPU INFERENCE via the chosen SAM backend + granularity ---
                 # Main thread blocks here; load(N+1) and save(N-1) run on CPU in parallel.
                 # Same sam_image + bbox_in for every backend → only the segmenter differs (fair swap).
-                masks_np, t_embed, t_pred = _infer_masks(backend, state, sam_image, bbox_in)
+                # sam_crop_mode picks full_frame (default) / per_tile / per_head — see _infer_masks_dispatch.
+                masks_np, t_embed, t_pred = _infer_masks_dispatch(backend, state, sam_image, bbox_in, cfg)
 
                 if cfg.method.show_time_sam:
                     print_sam_step_report(i, n_images, image_name, len(bbox), t_embed, t_pred)

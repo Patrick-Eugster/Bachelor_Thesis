@@ -54,9 +54,11 @@ Env: `GT_SAM_WEIGHT` (default `sam2.1_l.pt`), `GT_DECODE_BATCH` (8), `GT_PORT` (
 | hide selected mask | `X` |
 | show/hide overlay | `M` / `👁 masks` |
 | hide all but locked | `H` / `👁 hide all` |
+| background: photo → black → white | `V` / `🎞 bg` (black/white = mask-image view, masks shown solid) |
+| mask colour: per-id colour / binary white | `C` / `🎨` (colour = separate heads by colour; binary = clean white mask) |
 | ROI border | `R` / `▦ ROI` |
-| pan | wheel · **WASD** (Shift = faster) · **right-drag** · Space+drag |
-| zoom | Alt+wheel · `+` / `-` |
+| pan | **WASD** (Shift = faster) · **right-drag** · Space+drag · Shift+wheel (horizontal) |
+| zoom | **wheel** (no modifier — to cursor) · `+` / `-` |
 | prev / next image | `,` / `.` |
 | sidebar | `B` / `☰` |
 | **save** | `Ctrl+S` / `💾 Save` |

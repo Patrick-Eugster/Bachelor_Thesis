@@ -29,6 +29,7 @@ from ultralytics import YOLO
 
 from wheat_utils.path_utils import get_mask_generation_result_path
 from mask_generation.roi_mask import apply_roi, roi_keep_mask, roi_crop_box
+from mask_generation.gt_labels import gt_labeled_stems
 
 
 def reset_folder(folder_path):
@@ -177,8 +178,7 @@ def run_yolo_phase_yolo11(image_folders, cfg):
         image_files = glob.glob(os.path.join(folder, '*.png')) + glob.glob(os.path.join(folder, '*.jpg'))
         if cfg.only_labeled_images:
             label_dir = os.path.join(base_plot_path, 'manual_label')
-            labeled_stems = {os.path.splitext(f)[0] for f in os.listdir(label_dir)
-                             if f.endswith('.txt')} if os.path.isdir(label_dir) else set()
+            labeled_stems = gt_labeled_stems(label_dir)   # .txt boxes OR mask-GT (_sets/, _gt_mask.png)
             image_files = [f for f in image_files
                            if os.path.splitext(os.path.basename(f))[0] in labeled_stems]
             print(f"---ONLY_LABELED_IMAGES: filtered to {len(image_files)} labeled images")

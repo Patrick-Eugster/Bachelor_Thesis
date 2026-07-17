@@ -10,7 +10,7 @@
   #topbars button { flex: none; background: #333; color: #ddd; border: 1px solid #555;
             border-radius: 4px; cursor: pointer; font-size: 14px; padding: 3px 10px; }
   #topbars button:hover { background: #454545; }
-  #roiBtn.on, #maskBtn.on, #selBtn.on { background: #0e639c; border-color: #1177bb; color: #fff; }
+  #roiBtn.on, #maskBtn.on, #selBtn.on, #bgBtn.on, #styleBtn.on { background: #0e639c; border-color: #1177bb; color: #fff; }
   #editBtn.on, #brushBtn.on, #polyBtn.on { background: #b5432e; border-color: #d4623e; color: #fff; }   /* an edit tool active = red */
   .ic { width: 15px; height: 15px; vertical-align: -3px; fill: none; stroke: currentColor; stroke-width: 2; }
   /* custom tooltips (native title delay is too long / not adjustable) — show after 0.5s */
@@ -51,11 +51,15 @@
   .item .done { color: #4ec9b0; }
   .item .draft { color: #d7ba7d; }
   .item .dot { color: #666; }
-  #main { flex: 1; position: relative; }
+  /* min-width:0 defeats flexbox's default min-width:auto — without it #main can't shrink below the
+     canvas's pixel width, so the toolbar never gets width pressure and flex-wrap won't trigger on a
+     live resize (only after a reload re-sized the canvas). overflow:hidden clips the wide canvas. */
+  #main { flex: 1; position: relative; min-width: 0; overflow: hidden; }
   canvas { display: block; background: #111; cursor: crosshair; }
   #topbars { position: absolute; top: 0; left: 0; right: 0; z-index: 2; }
   #bar, #bar2 { padding: 7px 10px; font-size: 14px; background: rgba(30,30,30,.92);
-         border-bottom: 1px solid #333; display: flex; align-items: center; }
+         border-bottom: 1px solid #333; display: flex; align-items: center;
+         flex-wrap: wrap; row-gap: 6px; }   /* wrap to a 2nd line on narrow / vertical screens */
   #bar { gap: 16px; }
   #bar2 { gap: 10px; }
   .sep { width: 1px; height: 20px; background: #555; margin: 0 6px; }
@@ -109,6 +113,8 @@
       <button id="hideBtn" title="hide all masks except locked (H)">👁 hide all</button>
       <button id="lockBtn" title="lock/unlock selected mask (L)">🔒 lock</button>
       <button id="roiBtn" title="toggle ROI border (R)">▦ ROI</button>
+      <button id="bgBtn" title="background behind the masks: photo → black → white (V). On black/white the masks show solid, like a mask image.">🎞 bg: photo</button>
+      <button id="styleBtn" title="mask colours: per-id colour (see separate heads) / binary white (C)">🎨 colour</button>
       <span class="sep"></span>
       <button id="autoSeedBtn" title="auto-load YOLO+SAM masks when opening an image (off = open blank for manual labeling)">⚙ auto-seed</button>
       <button id="loadSeedsBtn" title="load the YOLO+SAM seed masks now — ADDS to the current masks, never deletes your work">＋ seeds</button>
@@ -135,9 +141,12 @@
     <span class="chip"><b>X</b>hide sel</span>
     <span class="chip"><b>M</b>masks</span>
     <span class="chip"><b>H</b>hide all</span>
+    <span class="chip"><b>V</b>bg photo/black/white</span>
+    <span class="chip"><b>C</b>colour/binary</span>
     <span class="chip"><b>R</b>ROI</span>
-    <span class="chip"><b>right-drag / wheel / WASD</b>pan</span>
-    <span class="chip"><b>Alt+wheel</b>zoom</span>
+    <span class="chip"><b>right-drag / WASD / Space-drag</b>pan</span>
+    <span class="chip"><b>wheel</b>zoom</span>
+    <span class="chip"><b>0</b>fit view</span>
     <span class="chip"><b>, / .</b>prev / next</span>
   </div>
 </div>
@@ -181,6 +190,8 @@ let dirty = false;   // unsaved changes since last load/save -> warn before leav
 let roiPoly = null, roiOn = false;   // ROI marker-hull polygon overlay
 let overlayVisible = true;           // masks button: show/hide the whole overlay (client-side)
 let hideAll = false;                 // hide-all button: server hides all but locked
+let bgMode = 'image';                // background behind masks: 'image' | 'black' | 'white'
+let maskStyle = 'color';             // mask fill: 'color' (per-id) | 'binary' (all white)
 let autoSeed = localStorage.getItem('gt_autoseed') === '1';  // open images with YOLO+SAM seeds? (default no = blank)
 
 // native "unsaved changes" prompt on tab close (browsers only allow their generic dialog, no custom Save button)
@@ -232,6 +243,18 @@ function toggleHideAll(){                       // hide-all button: server hides
   setStatus(); refreshOverlay();
 }
 document.getElementById('hideBtn').onclick = toggleHideAll;
+
+function cycleBg(){                             // background behind the masks: photo -> black -> white
+  bgMode = bgMode === 'image' ? 'black' : bgMode === 'black' ? 'white' : 'image';
+  setStatus(); draw(); refreshOverlay();       // draw() now for the bg fill, refreshOverlay for solid masks
+}
+document.getElementById('bgBtn').onclick = cycleBg;
+
+function toggleStyle(){                         // mask fill: per-id colour vs binary white
+  maskStyle = maskStyle === 'color' ? 'binary' : 'color';
+  setStatus(); refreshOverlay();
+}
+document.getElementById('styleBtn').onclick = toggleStyle;
 
 function setSelectMode(){                       // Select button / Esc: clicks pick a mask
   editing = false; setStatus(); draw();
@@ -328,13 +351,22 @@ function setStatus(){
   const hb = document.getElementById('hideBtn');
   hb.innerHTML = (hideAll ? EYEOFF : EYE) + (hideAll ? ' show all' : ' hide all');
   hb.classList.toggle('on', hideAll);
+  const bgb = document.getElementById('bgBtn');
+  bgb.textContent = '🎞 bg: ' + (bgMode === 'image' ? 'photo' : bgMode);
+  bgb.classList.toggle('on', bgMode !== 'image');
+  const stb = document.getElementById('styleBtn');
+  stb.textContent = maskStyle === 'binary' ? '🎨 binary' : '🎨 colour';
+  stb.classList.toggle('on', maskStyle === 'binary');
   updateCursor();
 }
 
 function draw(){
   ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,cv.width,cv.height);
   ctx.setTransform(scale,0,0,scale,offX,offY);
-  if(img.complete && img.naturalWidth){ ctx.drawImage(img,0,0); }
+  if(meta && bgMode !== 'image'){                  // solid background instead of the photo (mask-image view)
+    ctx.fillStyle = bgMode === 'white' ? '#ffffff' : '#000000';
+    ctx.fillRect(0, 0, meta.w, meta.h);
+  } else if(img.complete && img.naturalWidth){ ctx.drawImage(img,0,0); }
   if(overlayVisible && overlay.complete && overlay.naturalWidth){ ctx.drawImage(overlay,0,0); }
   // ROI overlay (toggle): darken everything OUTSIDE the plot + dashed border on the edge
   if(roiOn && roiPoly && roiPoly.length){
@@ -399,14 +431,22 @@ function draw(){
 
 function refreshOverlay(){
   if(!meta) return;
+  const solid = bgMode !== 'image' ? 1 : 0;        // opaque masks on the black/white background
   overlay.onload = draw;
-  overlay.src = `/api/overlay?sel=${selectedId==null?'null':selectedId}&hideall=${hideAll?1:0}&t=${Date.now()}`;
+  overlay.src = `/api/overlay?sel=${selectedId==null?'null':selectedId}&hideall=${hideAll?1:0}`
+              + `&style=${maskStyle}&solid=${solid}&t=${Date.now()}`;
 }
 
 function fitView(){
+  // fit into the VISIBLE gap between the (overlaying) top toolbars and the bottom shortcut bar, so the
+  // image isn't hidden under them — matters when the toolbar wraps to several rows on a narrow screen
   const pad = 40;
-  scale = Math.min((cv.width-pad)/meta.w, (cv.height-pad)/meta.h);
-  offX = (cv.width - meta.w*scale)/2; offY = (cv.height - meta.h*scale)/2;
+  const topH = document.getElementById('topbars').offsetHeight || 0;
+  const botH = document.getElementById('help').offsetHeight || 0;
+  const availH = Math.max(60, cv.height - topH - botH);
+  scale = Math.min((cv.width-pad)/meta.w, (availH-pad)/meta.h);
+  offX = (cv.width - meta.w*scale)/2;
+  offY = topH + (availH - meta.h*scale)/2;
 }
 
 async function loadImage(idx){
@@ -506,6 +546,7 @@ function flash(msg){                                 // brief status message (he
 let toastTimer = null;
 function toast(msg, kind){                            // bubble notification (Run / Save feedback)
   const t = document.getElementById('toast');
+  t.style.top = ((document.getElementById('topbars').offsetHeight || 72) + 12) + 'px';  // clear the (wrapped) toolbar
   t.textContent = msg; t.className = 'show' + (kind ? ' ' + kind : '');
   clearTimeout(toastTimer); toastTimer = setTimeout(()=>{ t.className = ''; }, 3000);
 }
@@ -640,17 +681,17 @@ window.addEventListener('mouseup', ()=>{
   }
 });
 
-// ---- wheel: pan / zoom ----
+// ---- wheel: zoom (no modifier) / Shift = horizontal pan ----
+// Plain wheel zooms so you never have to hold Ctrl — holding Ctrl risks an accidental Ctrl+W (closes the
+// tab). preventDefault also stops the browser's own Ctrl+wheel page-zoom. Pan: right-drag / WASD / Space.
 cv.addEventListener('wheel', (ev)=>{
   ev.preventDefault();
-  if(ev.altKey || ev.ctrlKey){                       // zoom to cursor
-    const rect = cv.getBoundingClientRect();
-    const mx = ev.clientX-rect.left, my = ev.clientY-rect.top;
-    const f = ev.deltaY < 0 ? 1.15 : 1/1.15;
-    const ix = (mx-offX)/scale, iy = (my-offY)/scale;
-    scale *= f; offX = mx - ix*scale; offY = my - iy*scale;
-  } else if(ev.shiftKey){ offX -= ev.deltaY; }        // horizontal pan
-  else { offY -= ev.deltaY; offX -= ev.deltaX; }      // vertical (+ trackpad X)
+  if(ev.shiftKey){ offX -= ev.deltaY; draw(); return; }   // Shift+wheel = horizontal pan
+  const rect = cv.getBoundingClientRect();                 // wheel = zoom to cursor
+  const mx = ev.clientX-rect.left, my = ev.clientY-rect.top;
+  const f = ev.deltaY < 0 ? 1.15 : 1/1.15;
+  const ix = (mx-offX)/scale, iy = (my-offY)/scale;
+  scale *= f; offX = mx - ix*scale; offY = my - iy*scale;
   draw();
 }, {passive:false});
 
@@ -665,6 +706,8 @@ window.addEventListener('keydown', async (ev)=>{
   if(ev.key === 'r' || ev.key === 'R'){ toggleRoi(); return; }
   if(ev.key === 'h' || ev.key === 'H'){ toggleHideAll(); return; }
   if(ev.key === 'm' || ev.key === 'M'){ toggleMasks(); return; }
+  if(ev.key === 'v' || ev.key === 'V'){ cycleBg(); return; }                       // background photo/black/white
+  if((ev.key === 'c' || ev.key === 'C') && !ev.ctrlKey){ toggleStyle(); return; }  // colour / binary masks
   if(ev.key === 'e' || ev.key === 'E'){ toggleEdit(); return; }
   if(ev.key === 'f' || ev.key === 'F'){ (editing && tool==='brush') ? setSelectMode() : setTool('brush'); return; }
   if(ev.key === 'g' || ev.key === 'G'){ (editing && tool==='polygon') ? setSelectMode() : setTool('polygon'); return; }
@@ -698,6 +741,7 @@ window.addEventListener('keydown', async (ev)=>{
   if(ev.key === '.'){ if(curIdx<listItems.length-1) loadImage(curIdx+1); return; }
   if(ev.key === '+' || ev.key === '='){ scale*=1.15; draw(); return; }
   if(ev.key === '-'){ scale/=1.15; draw(); return; }
+  if(ev.key === '0'){ if(meta){ fitView(); draw(); } return; }   // fit image to the visible area (recover)
   if(!ev.ctrlKey && !ev.altKey && (ev.key.toLowerCase() in panKeys)){  // smooth WASD pan
     panKeys[ev.key.toLowerCase()] = true;
     if(!panRAF) panLoop();

@@ -1,0 +1,18 @@
+name: yolo11_seg
+# YOLO11-seg INSTANCE-SEGMENTATION model — emits a mask per wheat head directly (no SAM).
+yolo11_seg_model: "yolo-medium-segment.pt"   # 3DKD-wheat YOLO11-seg (task=segment, 1 class 'spike')
+
+# only_yolo=true tells the orchestrator to SKIP the shared SAM phase — this method writes masks itself.
+only_yolo: true
+
+imgsz: 1280                # top imgsz; steps down on CUDA OOM. Dense phone (~700 heads) → 1280 is safe;
+                           # FIP (~270 heads) can go 2048. The seg head upsamples N×imgsz² on the GPU.
+conf_threshold: 0.25       # seg model confidence
+iou_threshold_nms: 0.5
+max_det: 1000
+save_overlay: true         # write overlay/<stem>.jpg for eyeballing
+
+# timing report toggles (read by the orchestrator's final report)
+show_time_yolo: true
+show_time_sam: true
+show_time_total: true
