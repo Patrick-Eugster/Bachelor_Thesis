@@ -133,17 +133,13 @@ config_restructure.md
 phase1_packages.txt
 phase2_3_packages.txt
 
-docs/CHANGES.md
-docs/CAMERA_INTRINSICS_EXPLAINED.md
-
-# Whole docs folder is local-only (untracked). The specific docs/ rules above
-# are now redundant but kept for clarity.
-docs/
+# docs/ is now a git SUBMODULE (private repo Bachelor_Thesis_Docs), tracked as a
+# gitlink in this parent repo — so it must NOT be ignored. Its own contents are
+# versioned by the docs repo itself (see .gitmodules).
 
 # --- Papers / PDFs ---
 *.pdf
-# but track the supervisor's coded-marker spec sheet — it's small and referenced from reference/agisoft/README.md
-!reference/agisoft/Coded_12bit_15cm-square_13cm-outer-circle_.pdf
+# (the supervisor's coded-marker spec PDF now lives in the docs submodule, tracked there — no whitelist needed here)
 
 # --- Hydra logs (now disabled via `override /hydra/job_logging: disabled` in each config — this is the safety net) ---
 # *.log already covered by **/*.log at top

@@ -107,7 +107,7 @@ decode_require_valid_cct: false  # bypass CCTDecode's internal check (fill gate 
 # mode 'manifest' (default): keep ONLY the codes actually deployed in this plot. This is the
 #   principled filter — it drops wheat-junk AND near-neighbour misreads (e.g. 117 = 1-bit misread
 #   of 85). The manifest below is the 6 demoanlage markers, decoded from the Agisoft spec PDF
-#   (reference/agisoft/Coded_12bit_15cm-square_13cm-outer-circle_.pdf) = ground truth. Override
+#   (docs/reference/agisoft/Coded_12bit_15cm-square_13cm-outer-circle_.pdf) = ground truth. Override
 #   plot_manifest=[...] per plot if a different marker set was used.
 # mode 'view': legacy heuristic — keep the keep_top_k most-seen IDs (fragile: a systematic misread
 #   seen in many views sneaks in). mode 'none': keep everything.

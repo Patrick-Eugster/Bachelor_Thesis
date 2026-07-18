@@ -1,0 +1,6 @@
+[submodule "thesis"]
+	path = thesis
+	url = https://github.com/Patrick-Eugster/Bachelor_Thesis_Report.git
+[submodule "docs"]
+	path = docs
+	url = https://github.com/Patrick-Eugster/Bachelor_Thesis_Docs.git
