@@ -19,6 +19,17 @@ source: ${dataset.input_dir}/${field}/${plot}/input
 # output folder. Default "" → script auto-derives to <source>_uniform/ (so input/ → input_uniform/)
 output: ""
 
+# output image format for input_uniform/ (the folder COLMAP reads → decides images/ format too,
+# since COLMAP's image_undistorter mirrors the input extension):
+#   "png"  → decode each phone JPEG once and write LOSSLESS PNG. This stops the generation-2 JPEG
+#            recompression at COLMAP undistortion, so images/ (used by 3DGS + mask-gen + seg) stays
+#            lossless from the phone's original. Costs disk (PNG ~5x the JPEG here) and drops the
+#            zero-cost symlink shortcut, because a real re-encode is required. This is the default —
+#            we can't assume SIMPLE_PINHOLE everywhere, so we keep it lossless regardless of camera.
+#   "keep" → old behaviour: symlink input_uniform→input when already uniform (zero disk), and on a
+#            crop use quality="keep" so no second lossy JPEG round. Smaller, but images/ ends up JPEG.
+output_format: png
+
 # hydra: don't create outputs/ folder
 hydra:
   output_subdir: null

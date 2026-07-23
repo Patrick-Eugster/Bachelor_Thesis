@@ -13,6 +13,7 @@ Single user / single active image by design. All SAM calls go through one GPU un
 import os
 import io
 import sys
+import glob
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,6 +27,18 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 PHONE = os.path.join(REPO, "input_plots", "phone")
 STATIC = os.path.join(HERE, "static")
+
+
+def _resolve_image_path(field, date, stem):
+    """Find the images/ file for a stem regardless of extension. images/ is PNG since 2026-07-23
+    (lossless pipeline) but older runs are still .jpg — so try both instead of hardcoding one."""
+    img_dir = os.path.join(PHONE, field, date, "images")
+    for ext in (".png", ".jpg", ".jpeg"):
+        p = os.path.join(img_dir, stem + ext)
+        if os.path.isfile(p):
+            return p
+    hits = sorted(glob.glob(os.path.join(img_dir, stem + ".*")))
+    return hits[0] if hits else os.path.join(img_dir, stem + ".jpg")
 SELECTION = os.path.join(PHONE, "gt_selection.json")
 
 # config (env-overridable)
@@ -293,7 +306,10 @@ def compute_roi_poly():
     try:
         from mask_generation import roi_mask
         plot_dir = os.path.join(PHONE, SESS.field, SESS.date)
-        poly = roi_mask._build_plot_polys(plot_dir, 3).get(f"{SESS.stem}.jpg")
+        # the poly dict is keyed by the COLMAP image name (carries the real extension) — look it up by
+        # the actual image filename so this works whether images/ is .png (now) or .jpg (older runs).
+        img_name = os.path.basename(_resolve_image_path(SESS.field, SESS.date, SESS.stem))
+        poly = roi_mask._build_plot_polys(plot_dir, 3).get(img_name)
         if poly is None:
             return None
         H, W = SESS.img.shape[:2]
@@ -315,7 +331,7 @@ def load_image(field, date, stem, auto_seed=True):
     If there's no saved work: with auto_seed on, restore the cached seed draft (fast) if present; with
     auto_seed off, start BLANK (0 masks) so you can label manually. The YOLO+SAM seeds can be pulled in
     any time with add_seeds() — which only APPENDS, never deletes."""
-    path = os.path.join(PHONE, field, date, "images", f"{stem}.jpg")
+    path = _resolve_image_path(field, date, stem)
     img = np.array(Image.open(path).convert("RGB"))         # PIL = silent on Samsung JPEGs
     H, W = img.shape[:2]
 
@@ -574,8 +590,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, list_images())
             if path == "/image":
                 q = self._qs()
-                p = os.path.join(PHONE, q["field"], q["date"], "images", f"{q['stem']}.jpg")
-                return self._send(200, open(p, "rb").read(), "image/jpeg")
+                p = _resolve_image_path(q["field"], q["date"], q["stem"])
+                ctype = "image/png" if p.lower().endswith(".png") else "image/jpeg"
+                return self._send(200, open(p, "rb").read(), ctype)
             if path == "/api/overlay":
                 q = self._qs()
                 sel = int(q["sel"]) if q.get("sel", "") not in ("", "null") else None
