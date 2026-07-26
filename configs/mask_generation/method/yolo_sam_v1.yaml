@@ -24,7 +24,8 @@ sam_sam3_weight: "sam3.pt"       # ultralytics SAM3 checkpoint (gated; place in 
 #   0  = original all-at-once (unchanged default)
 #   32 = recommended for SAM2 (encoder ~5 GB → total ~7 GB, fits 16 GB, no spill = fast)
 # NOTE: does NOT rescue SAM3 (its encoder alone is ~26 GB — needs a >=40 GB GPU or lower imgsz).
-sam_ul_decode_batch: 0
+sam_ul_decode_batch: 16
+sam1_decode_batch: 1        # SAM1 boxes decoded per call (1=one-at-a-time, VRAM-safe; >1=faster, more VRAM)
 sam_ul_chunk_on_oom: 64          # box-chunk size for the all-at-once path's hard-OOM fallback
 
 # floor confidence applied during NMS — all boxes above this survive NMS and are passed to SAM

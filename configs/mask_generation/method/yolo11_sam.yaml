@@ -50,7 +50,8 @@ sam_backend: sam1           # sam1 (ViT-H, default) | sam2 | sam3
 sam_sam2_weight: "sam2.1_l.pt"   # ultralytics SAM2.1-large (grid uses -l)
 sam_sam3_weight: "sam3.pt"       # gated — must be on disk (Euler)
 sam_ul_chunk_on_oom: 64
-sam_ul_decode_batch: 0
+sam_ul_decode_batch: 16
+sam1_decode_batch: 1        # SAM1 boxes decoded per call (1=one-at-a-time, VRAM-safe; >1=faster, more VRAM)
 sam_crop_mode: full_frame   # full_frame (default) | per_tile | per_head
 sam_tile_size: 1280
 sam_tile_overlap: 0.2

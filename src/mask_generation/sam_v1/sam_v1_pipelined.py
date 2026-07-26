@@ -42,6 +42,7 @@ from segment_anything import sam_model_registry, SamPredictor
 
 from wheat_utils.path_utils import get_mask_generation_result_path
 from mask_generation.roi_mask import apply_roi, roi_crop_box
+from mask_generation.gt_labels import gt_labeled_stems
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -216,7 +217,12 @@ def _build_sam_backend(cfg, weights_dir):
         sam = torch.compile(sam)
         predictor = SamPredictor(sam)
         torch.cuda.synchronize()
-        return backend, {"sam": sam, "predictor": predictor}
+        # sam1_decode_batch: how many boxes to run through the mask DECODER per call. Default 1 =
+        # one-at-a-time (byte-identical to before, the VRAM-safe default). >1 groups boxes so fewer
+        # kernel-launch / CPU-sync / .cpu() round-trips — output is identical (each box decodes
+        # independently) so this only trades VRAM for speed. Keep SMALL: each box makes a full H×W mask.
+        sam1_decode_batch = int(cfg.method.get("sam1_decode_batch", 1))
+        return backend, {"sam": sam, "predictor": predictor, "sam1_decode_batch": sam1_decode_batch}
     if backend in ("sam2", "sam3"):
         from ultralytics import SAM  # lazy import: only when actually used (default sam1 never imports it)
         key        = "sam_sam2_weight" if backend == "sam2" else "sam_sam3_weight"
@@ -227,9 +233,12 @@ def _build_sam_backend(cfg, weights_dir):
         # (sam2 auto-downloads; sam3 is GATED so it must already be on disk — see the run doc)
         model = SAM(wpath if os.path.exists(wpath) else weight)
         chunk = int(cfg.method.get("sam_ul_chunk_on_oom", 64))  # box-chunk size for the OOM fallback
-        # 0 = original all-at-once decode (default, unchanged); >0 = encode-once + decode in batches of
-        # this many boxes (bounds VRAM — fixes SAM2's spill; does not help SAM3, encoder alone ~26GB).
-        decode_batch = int(cfg.method.get("sam_ul_decode_batch", 0))
+        # DEFAULT 32 (2026-07-24): encode-once + decode boxes in batches of this many, so SAM2/3 NEVER
+        # decode all boxes at once. All-at-once spiked SAM2 full_frame to 26 GB on the 4032px phone image
+        # → WSL silently spilled to system RAM (no OOM thrown, so the reactive chunk fallback never fired)
+        # → slow + RAM-eating. Batched keeps SAM2 ~7 GB (fits 16 GB). Set 0 to restore all-at-once. Harmless
+        # for per_tile/per_head (small crops = a single batch). SAM3 encoder alone ~26 GB → Euler-only regardless.
+        decode_batch = int(cfg.method.get("sam_ul_decode_batch", 16))
         return backend, {"model": model, "chunk": chunk, "decode_batch": decode_batch}
     raise ValueError(f"unknown sam_backend '{backend}' (expected sam1 / sam2 / sam3)")
 
@@ -321,19 +330,22 @@ def _infer_masks(backend, state, sam_image, bbox_in):
         torch.cuda.synchronize()
         t_embed = time.perf_counter() - t0
 
-        # 3. Predict Masks — one box at a time through the decoder. The decoder *can* batch boxes, but
-        # with hundreds of heads on a full-res image that spikes VRAM (each box -> a full H x W mask),
-        # so we keep it one-at-a-time which is the safe, proven default.
+        # 3. Predict Masks through the decoder, in groups of K = sam1_decode_batch boxes (default 1 =
+        # one-at-a-time, the VRAM-safe default; each box -> a full H x W mask, so ALL-at-once spikes VRAM
+        # — hence a small bounded K). Output is identical to one-at-a-time (boxes decode independently);
+        # K only trades VRAM for fewer kernel-launch/CPU-sync round-trips. Move each group to CPU uint8
+        # immediately to free VRAM before the next group.
         t1 = time.perf_counter()
+        K = max(1, int(state.get("sam1_decode_batch", 1)))
         transformed_boxes = predictor.transform.apply_boxes_torch(bbox_in, sam_image.shape[:2])
         all_masks_np = []
         with torch.no_grad():
-            for b_idx in range(len(transformed_boxes)):
-                single_box = transformed_boxes[b_idx : b_idx + 1]  # keep the [1,4] shape
+            for i in range(0, len(transformed_boxes), K):
+                group = transformed_boxes[i : i + K]        # [k,4] — decode k boxes in one call
                 masks, _, _ = predictor.predict_torch(
                     point_coords=None, point_labels=None,
-                    boxes=single_box, multimask_output=False)
-                # squeeze(1) -> [1, H, W]; move to CPU + uint8 immediately to free VRAM
+                    boxes=group, multimask_output=False)
+                # squeeze(1) -> [k, H, W]; move to CPU + uint8 immediately to free VRAM
                 all_masks_np.append((masks.squeeze(1).cpu().numpy() * 255).astype(np.uint8))
         masks_np = (np.concatenate(all_masks_np, axis=0) if all_masks_np
                     else np.zeros((0, Hc, Wc), dtype=np.uint8))
@@ -383,11 +395,12 @@ def _backend_masks_on_crop(backend, state, crop_rgb, boxes_local):
         predictor.set_image(crop_rgb)                        # encode this crop (ResizeLongestSide→1024²)
         tb = predictor.transform.apply_boxes_torch(
             torch.as_tensor(boxes_local, dtype=torch.float, device=DEVICE), (ch, cw))
+        K = max(1, int(state.get("sam1_decode_batch", 1)))   # decode K boxes/call (per_tile has ~20/tile)
         out = []
         with torch.no_grad():
-            for k in range(len(tb)):
+            for i in range(0, len(tb), K):
                 m, _, _ = predictor.predict_torch(point_coords=None, point_labels=None,
-                                                  boxes=tb[k:k + 1], multimask_output=False)
+                                                  boxes=tb[i:i + K], multimask_output=False)
                 out.append((m.squeeze(1).cpu().numpy() * 255).astype(np.uint8))
         predictor.reset_image()
         return np.concatenate(out, axis=0) if out else np.zeros((0, ch, cw), dtype=np.uint8)
@@ -521,9 +534,21 @@ def run_sam_phase(image_folders, cfg):
         reset_folder(mask_folder)
 
         image_files = glob.glob(os.path.join(folder, '*.png')) + glob.glob(os.path.join(folder, '*.jpg'))
-        if cfg.limit_images > 0:
+        if cfg.only_labeled_images:
+            # match the YOLO phase: only segment the labeled images. Without this the SAM phase LOADS every
+            # full-res image in the session just to skip it (no bbox → "No boxes found") — a big waste when
+            # scoring a handful of GT images. Byte-identical output; only avoids loading unlabeled images.
+            label_dir = os.path.join(os.path.dirname(folder), 'manual_label')
+            labeled_stems = gt_labeled_stems(label_dir)
+            image_files = [f for f in image_files
+                           if os.path.splitext(os.path.basename(f))[0] in labeled_stems]
+            print(f"---ONLY_LABELED_IMAGES (SAM): filtered to {len(image_files)} labeled images")
+        elif cfg.limit_images > 0:
             image_files = image_files[:cfg.limit_images]
 
+        if not image_files:                 # e.g. only_labeled_images on a session with no GT → nothing to do
+            print(f"  no images to segment for {plot_name} — skipping")
+            continue
         start_sam_plot = time.perf_counter()
         n_images = len(image_files)
         save_masks_flag = cfg.get("save_masks", True)  # false = skip per-head PNGs (fast A/B, overlay only)

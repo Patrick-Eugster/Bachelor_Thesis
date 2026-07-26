@@ -33,6 +33,16 @@ merge_frac: 0.5
 # a GT head is SPLIT if >= 2 predictions each have >= this fraction of their OWN area inside that head
 split_frac: 0.5
 
+# --- boundary (edge-fidelity) metrics: graded on the OUTLINE, which area-IoU ignores. Computed on the
+#     matched pairs only, and confidence-free (so they compare ALL methods fairly). band/tol are in pixels
+#     at full resolution (heads are ~60-120px, so 2px is tight).
+#     NOTE: AP@[.5:.95] is deliberately NOT computed here — SAM emits no per-mask confidence, and ranking
+#     masks by the detector's box score would measure the detector, not the mask, so no fair cross-method AP
+#     exists. Mask quality is judged by mean matched IoU + these boundary metrics + the F1-vs-IoU sweep. ---
+compute_boundary: true
+boundary_band_px: 2        # width of the boundary ring for boundary-IoU (mask minus its erosion)
+boundary_tol_px: 2         # contour-match tolerance for the boundary F-score (DAVIS-style)
+
 # write a per-image colour-coded overlay (green=TP, red=FP, blue=missed GT, magenta=merge, orange=split)
 save_viz: true
 

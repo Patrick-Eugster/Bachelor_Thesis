@@ -214,17 +214,97 @@ def count_merges_splits(inter, preds, gt_areas, gt_ids, merge_frac, split_frac):
     return counts, merge_idx.tolist(), split_idx.tolist()
 
 
-def union_pixel_iou(gt_map, preds):
-    """Plain binary-foreground IoU — what score_sam_masks.py / eval_seg_2d.py report. Kept for CONTRAST:
-    it's blind to merges, so a big gap between this and the instance F1 IS the merge problem, quantified."""
-    gt_u = gt_map > 0
-    pu = np.zeros(gt_map.shape, bool)
+def semantic_ious(gt_map, preds):
+    """Binary SEMANTIC-segmentation IoUs — every head melted into ONE foreground class, no per-head identity.
+    Returns (foreground_iou, background_iou, miou).
+
+    - foreground_iou = the classic 'union pixel IoU' (aka foreground IoU) that score_sam_masks.py /
+      eval_seg_2d.py report. Kept for CONTRAST: it's BLIND TO MERGES (fused heads still union perfectly), so
+      a big gap between it and the instance F1 IS the merge problem, quantified.
+    - background_iou = IoU of the not-a-head class. Background is huge and easy, so this sits near 1.0.
+    - miou = mean of the two classes = the standard semantic-seg metric. Because background inflates it, mIoU
+      flatters; we report it for completeness but foreground IoU is the honest single number here."""
+    gt_fg = gt_map > 0
+    pred_fg = np.zeros(gt_map.shape, bool)
     for p in preds:
         x0, y0, x1, y1 = p["bbox"]
-        pu[y0:y1, x0:x1] |= p["sub"]
-    inter = int(np.logical_and(gt_u, pu).sum())
-    uni = int(np.logical_or(gt_u, pu).sum())
+        pred_fg[y0:y1, x0:x1] |= p["sub"]
+
+    def _iou(a, b):
+        inter = int(np.logical_and(a, b).sum())
+        uni = int(np.logical_or(a, b).sum())
+        return inter / uni if uni else 0.0
+
+    fg = _iou(gt_fg, pred_fg)
+    bg = _iou(~gt_fg, ~pred_fg)
+    return fg, bg, 0.5 * (fg + bg)
+
+
+# ----------------------------------------------------------------------------- boundary (edge) metrics
+
+def _erode(m, k):
+    """Binary erosion by a (2k+1) square — used to peel a boundary ring off a mask."""
+    ker = cv2.getStructuringElement(cv2.MORPH_RECT, (2 * k + 1, 2 * k + 1))
+    return cv2.erode(m.astype(np.uint8), ker)
+
+
+def _boundary_band(m, d):
+    """A d-px-wide ring just inside a mask's edge: mask minus its erosion. This is what boundary-IoU scores
+    instead of the whole area, so a big head with a ragged edge no longer hides its edge error."""
+    return (m.astype(np.uint8) & (1 - _erode(m, d))).astype(np.uint8)
+
+
+def _contour(m):
+    """The 1-px outline of a mask (mask minus a 1-px erosion)."""
+    return (m.astype(np.uint8) & (1 - _erode(m, 1))).astype(np.uint8)
+
+
+def boundary_iou(pm, gm, d):
+    """IoU of just the two boundary rings (edge agreement, area-independent)."""
+    pb, gb = _boundary_band(pm, d), _boundary_band(gm, d)
+    inter = int(np.logical_and(pb, gb).sum())
+    uni = int(np.logical_or(pb, gb).sum())
     return inter / uni if uni else 0.0
+
+
+def boundary_f(pm, gm, tol):
+    """DAVIS-style boundary F: precision = fraction of predicted contour pixels within `tol` of a GT contour
+    pixel, recall = the reverse, F = their harmonic mean. Distances come from a distance transform (distance
+    to the nearest contour pixel), so `tol` is a pixel tolerance on how well the outlines trace each other."""
+    pc, gc = _contour(pm), _contour(gm)
+    ps, gs = int(pc.sum()), int(gc.sum())
+    if ps == 0 and gs == 0:
+        return 1.0
+    if ps == 0 or gs == 0:
+        return 0.0
+    dt_g = cv2.distanceTransform(1 - gc, cv2.DIST_L2, 3)     # each pixel -> distance to nearest GT contour
+    dt_p = cv2.distanceTransform(1 - pc, cv2.DIST_L2, 3)
+    prec = float((dt_g[pc > 0] <= tol).mean())
+    rec = float((dt_p[gc > 0] <= tol).mean())
+    return 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
+
+
+def boundary_metrics_over_pairs(preds, pairs, gt_map, gt_ids, gt_slices, band_d, tol):
+    """Mean boundary-IoU and boundary-F over the matched pairs. Each pair is scored on a small canvas that
+    covers both the prediction and its GT head, so the cost stays per-head, not per-frame."""
+    bious, bfs = [], []
+    for i, j in pairs:
+        gid = int(gt_ids[j])
+        sl = gt_slices[gid - 1] if 0 <= gid - 1 < len(gt_slices) else None
+        if sl is None:
+            continue
+        gy0, gy1, gx0, gx1 = sl[0].start, sl[0].stop, sl[1].start, sl[1].stop
+        px0, py0, px1, py1 = preds[i]["bbox"]
+        X0, Y0 = min(px0, gx0), min(py0, gy0)
+        X1, Y1 = max(px1, gx1), max(py1, gy1)
+        pm = np.zeros((Y1 - Y0, X1 - X0), np.uint8)
+        pm[py0 - Y0:py1 - Y0, px0 - X0:px1 - X0] = preds[i]["sub"]
+        gm = (gt_map[Y0:Y1, X0:X1] == gid).astype(np.uint8)
+        bious.append(boundary_iou(pm, gm, band_d))
+        bfs.append(boundary_f(pm, gm, tol))
+    return (float(np.mean(bious)) if bious else float("nan"),
+            float(np.mean(bfs)) if bfs else float("nan"),
+            len(bious))
 
 
 # ----------------------------------------------------------------------------- viz
@@ -287,7 +367,12 @@ def print_single(rec, thr):
     ms = rec["merge_split"]
     print(f"    MERGES: {ms['merge_preds']} preds swallowing {ms['gt_heads_merged']} GT heads "
           f"| SPLITS: {ms['split_gts']} GT heads")
-    print(f"    union pixel IoU {rec['union_pixel_iou']:.3f}  (blind to merges — compare with F1 above)")
+    if "boundary" in rec:
+        b = rec["boundary"]
+        print(f"    boundary IoU {b['boundary_iou']:.3f} | boundary F {b['boundary_f']:.3f} "
+              f"(edge fidelity over {b['n_pairs']} matched pairs)")
+    print(f"    foreground IoU (union pixel IoU) {rec['foreground_iou']:.3f}  (semantic, blind to merges — "
+          f"compare with F1 above) | background IoU {rec['background_iou']:.3f} | mIoU {rec['miou']:.3f}")
 
 
 def print_aggregate(records, cfg, thr):
@@ -303,14 +388,25 @@ def print_aggregate(records, cfg, thr):
     for k in ("precision", "recall", "f1", "mean_iou_matched", "pq"):
         mean, std = ms(k)
         print(f"   {k:18s} {mean:.3f} ± {std:.3f}")
+    if all("boundary" in r for r in records):               # edge fidelity (matched pairs only)
+        for k in ("boundary_iou", "boundary_f"):
+            v = [r["boundary"][k] for r in records if not np.isnan(r["boundary"][k])]
+            if v:
+                print(f"   {k:18s} {float(np.mean(v)):.3f} ± {float(np.std(v)):.3f}")
     tot_gt = sum(r["n_gt"] for r in records)
     tot_pred = sum(r["n_pred"] for r in records)
     tot_merge = sum(r["merge_split"]["merge_preds"] for r in records)
     tot_merged_gt = sum(r["merge_split"]["gt_heads_merged"] for r in records)
     tot_split = sum(r["merge_split"]["split_gts"] for r in records)
-    u_mean, u_std = float(np.mean([r["union_pixel_iou"] for r in records])), \
-                    float(np.std([r["union_pixel_iou"] for r in records]))
-    print(f"   {'union pixel IoU':18s} {u_mean:.3f} ± {u_std:.3f}   <- what the old union-only eval reports")
+    def top(key):
+        v = [r[key] for r in records]
+        return float(np.mean(v)), float(np.std(v))
+    fg_m, fg_s = top("foreground_iou")
+    bg_m, bg_s = top("background_iou")
+    mi_m, mi_s = top("miou")
+    print(f"   {'foreground IoU':18s} {fg_m:.3f} ± {fg_s:.3f}   <- old union-only metric (== union pixel IoU), blind to merges")
+    print(f"   {'background IoU':18s} {bg_m:.3f} ± {bg_s:.3f}   <- huge easy class (near 1) — inflates mIoU")
+    print(f"   {'mIoU (fg+bg)':18s} {mi_m:.3f} ± {mi_s:.3f}   <- standard semantic-seg metric; optimistic here")
     print(f"\n   totals: GT {tot_gt} | pred {tot_pred}")
     print(f"   MERGES: {tot_merge} predictions swallowed {tot_merged_gt} GT heads "
           f"({tot_merged_gt / tot_gt:.1%} of all GT)" if tot_gt else "")
@@ -371,8 +467,25 @@ def evaluate_all(cfg):
             "at_threshold": at_thr,
             "by_iou_threshold": others,
             "merge_split": ms_counts,
-            "union_pixel_iou": float(union_pixel_iou(gt_map, preds)),
+            "foreground_iou": None, "background_iou": None, "miou": None,   # filled just below
+            "union_pixel_iou": None,   # == foreground_iou; kept for back-compat with older readers
         }
+
+        # semantic (foreground/background) IoUs — heads as ONE class; foreground_iou is the old union metric
+        fg_iou, bg_iou, miou = semantic_ious(gt_map, preds)
+        rec["foreground_iou"] = float(fg_iou)
+        rec["background_iou"] = float(bg_iou)
+        rec["miou"] = float(miou)
+        rec["union_pixel_iou"] = float(fg_iou)     # alias
+
+        # boundary (edge-fidelity) metrics on the matched pairs — what area-IoU can't see at the outline
+        if cfg.get("compute_boundary", True):
+            gt_slices = find_objects(gt_map)
+            b_iou, b_f, n_bp = boundary_metrics_over_pairs(
+                preds, pairs, gt_map, gt_ids, gt_slices,
+                int(cfg.get("boundary_band_px", 2)), float(cfg.get("boundary_tol_px", 2)))
+            rec["boundary"] = {"boundary_iou": b_iou, "boundary_f": b_f, "n_pairs": n_bp}
+
         records.append(rec)
         print_single(rec, thr)
 
@@ -382,6 +495,7 @@ def evaluate_all(cfg):
                      os.path.join(viz_dir, f"{it['stem']}_instance_eval.png"))
 
     print_aggregate(records, cfg, thr)
+
     out = {"method": get_method_name(cfg), "mask_gen_experiment": cfg.mask_gen_experiment,
            "matching_iou_threshold": thr, "merge_frac": float(cfg.merge_frac),
            "split_frac": float(cfg.split_frac), "n_images": len(records), "images": records}
