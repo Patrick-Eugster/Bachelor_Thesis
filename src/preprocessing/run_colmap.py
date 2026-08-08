@@ -64,7 +64,8 @@ def _registered_image_names(sparse0_dir):
 @hydra.main(version_base=None, config_path="../../configs", config_name="preprocessing/colmap")
 def main(cfg: DictConfig):
     """Run COLMAP SfM on phone images: feature_extractor -> matcher -> mapper -> image_undistorter.
-    Produces images/ + sparse/0/ in source_path, ready for 3DGS training."""
+    Produces images/ + sparse/0/ in output_root (= source_path, or source_path/variant_dir for an
+    SfM-ablation variant), ready for 3DGS training."""
     print("--- COLMAP config ---")
     print(OmegaConf.to_yaml(cfg))
     print("---------------------")
@@ -74,6 +75,19 @@ def main(cfg: DictConfig):
     use_gpu = 0 if cfg.no_gpu else 1
     source_path = cfg.source_path
     front_end = str(cfg.get("front_end", "sift")).lower()   # "sift" (default) or "aliked"
+
+    # All OUTPUTS go under output_root; INPUT images stay under source_path. variant_dir="" (default) →
+    # output_root == source_path → byte-identical to the old behavior. A non-empty variant_dir (e.g.
+    # "sift") isolates a whole run into source_path/<variant_dir>/ (its own distorted/, images/,
+    # sparse/0/, logs/) so an SfM-ablation variant never overwrites the baseline. We wipe the variant's own
+    # distorted/ on entry so a re-run gets a fresh feature database (COLMAP would otherwise skip images
+    # already in a stale database).
+    variant_dir = str(cfg.get("variant_dir", "") or "")
+    output_root = os.path.join(source_path, variant_dir) if variant_dir else source_path
+    if variant_dir:
+        os.makedirs(output_root, exist_ok=True)
+        if not cfg.skip_matching:
+            shutil.rmtree(os.path.join(output_root, "distorted"), ignore_errors=True)
 
     # ALIKED's ONNX provider in this COLMAP build was compiled against CUDA 12; on a CUDA-13 box it
     # aborts (libcublasLt.so.12 missing). Prepend a user-supplied CUDA-12 lib dir to LD_LIBRARY_PATH so
@@ -91,7 +105,7 @@ def main(cfg: DictConfig):
     image_path = os.path.join(source_path, cfg.image_subdir)
 
     # ensure log folder exists, open the log file we'll tee into
-    log_dir = os.path.join(source_path, "logs")
+    log_dir = os.path.join(output_root, "logs")
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "colmap.log")
     log_file = open(log_path, "w")
@@ -112,7 +126,7 @@ def main(cfg: DictConfig):
     t_start = time.time()
 
     if not cfg.skip_matching:
-        os.makedirs(source_path + "/distorted/sparse", exist_ok=True)
+        os.makedirs(output_root + "/distorted/sparse", exist_ok=True)
 
         # 1. Feature extraction
         print(f"Step 1/3: Feature extraction (front_end={front_end})...")
@@ -130,7 +144,7 @@ def main(cfg: DictConfig):
             extract_threads = cfg.num_threads
             extra_extract = " --FeatureExtraction.type SIFT"
         feat_extracton_cmd = colmap_command + " feature_extractor "\
-            "--database_path " + source_path + "/distorted/database.db \
+            "--database_path " + output_root + "/distorted/database.db \
             --image_path " + image_path + " \
             --ImageReader.camera_model " + cfg.camera + " \
             --ImageReader.single_camera " + single_camera_flag + " \
@@ -151,14 +165,14 @@ def main(cfg: DictConfig):
         t0 = time.time()
         if cfg.matcher == "sequential":
             feat_matching_cmd = colmap_command + " sequential_matcher \
-                --database_path " + source_path + "/distorted/database.db \
+                --database_path " + output_root + "/distorted/database.db \
                 --FeatureMatching.type " + match_type + " \
                 --FeatureMatching.use_gpu " + str(use_gpu) + " \
                 --FeatureMatching.num_threads " + str(cfg.num_threads) + " \
                 --SequentialMatching.overlap " + str(cfg.sequential_overlap)
         else:
             feat_matching_cmd = colmap_command + " exhaustive_matcher \
-                --database_path " + source_path + "/distorted/database.db \
+                --database_path " + output_root + "/distorted/database.db \
                 --FeatureMatching.type " + match_type + " \
                 --FeatureMatching.use_gpu " + str(use_gpu) + " \
                 --FeatureMatching.num_threads " + str(cfg.num_threads)
@@ -176,7 +190,7 @@ def main(cfg: DictConfig):
         if cfg.get("inject_markers_json", ""):
             import inject_markers_to_db
             det_json = os.path.join(source_path, cfg.inject_markers_json)
-            db_path = source_path + "/distorted/database.db"
+            db_path = output_root + "/distorted/database.db"
             print(f"Step 2b/3: Injecting marker tie-points from {cfg.inject_markers_json} ...")
             if not os.path.isfile(det_json):
                 print(f"WARNING: inject_markers_json not found ({det_json}); skipping injection.")
@@ -192,9 +206,9 @@ def main(cfg: DictConfig):
         # the mapper grabs every core, which can spike RAM on dense scenes. We reuse cfg.num_threads
         # (default 8) so SIFT and mapper share the same cap.
         mapper_cmd = (colmap_command + " mapper \
-            --database_path " + source_path + "/distorted/database.db \
+            --database_path " + output_root + "/distorted/database.db \
             --image_path " + image_path + " \
-            --output_path " + source_path + "/distorted/sparse \
+            --output_path " + output_root + "/distorted/sparse \
             --Mapper.num_threads " + str(cfg.num_threads) + " \
             --Mapper.ba_global_function_tolerance=0.000001")
         exit_code = run_cmd(mapper_cmd)
@@ -208,7 +222,7 @@ def main(cfg: DictConfig):
     # Pick the largest sub-model: the mapper occasionally spawns a stray small sub-model
     # (e.g. 2-image outlier blob) alongside the real reconstruction. Hardcoding "0" would
     # undistort the wrong one on those sessions.
-    distorted_sparse = os.path.join(source_path, "distorted", "sparse")
+    distorted_sparse = os.path.join(output_root, "distorted", "sparse")
     best_sub, best_count, all_subs = _pick_largest_submodel(distorted_sparse)
     if best_sub is None:
         print(f"ERROR: no sub-models in {distorted_sparse} — mapper produced no reconstruction.")
@@ -227,7 +241,7 @@ def main(cfg: DictConfig):
     img_undist_cmd = (colmap_command + " image_undistorter \
         --image_path " + image_path + " \
         --input_path " + best_sub + " \
-        --output_path " + source_path + "\
+        --output_path " + output_root + "\
         --output_type COLMAP")
     exit_code = run_cmd(img_undist_cmd)
     if exit_code != 0:
@@ -237,13 +251,13 @@ def main(cfg: DictConfig):
     print(f"  Undistortion done in {time.time() - t0:.1f}s")
 
     # COLMAP writes sparse files directly into sparse/ — 3DGS expects sparse/0/ so we move them.
-    files = os.listdir(source_path + "/sparse")
-    os.makedirs(source_path + "/sparse/0", exist_ok=True)
+    files = os.listdir(output_root + "/sparse")
+    os.makedirs(output_root + "/sparse/0", exist_ok=True)
     for file in files:
         if file == '0':
             continue
-        source_file = os.path.join(source_path, "sparse", file)
-        destination_file = os.path.join(source_path, "sparse", "0", file)
+        source_file = os.path.join(output_root, "sparse", file)
+        destination_file = os.path.join(output_root, "sparse", "0", file)
         shutil.move(source_file, destination_file)
 
     # Also export sparse/0/ as text alongside the .bin files (human-readable, easier to diff vs Agisoft).
@@ -251,7 +265,7 @@ def main(cfg: DictConfig):
     # both formats coexist; .bin stays the canonical input for 3DGS.
     if cfg.export_text:
         print("Exporting sparse/0/ as text (cameras.txt, images.txt, points3D.txt)...")
-        sparse0 = os.path.join(source_path, "sparse", "0")
+        sparse0 = os.path.join(output_root, "sparse", "0")
         export_cmd = f"{colmap_command} model_converter --input_path {sparse0} --output_path {sparse0} --output_type TXT"
         exit_code = run_cmd(export_cmd)
         if exit_code != 0:
@@ -260,14 +274,14 @@ def main(cfg: DictConfig):
     if cfg.resize:
         print("Copying and resizing...")
 
-        os.makedirs(source_path + "/images_2", exist_ok=True)
-        os.makedirs(source_path + "/images_4", exist_ok=True)
-        os.makedirs(source_path + "/images_8", exist_ok=True)
-        files = os.listdir(source_path + "/images")
+        os.makedirs(output_root + "/images_2", exist_ok=True)
+        os.makedirs(output_root + "/images_4", exist_ok=True)
+        os.makedirs(output_root + "/images_8", exist_ok=True)
+        files = os.listdir(output_root + "/images")
         for file in files:
-            source_file = os.path.join(source_path, "images", file)
+            source_file = os.path.join(output_root, "images", file)
 
-            destination_file = os.path.join(source_path, "images_2", file)
+            destination_file = os.path.join(output_root, "images_2", file)
             shutil.copy2(source_file, destination_file)
             exit_code = run_cmd(magick_command + " mogrify -resize 50% " + destination_file)
             if exit_code != 0:
@@ -275,7 +289,7 @@ def main(cfg: DictConfig):
                 log_file.close()
                 exit(exit_code)
 
-            destination_file = os.path.join(source_path, "images_4", file)
+            destination_file = os.path.join(output_root, "images_4", file)
             shutil.copy2(source_file, destination_file)
             exit_code = run_cmd(magick_command + " mogrify -resize 25% " + destination_file)
             if exit_code != 0:
@@ -283,7 +297,7 @@ def main(cfg: DictConfig):
                 log_file.close()
                 exit(exit_code)
 
-            destination_file = os.path.join(source_path, "images_8", file)
+            destination_file = os.path.join(output_root, "images_8", file)
             shutil.copy2(source_file, destination_file)
             exit_code = run_cmd(magick_command + " mogrify -resize 12.5% " + destination_file)
             if exit_code != 0:
@@ -304,7 +318,7 @@ def main(cfg: DictConfig):
     # drops out of the downstream train/test split, so two methods that register different sets are
     # no longer comparable. We list the names so the drift is visible (and check_split.py can flag it).
     input_stems = {f.split(".")[0] for f in input_files}
-    registered_stems = _registered_image_names(os.path.join(source_path, "sparse", "0"))
+    registered_stems = _registered_image_names(os.path.join(output_root, "sparse", "0"))
     missing = sorted(input_stems - registered_stems) if registered_stems else []
 
     minutes, seconds = divmod(int(elapsed), 60)

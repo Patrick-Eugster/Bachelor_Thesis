@@ -18,6 +18,11 @@ plot: ???
 # folder whose image NAMES define the canonical set (default input_uniform/ — the full pre-COLMAP set)
 image_subdir: input_uniform
 
+# GT masks live in {source}/{gt_label_subdir} as <stem>{gt_mask_suffix}.png. Every such GT image is
+# FORCED into test_views so eval_2d can render it as a held-out view. (No GT dir → plain split.)
+gt_label_subdir: manual_label
+gt_mask_suffix: _gt_mask
+
 # every Nth sorted image is held out as test (standard llffhold). Resolution must stay 1; this only
 # picks which views, not their size.
 llffhold: 8

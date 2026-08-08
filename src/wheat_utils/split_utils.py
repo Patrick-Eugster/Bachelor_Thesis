@@ -10,6 +10,9 @@ Split rules, in priority order:
      reconstructions of the same session always test on the same physical views.
      Pin sources: FIP transforms.json `test_filenames` (the paper's split), or
      phone phone_split.json `test_views` (made by make_phone_split.py from input_uniform/).
+     Membership is suffix-robust (see _norm_stem) so the SAME pin matches both our COLMAP
+     naming and Agisoft's `_<N>` ingestion-renamed naming — the two R1 arms hold out the
+     same physical views.
   2. FIP naming fallback — every name ends in `_cam_NN`: cam_NN > 10 = test
      (cam_11, cam_12). Matches transforms.json, kept for safety if the pin is absent.
   3. llffhold-8 fallback — phone with no pin: every 8th sorted image = test.
@@ -21,10 +24,44 @@ import json
 # FIP image names look like FPWW036_SR0461_FIP2_cam_11 — the cam index is the tail.
 FIP_PAT = re.compile(r'_cam_\d+$')
 
+# A full phone image stem: IMG_<date8>_<time6> with an optional ~N dedup marker. Used to decide
+# whether a trailing _<N> is Agisoft's ingestion index (safe to strip) vs the time group (keep).
+_PHONE_STEM = re.compile(r'^IMG_\d{8}_\d{6}(?:~\d+)?$')
+
 
 def _stem(name):
     """basename without extension — matches dataset_readers' image_name (split on the first dot)."""
     return os.path.basename(str(name)).split(".")[0]
+
+
+def _norm_stem(name):
+    """Stem with a trailing Agisoft ingestion index (_0, _37, ...) removed, so the SAME physical view
+    matches across our COLMAP naming (IMG_20250627_102602) and Agisoft's (IMG_20250627_102602_0).
+    Only strips when the remainder is a full phone stem, so it never eats the 6-digit time group,
+    FIP _cam_NN, or ~N dedup markers — for those it returns the plain stem unchanged."""
+    s = _stem(name)
+    m = re.match(r'^(.*)_\d+$', s)
+    if m and _PHONE_STEM.match(m.group(1)):
+        return m.group(1)
+    return s
+
+
+def pin_applies(image_names, pin_test):
+    """True iff the pin matches at least one of image_names (suffix-robust). Lets callers detect the
+    'pin found but different naming' case without duplicating the normalization."""
+    if not pin_test:
+        return False
+    pin = {_norm_stem(n) for n in pin_test}
+    return any(_norm_stem(n) in pin for n in image_names)
+
+
+def pin_missing(image_names, pin_test):
+    """Pinned test views (normalized) that are NOT present in image_names — the comparability killer
+    when a reconstruction dropped a held-out view. Empty if no pin. Suffix-robust like pin_applies."""
+    if not pin_test:
+        return []
+    present = {_norm_stem(n) for n in image_names}
+    return sorted({_norm_stem(n) for n in pin_test} - present)
 
 
 def load_pin_test(source_path):
@@ -68,9 +105,12 @@ def compute_eval_split(image_names, pin_test=None, llffhold=8):
     logic training uses; the checker imports the same function so the two cannot disagree."""
     names = sorted(_stem(n) for n in image_names)
     if pin_test:
-        pin = {_stem(n) for n in pin_test}
-        train = [n for n in names if n not in pin]
-        test = [n for n in names if n in pin]
+        # suffix-robust membership: normalize both sides so the same pin (COLMAP stems) matches
+        # Agisoft's _<N>-renamed views. Returned lists keep the ACTUAL stems so dataset_readers can
+        # still match them to the on-disk filenames.
+        pin = {_norm_stem(n) for n in pin_test}
+        train = [n for n in names if _norm_stem(n) not in pin]
+        test = [n for n in names if _norm_stem(n) in pin]
         return train, test
     if is_fip_naming(names):
         train = [n for n in names if int(n.split('_')[-1]) <= 10]

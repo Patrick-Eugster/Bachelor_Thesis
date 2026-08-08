@@ -22,6 +22,14 @@ source_path: ${dataset.input_dir}/${field}/${plot}
 # which produces input_uniform/ next to your original input/. Override to "input" for already-uniform data.
 image_subdir: input_uniform
 
+# where the COLMAP OUTPUTS (distorted/, images/, sparse/, logs/) are written, as a subfolder of
+# source_path. Empty ("") = write directly into source_path (the baseline — byte-identical to before).
+# Set e.g. variant_dir=sift to run an SfM-ablation variant (front-end / matcher / camera model) WITHOUT
+# overwriting the baseline sparse/ — it lands in source_path/sift/{distorted,images,sparse/0,logs}. Input
+# images are always read from source_path/image_subdir, so all variants share the same input. Compare a
+# variant with:   compare_to_agisoft ours_sparse_dir=<variant_dir>/sparse/0   (e.g. sift/sparse/0)
+variant_dir: ""
+
 # force COLMAP to treat all images as one shared camera (one set of intrinsics for everything).
 # Only valid when all images have identical dimensions — run preprocess_uniform_size.py first.
 # Helps prevent the mapper splitting the reconstruction by intrinsic group on phone data.

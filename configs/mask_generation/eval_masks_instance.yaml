@@ -28,6 +28,20 @@ matching_iou_threshold: 0.5
 # extra thresholds also reported (cheap — the IoU matrix is only computed once)
 extra_iou_thresholds: [0.25, 0.5, 0.75]
 
+# --- F1-vs-IoU curve (figure only; the table still uses matching_iou_threshold + extra_iou_thresholds) ---
+# fine IoU sweep re-matched per threshold so we can PLOT how P/R/F1 decay as the match bar rises.
+# cheap: the IoU matrix is built once, this only re-runs the Hungarian match per threshold.
+curve_iou_thresholds: [0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75]
+
+# --- matched-pair IoU histogram: the DISTRIBUTION of per-pair IoUs (not just the mean_iou_matched).
+# matched at THIS floor (kept low so the histogram shows the borderline 0.25-0.5 band too, not a
+# 0.5-truncated view). Mirrors the box eval's TP-IoU histograms. ---
+hist_iou_threshold: 0.25
+hist_bins: 20              # bins over [hist_iou_threshold, 1.0] for the histogram
+
+# write matplotlib PNGs (f1_vs_iou.png, matched_iou_hist.png). CSVs are always written even without matplotlib.
+save_plots: true
+
 # a prediction MERGES heads if >= 2 GT heads each have >= this fraction of their area inside it
 merge_frac: 0.5
 # a GT head is SPLIT if >= 2 predictions each have >= this fraction of their OWN area inside that head
@@ -40,8 +54,14 @@ split_frac: 0.5
 #     masks by the detector's box score would measure the detector, not the mask, so no fair cross-method AP
 #     exists. Mask quality is judged by mean matched IoU + these boundary metrics + the F1-vs-IoU sweep. ---
 compute_boundary: true
-boundary_band_px: 2        # width of the boundary ring for boundary-IoU (mask minus its erosion)
-boundary_tol_px: 2         # contour-match tolerance for the boundary F-score (DAVIS-style)
+boundary_band_px: 2        # FIXED band: width of the boundary ring for boundary-IoU (mask minus its erosion)
+boundary_tol_px: 2         # FIXED tol: contour-match tolerance for the boundary F-score (DAVIS-style)
+# DYNAMIC (size-proportional) band, reported ALONGSIDE the fixed one as boundary_dynamic. Per head the band =
+# max(boundary_dyn_min_px, round(boundary_dyn_k * sqrt(head_area))) — scale-invariant across near/far heads
+# (Boundary IoU paper, Cheng 2021, scales by object diagonal; sqrt(area) is the same idea). k=0.05 gives ~4px
+# on a ~70px head, ~7px on a big near head, floored at 2px for tiny far heads. Same width used for the F tol.
+boundary_dyn_k: 0.05
+boundary_dyn_min_px: 2
 
 # write a per-image colour-coded overlay (green=TP, red=FP, blue=missed GT, magenta=merge, orange=split)
 save_viz: true

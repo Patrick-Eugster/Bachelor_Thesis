@@ -16,6 +16,18 @@ from gaussians.utils.image_helper import *
 from tqdm import tqdm
 import torch.nn.functional as F
 
+
+def _pick_vcodec():
+    """Pick an ffmpeg video encoder that actually exists in this build. Prefer libx264 (best quality, local),
+    else fall back to mpeg4 (built-in, no external lib) — Euler's LGPL ffmpeg has no libx264, which otherwise
+    crashes the 360 stitch with 'Unknown encoder libx264'. Mirrors the same probe in src/viewer/render_360.py."""
+    try:
+        enc = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"],
+                             capture_output=True, text=True).stdout
+        return "libx264" if "libx264" in enc else "mpeg4"
+    except Exception:
+        return "mpeg4"
+
 torch.set_printoptions(precision=10)
 
 # def nearest_k_viewpts(cam_centers, target_idx, k):
@@ -352,7 +364,7 @@ def render_360(og_view, scene_radius, render_path, n_frames, framerate, gaussian
         "-i", os.path.join(render_path, "%05d.png"),
         "-vf", r"scale=iw-mod(iw\,2):ih-mod(ih\,2)",
         "-r", str(framerate),
-        "-vcodec", "libx264",
+        "-vcodec", _pick_vcodec(),
         "-pix_fmt", "yuv420p",
         output_video
     ], check=True)
@@ -465,7 +477,7 @@ def render_360_fast(og_view, scene_radius, render_path, n_frames, framerate, gau
         "-i", os.path.join(render_path, "%05d.png"),
         "-vf", r"scale=iw-mod(iw\,2):ih-mod(ih\,2)",
         "-r", str(framerate),
-        "-vcodec", "libx264",
+        "-vcodec", _pick_vcodec(),
         "-pix_fmt", "yuv420p",
         output_video
     ], check=True)

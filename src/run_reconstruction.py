@@ -128,31 +128,72 @@ class _ResourceSampler:
         return self.vram_peak_mib, self.ram_peak_mib
 
 
+def _git_state():
+    """Read-only git fingerprint of the code that produced this run: short commit SHA + a dirty flag
+    for uncommitted edits. Purely `git rev-parse`/`git status` — never commits or pushes anything.
+    Returns {'commit': <sha or None>, 'dirty': <bool or None>} so results map to exact code.
+
+    Euler fallback: the cluster rsync excludes .git/, so `git rev-parse` finds no repo there. If the
+    push/job script exports WHEAT_GIT_COMMIT (from `git rev-parse` on the local side), use it so Euler
+    runs still record the commit. WHEAT_GIT_DIRTY (0/1) optionally carries the local dirty flag."""
+    env_sha = os.environ.get("WHEAT_GIT_COMMIT")
+    import subprocess
+    try:
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root (src/..)
+        sha = subprocess.run(["git", "-C", root, "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=5)
+        if sha.returncode != 0:
+            raise RuntimeError("no git repo here")
+        st = subprocess.run(["git", "-C", root, "status", "--porcelain"],
+                            capture_output=True, text=True, timeout=5)
+        return {"commit": sha.stdout.strip(), "dirty": bool(st.stdout.strip())}
+    except Exception:
+        # no local .git (e.g. Euler) → fall back to the env var the push script may have set
+        if env_sha:
+            dirty_env = os.environ.get("WHEAT_GIT_DIRTY")
+            dirty = bool(int(dirty_env)) if dirty_env in ("0", "1") else None
+            return {"commit": env_sha.strip(), "dirty": dirty}
+        return {"commit": None, "dirty": None}
+
+
 def _save_config(model_path, cfg):
-    """Save full config to config.yaml inside the experiment folder."""
+    """Save full config to config.yaml inside the experiment folder, plus runtime state the Hydra
+    config does NOT capture (the renderer is an env var, not a config key → otherwise unrecoverable)."""
     os.makedirs(model_path, exist_ok=True)
     config_path = os.path.join(model_path, "config.yaml")
+    git = _git_state()
     with open(config_path, "w") as f:
         f.write(OmegaConf.to_yaml(cfg))
-    print(f"Config saved → {config_path}")
+        # --- runtime state NOT part of the Hydra config (appended as valid top-level YAML keys) ---
+        # WHEAT_RENDERER (gsplat vs diffgs) is chosen by env var, so record it or the engine is lost.
+        f.write("\n# --- runtime (not part of the Hydra config) ---\n")
+        f.write(f"wheat_renderer: {os.environ.get('WHEAT_RENDERER', 'gsplat')}\n")
+        f.write(f"git_commit: {git['commit']}\n")
+        f.write(f"git_dirty: {git['dirty']}\n")
+    print(f"Config saved → {config_path}  (renderer={os.environ.get('WHEAT_RENDERER', 'gsplat')}, "
+          f"commit={git['commit']}{'*dirty' if git['dirty'] else ''})")
 
 
 def _check_overwrite(model_path, cfg):
-    """Warn and ask before overwriting an existing named experiment (skip for timestamps)."""
+    """REFUSE to overwrite an existing named experiment unless allow_overwrite=true.
+
+    Every experiment result must physically survive, so a re-run with a name that already exists is
+    a hard error by default — in BOTH interactive and non-interactive (SLURM/piped) mode (the old
+    behaviour silently overwrote on SLURM, which could destroy a finished run). To overwrite on
+    purpose pass allow_overwrite=true. Timestamp names ('') and the 'initial' scratch name are exempt
+    (they're meant to be transient)."""
     if not cfg.experiment_name:
         return  # timestamps are always unique, no check needed
     if cfg.experiment_name == "initial":
         return  # "initial" is a scratch run, always safe to overwrite
     if os.path.exists(model_path) and os.listdir(model_path):
-        print(f"\nExperiment '{cfg.experiment_name}' already exists at: {model_path}")
-        if not sys.stdin.isatty():
-            # non-interactive (SLURM job, pipe) — overwrite automatically
-            print("Non-interactive mode: overwriting.")
+        if cfg.get("allow_overwrite", False):
+            print(f"\nExperiment '{cfg.experiment_name}' exists at {model_path} — "
+                  f"allow_overwrite=true → overwriting on purpose.")
             return
-        answer = input("Overwrite? [y/N]: ").strip().lower()
-        if answer != "y":
-            print("Aborted.")
-            sys.exit(0)
+        print(f"\n✗ REFUSING to overwrite existing experiment '{cfg.experiment_name}' at:\n    {model_path}")
+        print("  → pick a new experiment_name, or pass allow_overwrite=true to overwrite deliberately.")
+        sys.exit(1)
 
 
 def run_command(command_list, log_file, cwd=None, capture=None):
@@ -320,6 +361,8 @@ def _print_and_write_report(ctx, model_path, cfg, exp_name):
     skipped = [r for r in ctx.records if r["status"] == "skipped"]
     verdict = "SUCCESS" if not failed else "COMPLETED WITH FAILURES"
     job     = os.environ.get("SLURM_JOB_ID")
+    renderer = os.environ.get("WHEAT_RENDERER", "gsplat")   # engine is an env var, record it
+    git      = _git_state()                                  # read-only code fingerprint (no commit)
 
     lines = []
     lines.append("=" * 64)
@@ -332,6 +375,8 @@ def _print_and_write_report(ctx, model_path, cfg, exp_name):
         lines.append(f"  field/date  : {cfg.get('field')} / {cfg.get('date', '?')}")
     if job:
         lines.append(f"  slurm job   : {job}")
+    lines.append(f"  renderer    : {renderer}")
+    lines.append(f"  git commit  : {git['commit']}{'  (DIRTY — uncommitted edits)' if git['dirty'] else ''}")
     lines.append(f"  model_path  : {model_path}")
     lines.append("-" * 64)
     lines.append(f"  {'STEP':<24}{'STATUS':<8}{'TIME':>10}{'VRAM':>9}{'RAM':>9}")
@@ -379,6 +424,10 @@ def _print_and_write_report(ctx, model_path, cfg, exp_name):
                 "plot":         cfg.get("plot"),
                 "when":         datetime.datetime.now().isoformat(timespec="seconds"),
                 "slurm_job_id": job,
+                "renderer":     renderer,
+                "git_commit":   git["commit"],
+                "git_dirty":    git["dirty"],
+                "use_agisoft_sfm": cfg.get("use_agisoft_sfm", False),
                 "verdict":      verdict,
                 "total_seconds": round(total_seconds, 2),
                 "steps":        ctx.records,

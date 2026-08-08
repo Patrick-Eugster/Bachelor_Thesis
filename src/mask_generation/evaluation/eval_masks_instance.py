@@ -193,6 +193,24 @@ def metrics_at(iou, thr, n_pred, n_gt):
             "mean_iou_matched": sq, "pq": pq}, pairs
 
 
+def matched_iou_values(iou, thr):
+    """The per-pair IoU of every matched prediction<->GT head at threshold `thr`. This is the raw
+    distribution that mean_iou_matched collapses to a single number — histogrammed to see if the
+    matched masks cluster tight (~0.7) or spread out."""
+    return [float(iou[i, j]) for i, j in match_instances(iou, thr)]
+
+
+def iou_curve(iou, thresholds, n_pred, n_gt):
+    """P/R/F1 at each of a fine IoU sweep — the data behind the F1-vs-IoU curve figure.
+    Just re-runs the (cheap) Hungarian match per threshold on the already-built IoU matrix."""
+    curve = []
+    for t in thresholds:
+        m, _ = metrics_at(iou, float(t), n_pred, n_gt)
+        curve.append({"iou": round(float(t), 4), "precision": m["precision"],
+                      "recall": m["recall"], "f1": m["f1"], "tp": m["tp"]})
+    return curve
+
+
 def count_merges_splits(inter, preds, gt_areas, gt_ids, merge_frac, split_frac):
     """The failures a UNION mask cannot show.
       merge = ONE prediction swallowing >=2 GT heads (each with >= merge_frac of its area inside it)
@@ -284,10 +302,21 @@ def boundary_f(pm, gm, tol):
     return 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
 
 
-def boundary_metrics_over_pairs(preds, pairs, gt_map, gt_ids, gt_slices, band_d, tol):
-    """Mean boundary-IoU and boundary-F over the matched pairs. Each pair is scored on a small canvas that
-    covers both the prediction and its GT head, so the cost stays per-head, not per-frame."""
-    bious, bfs = [], []
+def _dyn_band(gt_area, k, min_px):
+    """Size-proportional boundary width for ONE head: max(min_px, round(k*sqrt(area))). Scales the band
+    with the head's apparent size (Boundary IoU paper, Cheng 2021, which scales by object diagonal; sqrt(area)
+    is the same idea, cheap). Big near heads get a wider band, tiny far heads stay at the floor."""
+    return int(max(min_px, round(k * np.sqrt(max(gt_area, 1)))))
+
+
+def boundary_metrics_over_pairs(preds, pairs, gt_map, gt_ids, gt_slices, band_d, tol, dyn_k, dyn_min_px):
+    """Mean boundary-IoU and boundary-F over the matched pairs, computed TWO ways in one pass over the same
+    per-head canvas (cost stays per-head, not per-frame):
+      - FIXED  : a constant band_d / tol (px at full res) — the original metric.
+      - DYNAMIC: a per-head band scaled by that GT head's size (_dyn_band), so it's scale-invariant across
+        near/far heads. The tolerance for the F-score scales the same way.
+    Returns (fixed_dict, dynamic_dict), each {boundary_iou, boundary_f, n_pairs}."""
+    fx_iou, fx_f, dyn_iou, dyn_f = [], [], [], []
     for i, j in pairs:
         gid = int(gt_ids[j])
         sl = gt_slices[gid - 1] if 0 <= gid - 1 < len(gt_slices) else None
@@ -300,11 +329,15 @@ def boundary_metrics_over_pairs(preds, pairs, gt_map, gt_ids, gt_slices, band_d,
         pm = np.zeros((Y1 - Y0, X1 - X0), np.uint8)
         pm[py0 - Y0:py1 - Y0, px0 - X0:px1 - X0] = preds[i]["sub"]
         gm = (gt_map[Y0:Y1, X0:X1] == gid).astype(np.uint8)
-        bious.append(boundary_iou(pm, gm, band_d))
-        bfs.append(boundary_f(pm, gm, tol))
-    return (float(np.mean(bious)) if bious else float("nan"),
-            float(np.mean(bfs)) if bfs else float("nan"),
-            len(bious))
+        fx_iou.append(boundary_iou(pm, gm, band_d))
+        fx_f.append(boundary_f(pm, gm, tol))
+        d = _dyn_band(int(gm.sum()), dyn_k, dyn_min_px)     # band from THIS head's area
+        dyn_iou.append(boundary_iou(pm, gm, d))
+        dyn_f.append(boundary_f(pm, gm, d))                 # tolerance scales with the head too
+    _mean = lambda v: float(np.mean(v)) if v else float("nan")
+    fixed = {"boundary_iou": _mean(fx_iou), "boundary_f": _mean(fx_f), "n_pairs": len(fx_iou)}
+    dynamic = {"boundary_iou": _mean(dyn_iou), "boundary_f": _mean(dyn_f), "n_pairs": len(dyn_iou)}
+    return fixed, dynamic
 
 
 # ----------------------------------------------------------------------------- viz
@@ -370,7 +403,11 @@ def print_single(rec, thr):
     if "boundary" in rec:
         b = rec["boundary"]
         print(f"    boundary IoU {b['boundary_iou']:.3f} | boundary F {b['boundary_f']:.3f} "
-              f"(edge fidelity over {b['n_pairs']} matched pairs)")
+              f"(fixed band, edge fidelity over {b['n_pairs']} matched pairs)")
+    if "boundary_dynamic" in rec:
+        d = rec["boundary_dynamic"]
+        print(f"    boundary IoU {d['boundary_iou']:.3f} | boundary F {d['boundary_f']:.3f} "
+              f"(dynamic size-scaled band)")
     print(f"    foreground IoU (union pixel IoU) {rec['foreground_iou']:.3f}  (semantic, blind to merges — "
           f"compare with F1 above) | background IoU {rec['background_iou']:.3f} | mIoU {rec['miou']:.3f}")
 
@@ -392,7 +429,12 @@ def print_aggregate(records, cfg, thr):
         for k in ("boundary_iou", "boundary_f"):
             v = [r["boundary"][k] for r in records if not np.isnan(r["boundary"][k])]
             if v:
-                print(f"   {k:18s} {float(np.mean(v)):.3f} ± {float(np.std(v)):.3f}")
+                print(f"   {k:18s} {float(np.mean(v)):.3f} ± {float(np.std(v)):.3f}   <- fixed band")
+    if all("boundary_dynamic" in r for r in records):       # size-proportional band, side by side
+        for k in ("boundary_iou", "boundary_f"):
+            v = [r["boundary_dynamic"][k] for r in records if not np.isnan(r["boundary_dynamic"][k])]
+            if v:
+                print(f"   {k + '(dyn)':18s} {float(np.mean(v)):.3f} ± {float(np.std(v)):.3f}   <- dynamic band")
     tot_gt = sum(r["n_gt"] for r in records)
     tot_pred = sum(r["n_pred"] for r in records)
     tot_merge = sum(r["merge_split"]["merge_preds"] for r in records)
@@ -413,6 +455,109 @@ def print_aggregate(records, cfg, thr):
     print(f"   SPLITS: {tot_split} GT heads broken across >1 prediction "
           f"({tot_split / tot_gt:.1%} of all GT)" if tot_gt else "")
     print("=" * 78)
+
+
+# ----------------------------------------------------------------------------- curve + histogram outputs
+
+def _mean_curve(records):
+    """Average the per-image F1-vs-IoU curves into one curve (mean P/R/F1 per threshold, over images
+    that have that threshold). Returns a list aligned to the thresholds of the first record's curve."""
+    curves = [r["f1_curve"] for r in records if r.get("f1_curve")]
+    if not curves:
+        return []
+    thrs = [pt["iou"] for pt in curves[0]]
+    out = []
+    for k, t in enumerate(thrs):
+        p = [c[k]["precision"] for c in curves if k < len(c)]
+        r = [c[k]["recall"] for c in curves if k < len(c)]
+        f = [c[k]["f1"] for c in curves if k < len(c)]
+        out.append({"iou": t, "precision": float(np.mean(p)), "recall": float(np.mean(r)),
+                    "f1": float(np.mean(f))})
+    return out
+
+
+def write_curve_and_hist(records, cfg, eval_dir, thr):
+    """Write the F1-vs-IoU curve (CSV + optional PNG) and the matched-pair IoU histogram (CSV + optional
+    PNG), aggregated across all scored images. Returns a small dict folded into the JSON summary."""
+    tag = f"{get_method_name(cfg)} / {cfg.mask_gen_experiment}"
+
+    # --- F1-vs-IoU curve (mean over images) ---
+    mean_curve = _mean_curve(records)
+    curve_csv = os.path.join(eval_dir, "f1_vs_iou.csv")
+    with open(curve_csv, "w") as f:
+        f.write("iou,precision,recall,f1\n")
+        for pt in mean_curve:
+            f.write(f"{pt['iou']:.2f},{pt['precision']:.4f},{pt['recall']:.4f},{pt['f1']:.4f}\n")
+
+    # --- matched-pair IoU histogram (pooled over all images, matched at hist_iou_threshold) ---
+    hist_thr = float(cfg.get("hist_iou_threshold", 0.25))
+    nbins = int(cfg.get("hist_bins", 20))
+    pooled = [v for r in records for v in r.get("matched_ious", [])]
+    edges = np.linspace(hist_thr, 1.0, nbins + 1)
+    counts, _ = np.histogram(pooled, bins=edges) if pooled else (np.zeros(nbins, int), edges)
+    hist_csv = os.path.join(eval_dir, "matched_iou_hist.csv")
+    with open(hist_csv, "w") as f:
+        f.write("bin_lo,bin_hi,count\n")
+        for b in range(nbins):
+            f.write(f"{edges[b]:.4f},{edges[b + 1]:.4f},{int(counts[b])}\n")
+    stats = {}
+    if pooled:
+        arr = np.array(pooled)
+        stats = {"n": int(arr.size), "mean": float(arr.mean()), "median": float(np.median(arr)),
+                 "p25": float(np.percentile(arr, 25)), "p75": float(np.percentile(arr, 75)),
+                 "min": float(arr.min()), "max": float(arr.max())}
+
+    # console: compact ASCII so you see it without opening the PNG
+    print("\n" + "-" * 78)
+    print(f" F1-vs-IoU curve (mean over {len(records)} img) — {tag}")
+    print("   IoU   P      R      F1")
+    for pt in mean_curve:
+        print(f"   {pt['iou']:.2f}  {pt['precision']:.3f}  {pt['recall']:.3f}  {pt['f1']:.3f}")
+    if pooled:
+        print(f" matched-pair IoU (matched@{hist_thr}, n={stats['n']}): "
+              f"median {stats['median']:.3f} | IQR [{stats['p25']:.3f}, {stats['p75']:.3f}] "
+              f"| mean {stats['mean']:.3f}")
+        peak = int(np.argmax(counts))
+        print(f"   histogram peak bin: [{edges[peak]:.2f}, {edges[peak + 1]:.2f}] ({int(counts[peak])} pairs)")
+    print(f" CSVs -> {os.path.basename(curve_csv)}, {os.path.basename(hist_csv)}")
+    print("-" * 78)
+
+    if cfg.get("save_plots", True):
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            if mean_curve:
+                xs = [pt["iou"] for pt in mean_curve]
+                fig, ax = plt.subplots(figsize=(6, 4))
+                ax.plot(xs, [pt["f1"] for pt in mean_curve], "-o", label="F1", color="tab:blue")
+                ax.plot(xs, [pt["precision"] for pt in mean_curve], "--", label="precision", color="tab:green")
+                ax.plot(xs, [pt["recall"] for pt in mean_curve], "--", label="recall", color="tab:red")
+                ax.axvline(thr, color="grey", ls=":", lw=1, label=f"table thr {thr}")
+                ax.set_xlabel("matching IoU threshold"); ax.set_ylabel("score")
+                ax.set_ylim(0, 1); ax.set_title(f"F1 vs IoU — {tag}")
+                ax.grid(alpha=0.3); ax.legend(fontsize=8)
+                fig.tight_layout(); fig.savefig(os.path.join(eval_dir, "f1_vs_iou.png"), dpi=130)
+                plt.close(fig)
+
+            fig, ax = plt.subplots(figsize=(6, 4))
+            ax.bar(0.5 * (edges[:-1] + edges[1:]), counts, width=(edges[1] - edges[0]) * 0.9,
+                   color="tab:purple", edgecolor="black", linewidth=0.4)
+            if pooled:
+                ax.axvline(stats["median"], color="black", ls="--", lw=1,
+                           label=f"median {stats['median']:.3f}")
+                ax.legend(fontsize=8)
+            ax.set_xlabel(f"matched-pair IoU (matched@{hist_thr})"); ax.set_ylabel("count")
+            ax.set_title(f"Matched-pair IoU distribution — {tag}")
+            ax.grid(alpha=0.3, axis="y")
+            fig.tight_layout(); fig.savefig(os.path.join(eval_dir, "matched_iou_hist.png"), dpi=130)
+            plt.close(fig)
+        except ImportError:
+            print("   (matplotlib not available — wrote CSVs only)")
+
+    return {"f1_curve_mean": mean_curve, "matched_iou_stats": stats,
+            "matched_iou_hist": {"edges": [float(e) for e in edges], "counts": [int(c) for c in counts]}}
 
 
 # ----------------------------------------------------------------------------- driver
@@ -460,12 +605,18 @@ def evaluate_all(cfg):
             m, _ = metrics_at(iou, float(t), len(preds), len(gt_ids))
             others[str(t)] = m
 
+        # fine IoU sweep for the F1-vs-IoU curve figure, and the matched-pair IoU distribution
+        curve = iou_curve(iou, list(cfg.get("curve_iou_thresholds", [])), len(preds), len(gt_ids))
+        matched_ious = matched_iou_values(iou, float(cfg.get("hist_iou_threshold", 0.25)))
+
         rec = {
             "plot": it["plot"], "stem": it["stem"],
             "n_gt": int(len(gt_ids)), "n_pred": int(len(preds)),
             "count_error_ratio": float((len(preds) - len(gt_ids)) / max(len(gt_ids), 1)),
             "at_threshold": at_thr,
             "by_iou_threshold": others,
+            "f1_curve": curve,
+            "matched_ious": matched_ious,
             "merge_split": ms_counts,
             "foreground_iou": None, "background_iou": None, "miou": None,   # filled just below
             "union_pixel_iou": None,   # == foreground_iou; kept for back-compat with older readers
@@ -481,10 +632,12 @@ def evaluate_all(cfg):
         # boundary (edge-fidelity) metrics on the matched pairs — what area-IoU can't see at the outline
         if cfg.get("compute_boundary", True):
             gt_slices = find_objects(gt_map)
-            b_iou, b_f, n_bp = boundary_metrics_over_pairs(
+            fixed_b, dyn_b = boundary_metrics_over_pairs(
                 preds, pairs, gt_map, gt_ids, gt_slices,
-                int(cfg.get("boundary_band_px", 2)), float(cfg.get("boundary_tol_px", 2)))
-            rec["boundary"] = {"boundary_iou": b_iou, "boundary_f": b_f, "n_pairs": n_bp}
+                int(cfg.get("boundary_band_px", 2)), float(cfg.get("boundary_tol_px", 2)),
+                float(cfg.get("boundary_dyn_k", 0.05)), int(cfg.get("boundary_dyn_min_px", 2)))
+            rec["boundary"] = fixed_b               # fixed-band block (back-compat name)
+            rec["boundary_dynamic"] = dyn_b         # size-proportional band (parallel block)
 
         records.append(rec)
         print_single(rec, thr)
@@ -496,9 +649,15 @@ def evaluate_all(cfg):
 
     print_aggregate(records, cfg, thr)
 
+    curve_hist = {}
+    if records:
+        curve_hist = write_curve_and_hist(records, cfg, eval_dir, thr)
+
     out = {"method": get_method_name(cfg), "mask_gen_experiment": cfg.mask_gen_experiment,
            "matching_iou_threshold": thr, "merge_frac": float(cfg.merge_frac),
-           "split_frac": float(cfg.split_frac), "n_images": len(records), "images": records}
+           "split_frac": float(cfg.split_frac), "n_images": len(records),
+           "hist_iou_threshold": float(cfg.get("hist_iou_threshold", 0.25)),
+           "aggregate_curve_hist": curve_hist, "images": records}
     with open(os.path.join(eval_dir, "eval_masks_instance.json"), "w") as f:
         json.dump(out, f, indent=1)
     print(f"\nJSON -> {os.path.join(eval_dir, 'eval_masks_instance.json')}")

@@ -123,15 +123,21 @@ def render_wheat_head(dataset : ModelParams, pipeline : PipelineParams, exp_name
                 torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
             output_video = os.path.join(os.path.dirname(render_path), f"{ply_id}.mp4")
             framerate = 10
+            # pick an encoder that actually exists in this ffmpeg build: prefer libx264 (best quality,
+            # present locally), else fall back to the native mpeg4 encoder. Euler's ffmpeg has neither
+            # libx264 nor a working libopenh264, but mpeg4 is built in, so this keeps render_360 working there.
+            _enc = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"],
+                                  capture_output=True, text=True).stdout
+            vcodec = "libx264" if "libx264" in _enc else "mpeg4"
             subprocess.run([
                 "ffmpeg",
                 "-loglevel", "error",
                 "-framerate", str(framerate),
                 "-start_number", "0",
-                "-i", "%05d.png",  
+                "-i", "%05d.png",
                 "-vf", r"scale=iw-mod(iw\,2):ih-mod(ih\,2)",
                 "-r", str(framerate),
-                "-vcodec", "libx264",
+                "-vcodec", vcodec,
                 "-pix_fmt", "yuv420p",
                 output_video
             ], cwd=render_path)

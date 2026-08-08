@@ -210,10 +210,11 @@ def readColmapSceneInfo(path, images, eval, llffhold=8, normalize=False, seg_dir
         # different registered set silently shifted which phone views were held out.
         pin_test = split_utils.load_pin_test(path)
         names = [c.image_name for c in cam_infos]
-        # Safety: if a pin is found but matches NONE of the registered names, the naming convention
-        # differs (e.g. Agisoft renames IMG_..._<seq>) — applying it would silently empty the test
-        # set. Ignore the pin and fall back rather than train with no held-out views.
-        if pin_test and not (pin_test & {split_utils._stem(n) for n in names}):
+        # Safety: if a pin is found but matches NONE of the registered names even after suffix-robust
+        # normalization (Agisoft's _<seq> is tolerated), the naming genuinely differs — applying it
+        # would silently empty the test set. Ignore the pin and fall back rather than train with no
+        # held-out views.
+        if pin_test and not split_utils.pin_applies(names, pin_test):
             print(f"  NOTE: split pin found but 0/{len(names)} names match it (different naming?) — "
                   f"ignoring pin, using {split_utils.split_method_label(names, None)}")
             pin_test = None

@@ -14,6 +14,7 @@ Read-only except for one logs/split_check.json. Works for FIP and phone.
 """
 import json
 import os
+import re
 import sys
 
 import hydra
@@ -30,6 +31,40 @@ def _input_stems(*dirs):
         if d and os.path.isdir(d):
             return {split_utils._stem(f) for f in os.listdir(d) if f.lower().endswith(IMG_EXTS)}, d
     return set(), None
+
+
+def agisoft_naming_guard(registered, ref_base):
+    """Verify Agisoft's `<base>_<N>` naming really maps back to our base names — this is what makes the
+    suffix-robust pin safe. Runs ONLY when the reconstruction's names carry a trailing _<N> (Agisoft
+    ingestion index); our COLMAP / FIP naming returns None (guard N/A). For each suffixed name it checks
+    the base is a real session image (bases_all_present — the hard requirement for pin correctness) and,
+    as extra evidence, that _<N> equals the base's 0-based sorted index (suffix_is_sorted_index — a
+    sanity signal, not required for the pin). Cheap: set/index only, no image decode."""
+    suffixed = [n for n in registered if split_utils._norm_stem(n) != split_utils._stem(n)]
+    if not suffixed:
+        return None
+    if not ref_base:
+        return {"n_suffixed": len(suffixed), "ok": None, "note": "no base reference (input_uniform) to verify against"}
+    ref_sorted = sorted(ref_base)
+    idx = {n: i for i, n in enumerate(ref_sorted)}
+    bad_base, bad_idx = [], []
+    for n in registered:
+        base = split_utils._norm_stem(n)
+        if base not in idx:
+            bad_base.append(n)
+            continue
+        m = re.match(r'^.*_(\d+)$', n)
+        if m and int(m.group(1)) != idx[base]:
+            bad_idx.append(f"{n}(N={m.group(1)},idx={idx[base]})")
+    return {
+        "n_suffixed": len(suffixed),
+        "n_registered": len(registered),
+        "bases_all_present": not bad_base,
+        "suffix_is_sorted_index": not bad_idx,
+        "bad_base": bad_base[:10],
+        "bad_idx": bad_idx[:10],
+        "ok": not bad_base,   # pin-safety hinges on bases being real; index equality is informational
+    }
 
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="preprocessing/check_split")
@@ -56,7 +91,7 @@ def main(cfg: DictConfig):
 
     # the pin training would use for THIS reconstruction (transforms.json / phone_split.json)
     pin = split_utils.load_pin_test(recon_dir)
-    pin_applies = bool(pin and (pin & reg_set))   # different naming (Agisoft) → pin won't apply
+    pin_applies = split_utils.pin_applies(registered, pin)   # suffix-robust → also matches Agisoft _<N>
     train, test = split_utils.compute_eval_split(registered, pin_test=(pin if pin_applies else None))
     method = split_utils.split_method_label(registered, pin if pin_applies else None)
 
@@ -68,8 +103,13 @@ def main(cfg: DictConfig):
     names_match_inputs = bool(inputs & reg_set)
     not_registered = sorted(inputs - reg_set) if (inputs and names_match_inputs) else []
 
-    # which pinned test views are missing from this reconstruction (the comparability killer)
-    pin_missing = sorted(pin - reg_set) if pin else []
+    # which pinned test views are missing from this reconstruction (the comparability killer).
+    # suffix-robust so Agisoft's _<N> names don't read as "all missing".
+    pin_missing = split_utils.pin_missing(registered, pin) if pin else []
+
+    # Agisoft naming guard: when names are _<N>-suffixed, prove they map back to our base names before
+    # we trust the suffix-robust pin. ref = the base (un-suffixed) input set (input_uniform).
+    guard = agisoft_naming_guard(registered, inputs)
 
     # outcome: pass / fail (real drift) / n/a (pin exists but its naming doesn't apply here)
     if pin is None:
@@ -80,6 +120,9 @@ def main(cfg: DictConfig):
         result, exit_code = "fail", 1           # pin applies but test views dropped → DRIFT
     else:
         result, exit_code = "pass", 0
+    # A failed naming guard invalidates the suffix-robust pin → hard fail regardless of the above.
+    if guard and guard.get("ok") is False:
+        result, exit_code = "fail", 1
 
     print("\n" + "=" * 60)
     print("      SPLIT CHECK")
@@ -101,13 +144,25 @@ def main(cfg: DictConfig):
             print(f"{'Pinned test MISSING:':<24} {len(pin_missing)}  {pin_missing}   <-- DRIFT")
         else:
             print(f"{'Pinned test:':<24} all {len(pin)} registered ✓")
+    if guard is not None:
+        if guard.get("ok") is None:
+            print(f"{'Agisoft name guard:':<24} SKIPPED — {guard.get('note')}")
+        elif guard["ok"]:
+            idxnote = "base+sorted-index ✓" if guard["suffix_is_sorted_index"] else \
+                      "bases ✓, but _<N> ≠ sorted index (ok — pin matches by base name)"
+            print(f"{'Agisoft name guard:':<24} PASS — {guard['n_suffixed']} _<N> names map to base ({idxnote})")
+        else:
+            print(f"{'Agisoft name guard:':<24} FAIL — {len(guard['bad_base'])} names have NO base in the session: {guard['bad_base']}")
     print("-" * 60)
     print(f"{'Split method:':<24} {method}")
     print(f"{'Train / Test:':<24} {len(train)} / {len(test)}")
     print(f"{'Test views:':<24} {test}")
     print("-" * 60)
-    result_msg = {"pass": "PASS ✓",
-                  "fail": "FAIL ✗ (pinned test views dropped — split drifted)",
+    if result == "fail" and guard and guard.get("ok") is False:
+        fail_msg = "FAIL ✗ (Agisoft naming guard: names don't map to session base images)"
+    else:
+        fail_msg = "FAIL ✗ (pinned test views dropped — split drifted)"
+    result_msg = {"pass": "PASS ✓", "fail": fail_msg,
                   "n/a": "N/A — pin exists but doesn't apply to this naming (not comparable by name)"}[result]
     print(f"{'RESULT:':<24} {result_msg}")
     print("=" * 60 + "\n")
@@ -123,6 +178,7 @@ def main(cfg: DictConfig):
         "pin_n_test": 0 if pin is None else len(pin),
         "pin_applies": pin_applies,
         "pin_missing": pin_missing,
+        "naming_guard": guard,
         "split_method": method,
         "n_train": len(train),
         "n_test": len(test),

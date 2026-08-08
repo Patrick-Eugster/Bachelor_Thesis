@@ -24,7 +24,7 @@ def pool(json_path):
     if not imgs:
         return None
     tp = fp = fn = mg = sp = ngt = npred = 0
-    mi_pairs, bi, bf = [], [], []
+    mi_pairs, bi, bf, bi_dyn, bf_dyn, mious = [], [], [], [], [], []
     for im in imgs:
         a, ms = im["at_threshold"], im["merge_split"]
         tp += a["tp"]; fp += a["fp"]; fn += a["fn"]
@@ -34,6 +34,10 @@ def pool(json_path):
         b = im.get("boundary")
         if b and not np.isnan(b["boundary_iou"]):
             bi.append(b["boundary_iou"]); bf.append(b["boundary_f"])
+        bd = im.get("boundary_dynamic")                            # size-proportional band (new; may be absent)
+        if bd and not np.isnan(bd["boundary_iou"]):
+            bi_dyn.append(bd["boundary_iou"]); bf_dyn.append(bd["boundary_f"])
+        mious.extend(im.get("matched_ious", []))                   # for the pooled median (new; may be absent)
     P = tp / (tp + fp) if (tp + fp) else 0.0
     R = tp / (tp + fn) if (tp + fn) else 0.0
     F1 = 2 * P * R / (P + R) if (P + R) else 0.0
@@ -44,8 +48,11 @@ def pool(json_path):
         "exp": os.path.basename(os.path.dirname(json_path)),
         "n_img": len(imgs), "GT": ngt, "pred": npred,
         "F1": F1, "recall": R, "precision": P, "mean_iou": miou,
+        "matched_iou_median": float(np.median(mious)) if mious else float("nan"),
         "boundary_iou": float(np.mean(bi)) if bi else float("nan"),
         "boundary_f": float(np.mean(bf)) if bf else float("nan"),
+        "boundary_iou_dyn": float(np.mean(bi_dyn)) if bi_dyn else float("nan"),
+        "boundary_f_dyn": float(np.mean(bf_dyn)) if bf_dyn else float("nan"),
         "merges": mg, "splits": sp,
     }
 
@@ -61,13 +68,16 @@ def main():
         return
     rows.sort(key=lambda r: -r["F1"])
 
+    # bIoU/bF = fixed band ; bIoUd/bFd = dynamic size-scaled band ; medI = pooled matched-pair IoU median
     hdr = (f"{'method':14s} {'exp':14s} {'img':>3s} {'F1':>6s} {'recall':>6s} {'prec':>6s} "
-           f"{'mIoU':>6s} {'bIoU':>6s} {'bF':>6s} {'merg':>5s} {'splt':>5s}")
+           f"{'mIoU':>6s} {'medI':>6s} {'bIoU':>6s} {'bF':>6s} {'bIoUd':>6s} {'bFd':>6s} {'merg':>5s} {'splt':>5s}")
     print(hdr)
     print("-" * len(hdr))
     for r in rows:
         print(f"{r['method']:14s} {r['exp']:14s} {r['n_img']:>3d} {r['F1']:>6.3f} {r['recall']:>6.3f} "
-              f"{r['precision']:>6.3f} {r['mean_iou']:>6.3f} {r['boundary_iou']:>6.3f} {r['boundary_f']:>6.3f} "
+              f"{r['precision']:>6.3f} {r['mean_iou']:>6.3f} {r['matched_iou_median']:>6.3f} "
+              f"{r['boundary_iou']:>6.3f} {r['boundary_f']:>6.3f} "
+              f"{r['boundary_iou_dyn']:>6.3f} {r['boundary_f_dyn']:>6.3f} "
               f"{r['merges']:>5d} {r['splits']:>5d}")
 
     out = os.path.join(ROOT, "grid_summary.csv")

@@ -16,9 +16,32 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torchvision.transforms.functional as tf
-from gaussians.utils.loss_utils import ssim
+from gaussians.utils.loss_utils import ssim, create_window
 from gaussians.lpipsPyTorch import lpips
+import cv2
 import json
+
+# ROI (plot region) is a buffered convex hull of the projected markers — same shape family as the
+# mask-generation ROI (roi_mask.py), just a SMALLER buffer here since it only defines a metric region.
+ROI_BUFFER_FRAC = 0.02   # buffer = this fraction of the image short side, grown outward from the hull
+
+
+def _ssim_map(img1, img2, window_size=11):
+    """Per-pixel SSIM map (same window/constants as loss_utils.ssim, which only returns the mean) so we
+    can average SSIM over an arbitrary ROI polygon mask. img1/img2: [1,C,H,W]. Returns [1,C,H,W]."""
+    ch = img1.size(-3)
+    w = create_window(window_size, ch).type_as(img1)
+    if img1.is_cuda:
+        w = w.cuda(img1.get_device())
+    pad = window_size // 2
+    mu1 = F.conv2d(img1, w, padding=pad, groups=ch)
+    mu2 = F.conv2d(img2, w, padding=pad, groups=ch)
+    mu1s, mu2s, mu12 = mu1 * mu1, mu2 * mu2, mu1 * mu2
+    s1 = F.conv2d(img1 * img1, w, padding=pad, groups=ch) - mu1s
+    s2 = F.conv2d(img2 * img2, w, padding=pad, groups=ch) - mu2s
+    s12 = F.conv2d(img1 * img2, w, padding=pad, groups=ch) - mu12
+    C1, C2 = 0.01 ** 2, 0.03 ** 2
+    return ((2 * mu12 + C1) * (2 * s12 + C2)) / ((mu1s + mu2s + C1) * (s1 + s2 + C2))
 from tqdm import tqdm
 from gaussians.utils.image_utils import psnr
 from argparse import ArgumentParser
@@ -61,12 +84,14 @@ def build_marker_ctx(source_path):
 
 
 def project_markers(ctx, stem, H, W):
-    """Project the 3D markers into ONE view (by image stem). Returns (roi_bbox, centers):
-      roi_bbox = (x0,y0,x1,y1) bounding box of the projected markers = the plot region to crop.
-      centers  = list of (u,v) projected marker plate centres.
-    (None, None) if the pose is missing or <3 markers project in front of the camera."""
+    """Project the 3D markers into ONE view (by image stem). Returns (roi_box, centers, roi_mask):
+      roi_box  = (x0,y0,x1,y1) bounding box of the BUFFERED polygon (used for the LPIPS crop).
+      centers  = list of (u,v) projected marker plate centres (for the per-plate marker pass).
+      roi_mask = boolean HxW mask of the plot region = convex hull of the markers grown outward by
+                 ROI_BUFFER_FRAC (same shape family as the mask-generation ROI, smaller buffer).
+    (None, None, None) if the pose is missing or not all markers project in-front + in-frame."""
     if ctx is None or stem not in ctx["by_stem"]:
-        return None, None
+        return None, None, None
     R, t, cid = ctx["by_stem"][stem]
     model, cw, ch, params = ctx["cams"][cid]
     sx, sy = W / cw, H / ch   # cameras.txt is full-res; render/crop is at H,W -> scale (no-op at resolution=1)
@@ -80,18 +105,48 @@ def project_markers(ctx, stem, H, W):
         if 0 <= u < W and 0 <= v < H:
             n_inframe += 1
     # ROBUSTNESS: require ALL triangulated markers to project in-front AND in-frame for this view, so the
-    # ROI is always the SAME full marker set (never a subset → never an inconsistent/clamped box). A view
+    # ROI is always the SAME full marker ring (never a subset → never an inconsistent region). A view
     # missing any marker is skipped for the masked passes rather than scored on a wrong region.
     n_total = len(ctx["marker_xyz"])
     if len(pts) < n_total or n_inframe < n_total:
-        return None, None
+        return None, None, None
     pts = np.array(pts, np.float32)
-    x0, y0 = pts.min(0)
-    x1, y1 = pts.max(0)
-    box = (max(0, int(x0)), max(0, int(y0)), min(W, int(x1)), min(H, int(y1)))
+    # buffered convex-hull polygon = the plot region (excludes the rectangle's out-of-plot corners)
+    hull = cv2.convexHull(pts).reshape(-1, 2)
+    hull_i = np.round(hull).astype(np.int32)
+    buf = max(1, int(round(ROI_BUFFER_FRAC * min(W, H))))
+    roi_mask = ctx["roi"]._roi_keep_region(hull_i, W, H, buf)   # boolean HxW (hull grown by buf px)
+    ys, xs = np.where(roi_mask)
+    if xs.size == 0:
+        return None, None, None
+    box = (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
     if box[2] - box[0] < 16 or box[3] - box[1] < 16:
-        return None, None
-    return box, pts
+        return None, None, None
+    return box, pts, roi_mask
+
+
+def roi_metrics(render, gt, box, mask):
+    """ROI metrics over the buffered-polygon MASK (not a rectangle): PSNR + SSIM are averaged over the
+    polygon pixels only (so the rectangle's out-of-plot corners don't count); LPIPS + sharpness stay on
+    the polygon's bounding-box crop (LPIPS is patch-based and can't be polygon-masked). Returns the same
+    5-tuple (psnr,ssim,lpips,sharp_r,sharp_g) as crop_metrics, or None if the region is too small."""
+    x0, y0, x1, y1 = box
+    if x1 - x0 < 32 or y1 - y0 < 32:
+        return None
+    r, g = render[..., y0:y1, x0:x1], gt[..., y0:y1, x0:x1]
+    m = torch.from_numpy(np.ascontiguousarray(mask[y0:y1, x0:x1])).to(r.device).bool()  # [h,w]
+    if int(m.sum()) < 32:
+        return None
+    # PSNR over polygon pixels: per-pixel MSE (mean over channels), then mean over the mask
+    se = ((r - g) ** 2).mean(dim=-3).squeeze(0)          # [h,w]
+    mse = se[m].mean()
+    psnr_v = float(-10.0 * torch.log10(mse))
+    # SSIM over polygon pixels: per-pixel SSIM map (mean over channels), averaged over the mask
+    smap = _ssim_map(r, g).mean(dim=-3).squeeze(0)       # [h,w]
+    ssim_v = float(smap[m].mean())
+    # LPIPS + sharpness on the bbox rectangle (can't polygon-mask a patch metric)
+    lp = float(lpips(r, g, net_type='vgg'))
+    return (psnr_v, ssim_v, lp, laplacian_var(r), laplacian_var(g))
 
 
 # NOTE (robust fallback, kept for later — e.g. Agisoft, whose markers aren't in the COLMAP frame):
@@ -209,9 +264,10 @@ def evaluate(model_paths, source_path=None):
                         k = int(os.path.splitext(image_names[idx])[0])   # "00007.png" -> 7
                         stem = test_names[k] if k < len(test_names) else None
                         H, W = renders[idx].shape[-2:]
-                        box, centers = (project_markers(marker_ctx, stem, H, W) if stem is not None else (None, None))
+                        box, centers, roi_mask = (project_markers(marker_ctx, stem, H, W)
+                                                  if stem is not None else (None, None, None))
                         if box is not None:
-                            roi_m = crop_metrics(renders[idx], gts[idx], box)   # ROI = marker bbox = plot region
+                            roi_m = roi_metrics(renders[idx], gts[idx], box, roi_mask)   # ROI = buffered plot polygon
                             if roi_m is not None:
                                 roi_rows.append(roi_m)
                             rad = int(0.03 * min(H, W))                          # per-plate crops

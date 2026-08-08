@@ -21,6 +21,11 @@ experiment_name: "initial"
 # set true to prepend today's date to experiment_name: "2025-04-28_my_run" (ignored for "initial" or "")
 prepend_date: false
 
+# SAFETY: a named experiment that already exists on disk is REFUSED (hard error) so finished runs are
+# never clobbered — in interactive AND non-interactive (SLURM) mode. Set true to overwrite on purpose.
+# ("initial" scratch name and "" timestamps are exempt.)
+allow_overwrite: false
+
 # set true to use ground truth yolosam bboxes+masks instead of predicted ones (for ablation)
 use_yolosam_source: false
 
