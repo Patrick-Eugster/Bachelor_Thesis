@@ -96,10 +96,17 @@ def draw_overlay(bgr, dets, max_width):
         cv2.circle(vis, (cx, cy), ring, col, int(3 * base))
         cv2.drawMarker(vis, (cx, cy), col, cv2.MARKER_CROSS, int(ring * 0.5), int(3 * base))
         txt = f"id={d['id']}"
-        org = (cx + ring + 6, cy)
         fs = 1.4 * base
+        thick = int(3 * base)
+        (tw, _th), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, fs, thick)
+        # default the label to the right of the ring, but flip it to the left when
+        # that would run off the right edge (happens for markers near the image border)
+        if cx + ring + 6 + tw > W:
+            org = (cx - ring - 6 - tw, cy)
+        else:
+            org = (cx + ring + 6, cy)
         cv2.putText(vis, txt, org, cv2.FONT_HERSHEY_SIMPLEX, fs, (40, 40, 40), int(7 * base), cv2.LINE_AA)
-        cv2.putText(vis, txt, org, cv2.FONT_HERSHEY_SIMPLEX, fs, col, int(3 * base), cv2.LINE_AA)
+        cv2.putText(vis, txt, org, cv2.FONT_HERSHEY_SIMPLEX, fs, col, thick, cv2.LINE_AA)
     if max_width > 0 and W > max_width:
         s = max_width / float(W)
         vis = cv2.resize(vis, (int(W * s), int(H * s)), interpolation=cv2.INTER_AREA)

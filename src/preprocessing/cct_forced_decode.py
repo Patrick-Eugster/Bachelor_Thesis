@@ -209,6 +209,14 @@ def decode_at_center(bgr, cx, cy, cfg, N=12, color="black", finder=None):
     _, cct_bina = cv2.threshold(cct_gray, 0, 1, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     cct_eroded = cv2.erode(cct_bina, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
 
+    # keep the before/after crops + the rectifying transform around so callers can render a
+    # wider, uncut visualization of the rectification (thesis figure)
+    info["roi"] = roi
+    info["rectified"] = cct_large
+    info["rectify_M"] = M
+    info["rectify_s"] = s
+    info["rectify_roi_origin"] = (col_min, row_min)
+
     # CCTDecode's own structural check. With the fill-ratio gate already guaranteeing a solid
     # central disk, this is largely redundant AND strict (it rejects tilted/edge markers whose
     # disk we DID find) — so it's optionally bypassable to recover recall (junk is still caught

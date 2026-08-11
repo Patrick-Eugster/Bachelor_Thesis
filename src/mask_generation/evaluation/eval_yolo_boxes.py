@@ -767,21 +767,24 @@ def load_mask_gen_thresholds(cfg, result_plot_dir):
         m = saved.method if "method" in saved else saved
         # the good-box threshold key was renamed from conf_threshold_detection
         good  = m.get("conf_threshold_good_box", m.get("conf_threshold_detection"))
-        floor = m.get("conf_threshold_nms_floor")
+        floor = m.get("conf_threshold_nms_floor")   # optional: SAHI's single-threshold design has none
         nms   = m.get("iou_threshold_nms")
-        if None not in (good, floor, nms):
+        # floor is optional — SAHI runs tiles at the single good-box threshold, so there is no
+        # NMS floor and no meaningful AP curve; only good and nms must be present for P/R/F1.
+        if None not in (good, nms):
             return {
                 "conf_threshold_good_box":  float(good),
-                "conf_threshold_nms_floor": float(floor),
+                "conf_threshold_nms_floor": None if floor is None else float(floor),
                 "iou_threshold_nms":        float(nms),
             }
         print(f"  WARNING: {cfg_path} is missing expected threshold keys — using the eval's own config.")
     else:
         print(f"  WARNING: no config.yaml in {result_plot_dir} — using the eval's own config "
               f"(may not match what produced the boxes).")
+    floor_cfg = cfg.method.get("conf_threshold_nms_floor")
     return {
         "conf_threshold_good_box":  float(cfg.method.conf_threshold_good_box),
-        "conf_threshold_nms_floor": float(cfg.method.conf_threshold_nms_floor),
+        "conf_threshold_nms_floor": None if floor_cfg is None else float(floor_cfg),
         "iou_threshold_nms":        float(cfg.method.iou_threshold_nms),
     }
 
@@ -983,7 +986,11 @@ def evaluate_all_plots(cfg):
             r['img_w'], r['img_h']))
 
     ap = None
-    if ap_data_available and len(all_gt_boxes_for_ap) > 0:
+    if mask_gen_thr['conf_threshold_nms_floor'] is None:
+        # single-threshold method (SAHI): tiles run at the good-box threshold, so there are no
+        # sub-threshold boxes to sweep and an AP/PR curve would be meaningless — skip it.
+        print("  AP skipped: single confidence threshold (no NMS floor), so an AP/PR sweep does not apply.")
+    elif ap_data_available and len(all_gt_boxes_for_ap) > 0:
         ap, precisions, recalls, confs = compute_ap(all_pred_entries, all_gt_boxes_for_ap, iou_threshold)
         total_tp = sum(r['tp'] for r in per_plot_results)
         total_fp = sum(r['fp'] for r in per_plot_results)
