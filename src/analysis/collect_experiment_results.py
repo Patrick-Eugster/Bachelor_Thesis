@@ -60,11 +60,14 @@ def _parse_path(exp_dir, results_root):
     Phone: results/reconstruction/phone/field_A/20250715/[agisoft/]vanilla_3dgs/<exp>"""
     rel = os.path.relpath(exp_dir, os.path.join(results_root, "reconstruction"))
     parts = rel.split(os.sep)
+    # SfM-source arms live in their own subtree between field/date and vanilla_3dgs; "colmap" = baseline
+    variant_arms = ("agisoft", "agisoft_2group_old", "opencv", "full_opencv", "radial", "simple_radial", "reprocessed_png")
+    arm = next((p for p in parts if p in variant_arms), "colmap")
     info = {"dataset": parts[0] if parts else "", "plot": "", "field": "", "date": "",
-            "arm": "agisoft" if "agisoft" in parts else "colmap", "experiment": os.path.basename(exp_dir)}
+            "arm": arm, "experiment": os.path.basename(exp_dir)}
     if "vanilla_3dgs" in parts:
         vi = parts.index("vanilla_3dgs")
-        mid = [p for p in parts[1:vi] if p != "agisoft"]   # the plot / field+date between dataset and tree
+        mid = [p for p in parts[1:vi] if p not in variant_arms]   # plot / field+date between dataset and tree
         info["experiment"] = parts[vi + 1] if len(parts) > vi + 1 else info["experiment"]
         if info["dataset"] == "fip":
             info["plot"] = mid[0] if mid else ""
@@ -94,6 +97,7 @@ def _recon_row(exp_dir, results_root):
         "absgrad": _cfg_get(cfg, "absgrad"),
         "use_principal_point": _cfg_get(cfg, "use_principal_point"),
         "use_agisoft_sfm": cfg.get("use_agisoft_sfm"),
+        "sfm_variant": cfg.get("sfm_variant"),
         "iterations_cfg": _cfg_get(cfg, "iterations"),
         "resolution": _cfg_get(cfg, "resolution"),
         "sh_degree": _cfg_get(cfg, "sh_degree"),

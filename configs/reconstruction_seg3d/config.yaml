@@ -35,6 +35,13 @@ use_yolosam_source: false
 # only valid for phone plots (FIP has no agisoft/ subfolder)
 use_agisoft_sfm: false
 
+# SfM-source variant subfolder — "" = our COLMAP baseline (session root: images/ + sparse/0/).
+# Set to a subfolder name to train/render/metrics on an alternative SfM under the session, e.g.
+# sfm_variant=opencv reads opencv/images/ + opencv/sparse/0/ and writes results into a parallel
+# opencv/ result subtree (so it never overwrites the baseline). Phone-only; "agisoft" is equivalent
+# to use_agisoft_sfm=true. Each variant is its own result subtree, so experiment_name may repeat.
+sfm_variant: ""
+
 # pipeline step toggles (all off by default — enable on CLI or edit here)
 run_train: false       # step 1: train 3DGS model
 run_render: false      # step 2: render from training/test cameras (visual quality check)

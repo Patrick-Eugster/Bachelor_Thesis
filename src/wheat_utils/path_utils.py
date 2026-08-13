@@ -31,17 +31,32 @@ def _plot_subpath(cfg):
     return os.path.join(cfg.plot, date) if date else cfg.plot
 
 
+def _sfm_variant(cfg):
+    """Return the SfM-source subfolder for this run ("" = the COLMAP baseline at the session root).
+
+    Generalises the old use_agisoft_sfm flag: an explicit sfm_variant wins; otherwise
+    use_agisoft_sfm=true still maps to "agisoft" so existing Agisoft runs stay byte-identical.
+    Each arm (agisoft / opencv / radial / ...) lives in its own input AND result subtree, so two
+    arms can share experiment_name and still never overwrite each other."""
+    v = str(getattr(cfg, 'sfm_variant', '') or '').strip()
+    if v:
+        return v
+    if getattr(cfg, 'use_agisoft_sfm', False):
+        return 'agisoft'
+    return ''
+
+
 def get_dataset_path(cfg):
     """Absolute path to the input plot folder.
 
     FIP:                input_plots/fip/plot_461/
     Phone (COLMAP):     input_plots/phone/field_A/20250618/
     Phone (Agisoft):    input_plots/phone/field_A/20250618/agisoft/   (use_agisoft_sfm=true)
+    Phone (variant):    input_plots/phone/field_A/20250618/opencv/    (sfm_variant=opencv)
     """
     base = os.path.join(cfg.dataset.input_dir, _plot_subpath(cfg))
-    if getattr(cfg, 'use_agisoft_sfm', False):
-        return os.path.join(base, 'agisoft')
-    return base
+    variant = _sfm_variant(cfg)
+    return os.path.join(base, variant) if variant else base
 
 
 def get_mask_generation_result_path(cfg, plot_name):
@@ -63,12 +78,14 @@ def get_reconstruction_model_path(cfg, exp_name):
     FIP:                results/reconstruction/fip/plot_461/vanilla_3dgs/{experiment}/
     Phone (COLMAP):     results/reconstruction/phone/field_A/20250618/vanilla_3dgs/{experiment}/
     Phone (Agisoft):    results/reconstruction/phone/field_A/20250618/agisoft/vanilla_3dgs/{experiment}/
-                        — mirrors input layout so an Agisoft run never overwrites the COLMAP run
+    Phone (variant):    results/reconstruction/phone/field_A/20250618/opencv/vanilla_3dgs/{experiment}/
+                        — mirrors input layout so a variant run never overwrites the COLMAP run
                           even when both share experiment_name="initial"
     """
     base = os.path.join(cfg.dataset.result_dir_recon, _plot_subpath(cfg))
-    if getattr(cfg, 'use_agisoft_sfm', False):
-        base = os.path.join(base, 'agisoft')
+    variant = _sfm_variant(cfg)
+    if variant:
+        base = os.path.join(base, variant)
     return os.path.join(base, "vanilla_3dgs", exp_name)
 
 

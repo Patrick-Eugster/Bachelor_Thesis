@@ -428,6 +428,7 @@ def _print_and_write_report(ctx, model_path, cfg, exp_name):
                 "git_commit":   git["commit"],
                 "git_dirty":    git["dirty"],
                 "use_agisoft_sfm": cfg.get("use_agisoft_sfm", False),
+                "sfm_variant":  cfg.get("sfm_variant", ""),
                 "verdict":      verdict,
                 "total_seconds": round(total_seconds, 2),
                 "steps":        ctx.records,

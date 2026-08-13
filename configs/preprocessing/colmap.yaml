@@ -92,6 +92,10 @@ aliked_max_num_features: 4096
 # Default 2048 (~15 GB peak — completed 13/13 sessions, all 100 % registered in one model). Drop to 1600
 # (~10 GB) if you need more VRAM headroom / the GPU is shared. 0 = full res (only safe on an empty GPU).
 aliked_max_image_size: 2048
+# SIFT extraction downscale (front_end=sift only). 0 = COLMAP default (3200 px), byte-identical to the
+# original SIFT behavior. Set 2048 to MATCH the ALIKED front-end's downscale for a resolution-fair A1
+# comparison (otherwise SIFT extracts at 3200 while ALIKED runs at 2048 — a confound, though it favors ALIKED).
+sift_max_image_size: 0
 # CPU threads for ALIKED extraction (image decode + pre/post-proc). COLMAP's own pool ignores OMP env,
 # so cap it here to avoid pinning all cores during the ~45s extraction. -1 = all cores.
 aliked_extract_threads: 4

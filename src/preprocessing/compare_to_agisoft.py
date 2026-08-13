@@ -594,7 +594,11 @@ def main(cfg: DictConfig):
         "reproj_mean_px_agisoft": reproj_report["agisoft_recomputed"].get("mean_px") if reproj_report else None,
         "elapsed_s": elapsed,
     }
-    summary_path = os.path.join(cfg.source_path, "logs", "compare_summary.json")
+    # Summary path follows output_file's stem so a variant run never clobbers the baseline's
+    # compare_summary.json. Default output_file "logs/compare_to_agisoft.json" -> "logs/compare_summary.json"
+    # (byte-identical to before); a variant "logs/compare_to_agisoft_sift.json" -> "logs/compare_summary_sift.json".
+    summary_name = os.path.basename(out_path).replace("compare_to_agisoft", "compare_summary")
+    summary_path = os.path.join(os.path.dirname(out_path), summary_name)
     os.makedirs(os.path.dirname(summary_path), exist_ok=True)
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)

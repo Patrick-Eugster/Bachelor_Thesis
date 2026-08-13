@@ -25,6 +25,13 @@ import json
 # mask-generation ROI (roi_mask.py), just a SMALLER buffer here since it only defines a metric region.
 ROI_BUFFER_FRAC = 0.02   # buffer = this fraction of the image short side, grown outward from the hull
 
+# INNER region: a centered crop keeping this fraction of each side, dropping the outer border. This is
+# the crop-fair region for comparing arms with different frame sizes (full 4032 pinhole vs ~3900
+# undistorted opencv/agisoft): whole-image PSNR unfairly rewards the cropped arms (their border, the
+# hardest pixels, is already gone), so we also score a common border-free centre. Approximate (undistortion
+# warps each arm slightly differently) — the marker ROI is the exact same-physical-region version.
+INNER_FRAC = 0.8
+
 
 def _ssim_map(img1, img2, window_size=11):
     """Per-pixel SSIM map (same window/constants as loss_utils.ssim, which only returns the mean) so we
@@ -167,6 +174,15 @@ def crop_metrics(render, gt, box):
             laplacian_var(r), laplacian_var(g))
 
 
+def inner_box(H, W, frac=INNER_FRAC):
+    """Centered rectangle keeping `frac` of the width and height (drops the outer border evenly).
+    The crop-fair region: arms with different frame sizes are scored on a comparable border-free centre
+    instead of the whole image, where a smaller (cropped/undistorted) frame gets an unfair PSNR boost."""
+    cw, ch = int(round(W * frac)), int(round(H * frac))
+    x0, y0 = (W - cw) // 2, (H - ch) // 2
+    return (x0, y0, x0 + cw, y0 + ch)
+
+
 def agg_masked(rows):
     """rows = list of 5-tuples (psnr,ssim,lpips,sharp_r,sharp_g) from crop_metrics. Average into one
     dict with all metrics + the sharpness ratio (or None if no crops were scored)."""
@@ -252,6 +268,7 @@ def evaluate(model_paths, source_path=None):
                 sharp_g = []   # whole-image gt sharpness
                 roi_rows = []  # ROI (plot region): one crop_metrics 5-tuple per view
                 mk_rows = []   # MARKERS: one 5-tuple per projected plate crop (fair, structured content)
+                inner_rows = []  # INNER: one crop_metrics 5-tuple per view (centered crop, crop-fair region)
 
                 for idx in tqdm(range(len(renders)), desc="Metric evaluation progress"):
                     ssims.append(ssim(renders[idx], gts[idx]))
@@ -259,6 +276,11 @@ def evaluate(model_paths, source_path=None):
                     lpipss.append(lpips(renders[idx], gts[idx], net_type='vgg'))
                     sharp_r.append(laplacian_var(renders[idx]))
                     sharp_g.append(laplacian_var(gts[idx]))
+                    # INNER (crop-fair, no markers needed): centered fraction of the frame, all metrics
+                    H, W = renders[idx].shape[-2:]
+                    inm = crop_metrics(renders[idx], gts[idx], inner_box(H, W))
+                    if inm is not None:
+                        inner_rows.append(inm)
                     # masked passes (COLMAP: project markers into this view, crop, run ALL metrics)
                     if marker_ctx is not None:
                         k = int(os.path.splitext(image_names[idx])[0])   # "00007.png" -> 7
@@ -283,9 +305,12 @@ def evaluate(model_paths, source_path=None):
                 sharp_ratio = mean_sr / mean_sg if mean_sg > 0 else 0.0
                 roi = agg_masked(roi_rows)
                 markers = agg_masked(mk_rows)
+                inner = agg_masked(inner_rows)
 
                 print("  WHOLE  : PSNR {:.2f}  SSIM {:.3f}  LPIPS {:.3f}  sharp {:.1%} of GT".format(
                     torch.tensor(psnrs).mean(), torch.tensor(ssims).mean(), torch.tensor(lpipss).mean(), sharp_ratio))
+                if inner:   print("  INNER  : PSNR {:.2f}  SSIM {:.3f}  LPIPS {:.3f}  sharp {:.1%} of GT  ({} views)".format(
+                    inner["PSNR"], inner["SSIM"], inner["LPIPS"], inner["sharpness_ratio"], inner["n"]))
                 if roi:     print("  ROI    : PSNR {:.2f}  SSIM {:.3f}  LPIPS {:.3f}  sharp {:.1%} of GT  ({} views)".format(
                     roi["PSNR"], roi["SSIM"], roi["LPIPS"], roi["sharpness_ratio"], roi["n"]))
                 if markers: print("  MARKERS: PSNR {:.2f}  SSIM {:.3f}  LPIPS {:.3f}  sharp {:.1%} of GT  ({} crops)".format(
@@ -298,6 +323,7 @@ def evaluate(model_paths, source_path=None):
                                                         "sharpness_render": mean_sr,
                                                         "sharpness_gt": mean_sg,
                                                         "sharpness_ratio": sharp_ratio,
+                                                        "inner": inner,
                                                         "roi": roi,
                                                         "markers": markers})
                 per_view_dict[scene_dir][method].update({"SSIM": {name: ssim for ssim, name in zip(torch.tensor(ssims).tolist(), image_names)},

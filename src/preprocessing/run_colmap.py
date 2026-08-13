@@ -143,6 +143,10 @@ def main(cfg: DictConfig):
         else:
             extract_threads = cfg.num_threads
             extra_extract = " --FeatureExtraction.type SIFT"
+            # SIFT otherwise uses COLMAP's default max_image_size (3200). Set sift_max_image_size to match
+            # the ALIKED front-end's downscale (e.g. 2048) for a resolution-fair A1 front-end comparison.
+            if int(cfg.get("sift_max_image_size", 0)) > 0:
+                extra_extract += f" --FeatureExtraction.max_image_size {cfg.sift_max_image_size}"
         feat_extracton_cmd = colmap_command + " feature_extractor "\
             "--database_path " + output_root + "/distorted/database.db \
             --image_path " + image_path + " \

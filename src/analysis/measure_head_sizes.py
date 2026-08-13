@@ -30,8 +30,9 @@ def pct(a):
 
 
 def fip_measure():
-    """Same as fip_head_sides but also tracks each image's long side for the encode fraction."""
-    sides, longs, n_img = [], [], 0
+    """Same as fip_head_sides but also tracks each image's long side for the encode fraction,
+    and the per-head box area in pixels (so we can report a median area, not just the side)."""
+    sides, areas, longs, n_img = [], [], [], 0
     for txt in sorted(glob.glob("input_plots/fip/plot_*/manual_label/*.txt")):
         stem = os.path.splitext(os.path.basename(txt))[0]
         plot_dir = os.path.dirname(os.path.dirname(txt))
@@ -45,15 +46,18 @@ def fip_measure():
             if len(p) < 5:
                 continue
             _, _, _, bw, bh = (float(x) for x in p[:5])
-            s = np.sqrt((bw * W) * (bh * H))
-            sides.append(s)
+            a = (bw * W) * (bh * H)          # box area in px
+            sides.append(np.sqrt(a))
+            areas.append(a)
             longs.append(max(W, H))
-    return np.array(sides), np.array(longs), n_img
+    return np.array(sides), np.array(areas), np.array(longs), n_img
 
 
 def phone_measure():
-    """Phone head sqrt(area) and instance bbox side in pixels, pooled over the 6 GT instance maps."""
-    area_sides, bbox_sides, n_img = [], [], 0
+    """Phone head sqrt(area) and instance bbox side in pixels, pooled over the 6 GT instance maps.
+    Also returns the raw per-head mask area (pixel count) and instance-bbox area, so we can report
+    median areas alongside the sides."""
+    area_sides, bbox_sides, mask_areas, bbox_areas, n_img = [], [], [], [], 0
     for sets_dir in sorted(glob.glob("input_plots/phone/field_*/*/manual_label/*_sets")):
         manifest = os.path.join(sets_dir, "manifest.json")
         if not os.path.exists(manifest):
@@ -65,12 +69,16 @@ def phone_measure():
         n_img += 1
         ids = np.unique(inst)
         ids = ids[ids != 0]
-        counts = np.bincount(inst.ravel())
+        counts = np.bincount(inst.ravel())          # counts[i] = literal pixel count of mask i
         for i in ids:
             area_sides.append(np.sqrt(counts[i]))
+            mask_areas.append(counts[i])
             ys, xs = np.where(inst == i)             # instance bbox
-            bbox_sides.append(np.sqrt((xs.max() - xs.min() + 1) * (ys.max() - ys.min() + 1)))
-    return np.array(area_sides), np.array(bbox_sides), n_img
+            box_a = (xs.max() - xs.min() + 1) * (ys.max() - ys.min() + 1)
+            bbox_sides.append(np.sqrt(box_a))
+            bbox_areas.append(box_a)
+    return (np.array(area_sides), np.array(bbox_sides),
+            np.array(mask_areas), np.array(bbox_areas), n_img)
 
 
 def encode_px(side, long_side, tile=TILE_TARGET, margin=PERHEAD_MARGIN):
@@ -93,15 +101,18 @@ def report(name, sides, long_side, frac_ref):
 
 def main():
     print("=== FIP (from GT boxes, side = sqrt(w*h)) ===")
-    fs, fl, fn = fip_measure()
+    fs, fa, fl, fn = fip_measure()
     print(f"  {fn} labeled images, {len(fs)} heads")
     report("box side", fs, np.median(fl), np.median(fl))
+    print(f"      median box area {np.median(fa):.0f} px^2   (side^2 of the median = {np.median(fs)**2:.0f})")
 
     print("\n=== Phone (from GT instance masks) ===")
-    pa, pb, pn = phone_measure()
+    pa, pb, pm_area, pb_area, pn = phone_measure()
     print(f"  {pn} labeled images, {len(pa)} heads")
     report("sqrt(area)", pa, PHONE_LONG, PHONE_LONG)
+    print(f"      median mask area {np.median(pm_area):.0f} px^2   (side^2 of the median = {np.median(pa)**2:.0f})")
     report("bbox side ", pb, PHONE_LONG, PHONE_LONG)
+    print(f"      median bbox area {np.median(pb_area):.0f} px^2   (side^2 of the median = {np.median(pb)**2:.0f})")
 
     print("\n(compare FIP 'box side' against phone 'bbox side' for a like-for-like basis;")
     print(" sqrt(area) is the tighter true-extent measure used for the phone mask argument.)")
