@@ -17,16 +17,19 @@ from tqdm import tqdm
 import torch.nn.functional as F
 
 
-def _pick_vcodec():
-    """Pick an ffmpeg video encoder that actually exists in this build. Prefer libx264 (best quality, local),
-    else fall back to mpeg4 (built-in, no external lib) — Euler's LGPL ffmpeg has no libx264, which otherwise
-    crashes the 360 stitch with 'Unknown encoder libx264'. Mirrors the same probe in src/viewer/render_360.py."""
+def _vcodec_args():
+    """Encoder + QUALITY flags for the 360 stitch. Prefer libx264 (best quality, present locally) at
+    crf 16 (visually lossless); else fall back to mpeg4 (Euler's LGPL ffmpeg has no libx264) at qscale 2
+    (high quality). The old code passed the codec with NO quality flag, so mpeg4 ran at its low default
+    quality — that's the 'hard compressed' look. Returns a list spliced into the ffmpeg command."""
     try:
         enc = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"],
                              capture_output=True, text=True).stdout
-        return "libx264" if "libx264" in enc else "mpeg4"
+        if "libx264" in enc:
+            return ["-vcodec", "libx264", "-crf", "16", "-preset", "slow"]
     except Exception:
-        return "mpeg4"
+        pass
+    return ["-vcodec", "mpeg4", "-qscale:v", "2"]   # qscale 1-2 = high quality; default was ~unset (low)
 
 torch.set_printoptions(precision=10)
 
@@ -269,7 +272,11 @@ def get_camera_path_fixed_elevation(n_frames, n_circles=1, camera_distance=2, ca
         y = camera_distance * np.sin(azimuth) * np.cos(elevation_rad)
         z = camera_distance * np.sin(elevation_rad) * np.ones_like(x)
         up_vec = np.array([0, 0, 1], dtype=np.float32)
-        pos = np.stack([x, y, z], axis=1)
+        # orbit the PLOT (look_at), not the world origin. Without this offset the camera circles the
+        # origin while aiming at look_at, which only happens to work when the scene sits near the origin
+        # (FIP, phone COLMAP). Agisoft's metric/marker frame puts the plot ~500 units out, so the plot
+        # ends up off-screen -> a blank white video. Matches the up!=None branch, which already offsets.
+        pos = np.stack([x, y, z], axis=1) + look_at
     else:
         # orbit around an ARBITRARY up axis (phone COLMAP frames aren't gravity-aligned).
         # Build an in-plane basis (right, fwd) ⟂ up, sweep azimuth in that plane at the elevation.
@@ -364,7 +371,7 @@ def render_360(og_view, scene_radius, render_path, n_frames, framerate, gaussian
         "-i", os.path.join(render_path, "%05d.png"),
         "-vf", r"scale=iw-mod(iw\,2):ih-mod(ih\,2)",
         "-r", str(framerate),
-        "-vcodec", _pick_vcodec(),
+        *_vcodec_args(),
         "-pix_fmt", "yuv420p",
         output_video
     ], check=True)
@@ -477,7 +484,7 @@ def render_360_fast(og_view, scene_radius, render_path, n_frames, framerate, gau
         "-i", os.path.join(render_path, "%05d.png"),
         "-vf", r"scale=iw-mod(iw\,2):ih-mod(ih\,2)",
         "-r", str(framerate),
-        "-vcodec", _pick_vcodec(),
+        *_vcodec_args(),
         "-pix_fmt", "yuv420p",
         output_video
     ], check=True)

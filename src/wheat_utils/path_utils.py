@@ -96,9 +96,16 @@ def get_seg_source_dir(cfg):
 
     yolo_sam_v1:   results/mask_generation/fip/plot_461/yolo_sam_v1/{mask_gen_experiment}/
     sahi_yolo_sam: results/mask_generation/fip/plot_461/sahi_yolo_sam/{mask_gen_experiment}/
+    variant:       results/mask_generation/phone/field_A/20250715/opencv/sahi_yolo_sam/{mask_gen_experiment}/
+
+    The sfm_variant is appended just like get_dataset_path / get_reconstruction_model_path, so a seg
+    run on an undistorted variant reads the masks generated on that variant's (cropped) images instead
+    of the byte-mismatched baseline masks. Empty variant (FIP / phone baseline) -> unchanged path.
     """
     method_dir = cfg.segmentation_3d.get("detection_method", "yolo_sam_v1")
-    base = os.path.join(cfg.dataset.result_dir_masks, _plot_subpath(cfg), method_dir, cfg.segmentation_3d.mask_gen_experiment)
+    variant = _sfm_variant(cfg)
+    plot_sub = os.path.join(_plot_subpath(cfg), variant) if variant else _plot_subpath(cfg)
+    base = os.path.join(cfg.dataset.result_dir_masks, plot_sub, method_dir, cfg.segmentation_3d.mask_gen_experiment)
     return os.path.join(base, "yolosam") if cfg.use_yolosam_source else base
 
 

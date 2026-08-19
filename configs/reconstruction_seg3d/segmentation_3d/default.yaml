@@ -36,3 +36,31 @@ seg_seed: 0
 # (phone ~2.7×), not the cull. So DEFAULT OFF. Turn it on (true) only for a capture where heads are
 # genuinely local to a few views (a long linear sweep) — it's lossless either way.
 frustum_cull: false
+
+# --- plot region of interest (ROI) for the 3D segmentation (phone; future-work quality fixes) ---
+# Three INDEPENDENT filters (any combination); all DEFAULT OFF -> byte-identical to before. They need
+# logs/marker_points3d.json in the plot's source folder; if the marker ring is incomplete they safely
+# fall back to the old z<z_mean heuristic.
+# roi_cull (F1, the ROI): cull every Gaussian whose HORIZONTAL position is outside the marker hull
+#   (the same marker ring the 2D mask-generation ROI uses, applied here in 3D). Stops the ground/canopy
+#   BEHIND the plot from being gathered into one large background blob. roi_buffer_m grows the hull
+#   outward so plot-edge heads aren't clipped.
+# height_band (separate vertical filter, NOT the ROI): also cull Gaussians outside a height band around
+#   the marker plane (sky floaters / underground junk). Near a no-op on flat wheat plots.
+# marker_exclude (F2): drop the Gaussians in a small 3D sphere (marker_radius_m) around each coded-marker
+#   plate — just the plate, not a vertical column — so markers aren't segmented as heads while nearby
+#   heads are kept. Plates are ~13 cm circle / 15 cm square, so ~0.075 m covers the plate.
+roi_cull: false
+roi_buffer_m: 0.25
+height_band: false
+marker_exclude: false
+marker_radius_m: 0.075
+
+# The DEFAULT ground cull is a gentle, tilt-correct, scale-free cut that KEEPS HEADS WHOLE: when the plot
+# has markers it fits the marker plane and culls only the bottom `ground_percentile` % of Gaussians by
+# height above it (a thin below-ground slice). This replaces the old z<z_mean, which culled the lower HALF
+# and — because phone heads sit at mid-height — bisected every head, causing partial heads, poor matching,
+# and a crawling seg. On by default, independent of roi_cull. legacy_ground_cull=true forces the old
+# z<z_mean (only to reproduce pre-fix runs). ground_percentile tunes how thin the below-ground slice is.
+legacy_ground_cull: false
+ground_percentile: 10.0

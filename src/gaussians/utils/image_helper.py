@@ -18,11 +18,14 @@ def visualize_obj(objects):
     rgb_mask = rgb_mask.permute(2, 0, 1)
     return rgb_mask
 
-def id2rgb(idx, max_num_obj=999):
+def id2rgb(idx):
+    """Maps a wheat-head ID to a distinct RGB color via a golden-ratio hue.
+    The hue formula is modular so it works for ANY non-negative id — phone plots
+    have thousands of heads (>>the old 999 cap), so we only reject negatives now."""
     if isinstance(idx, torch.Tensor):
         idx = idx.item()
-    if not 0 <= idx <= max_num_obj:
-        raise ValueError("ID should be in range(0, max_num_obj)")
+    if idx < 0:
+        raise ValueError("ID should be non-negative")
 
     # Convert the ID into a hue value
     golden_ratio = 1.6180339887

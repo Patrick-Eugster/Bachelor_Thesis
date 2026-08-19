@@ -37,6 +37,7 @@ from gaussians.utils.wheatgs_utils import (
     calculate_seg_iou_gpu_crop,
     vis_image_w_overlay
 )
+from segmentation_3d.seg_roi import build_roi_keep_mask, default_ground_filter
 
 # Optional render-vs-match timing (set WHEAT_SEG_TIMING=1). Off by default so the
 # cuda.synchronize() calls it needs don't slow normal runs.
@@ -52,6 +53,12 @@ _SEG_TIMING = os.environ.get("WHEAT_SEG_TIMING") == "1"
 _SEG_TIMER = {"render": 0.0, "match": 0.0, "lift_decode": 0.0, "lift_render": 0.0, "ilp": 0.0,
               "commit_render": 0.0, "setup": 0.0, "commit_paint": 0.0, "ply_prep": 0.0,
               "overlay_wait": 0.0, "seg2d_save": 0.0}
+
+# Fast commit paint: paint only the head's 2D bounding box into the 2DSeg label map instead of scanning
+# and writing the full H×W frame per (head, camera). Bit-identical to the old full-frame paint because
+# outside the head's bbox the rendered alpha never exceeds 0.5, so no pixel there would ever be painted.
+# On by default; WHEAT_SEG_NO_FAST_PAINT=1 forces the old full-frame path (for the lossless A/B md5 check).
+_FAST_PAINT = os.environ.get("WHEAT_SEG_NO_FAST_PAINT") != "1"
 
 def find_new_mask_dir(overlap_counter, num_wheat_head):
     """Return next letter suffix (a, b, c…) for an overlapping head, tracked in memory."""
@@ -282,7 +289,7 @@ def update_processed_masks(processed_masks, new_mask_paths):
 
 ########### End of Find & Match helper methods ###########
         
-def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_vis_overlay, vis_max_heads, wandb_enabled=False, use_mask_cache=True, seg_seed=0, frustum_cull=False):
+def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_vis_overlay, vis_max_heads, wandb_enabled=False, use_mask_cache=True, seg_seed=0, frustum_cull=False, roi_cull=False, height_band=False, marker_exclude=False, roi_buffer_m=0.25, marker_radius_m=0.075, legacy_ground_cull=False, ground_percentile=10.0):
     _t_setup = time.perf_counter()  # one-time load + cache build, recorded just before the main loop
     # All 3DSeg results will be saved under 3dgs_model_path/segmentation_3d/(exp_name)
     out_dir = os.path.join(dataset.model_path, "segmentation_3d", exp_name)
@@ -308,9 +315,38 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
     gaussians.training_setup(opt)
     print(f"Loaded point cloud size: {len(gaussians.get_xyz)}")
 
+    # pts_filter marks Gaussians to ZERO OUT (exclude from being labelled a head), consumed in
+    # opt_label_w_seg.
+    #
+    # DEFAULT GROUND CULL — gentle, tilt-correct, KEEPS HEADS WHOLE. The original z < z_mean culled the
+    # lower HALF of the scene by height, which only works when heads are the topmost layer (FIP overhead).
+    # In phone capture the heads sit at MID-height, so a mean cut (world-z on Agisoft, or on the tilted
+    # COLMAP frame) slices through every head -> partial heads -> poor cross-view matching -> the seg
+    # crawls. Instead we fit the marker plane and cull only the bottom `ground_percentile` % by height
+    # (a thin below-ground slice), scale-free so it works on both the arbitrary-scale COLMAP frame and the
+    # metric Agisoft frame. Applied whenever the plot has markers; falls back to legacy z < z_mean only
+    # for FIP (no markers, heads ARE topmost) or when --legacy_ground_cull is set.
     z_mean = torch.mean(gaussians.get_xyz.cpu()[:, 2])
+    if legacy_ground_cull:
+        pts_filter = (gaussians.get_xyz.cpu()[:, 2] < z_mean)
+    else:
+        _gf = default_ground_filter(gaussians.get_xyz, dataset.source_path, ground_percentile=ground_percentile)
+        pts_filter = _gf if _gf is not None else (gaussians.get_xyz.cpu()[:, 2] < z_mean)
     # print(f"All Gaussians z_min: {torch.min(gaussians.get_xyz.cpu()[:, 2])} zmax: {torch.max(gaussians.get_xyz.cpu()[:, 2])}")  # debug detail
-    pts_filter = (gaussians.get_xyz.cpu()[:, 2] < z_mean)
+    #
+    # OPTIONAL ROI FILTERS (roi_cull / height_band / marker_exclude) — when any is on, replace the ground
+    # cull above with the marker-hull plot ROI so the background behind the plot can't form one big blob
+    # and the marker plates aren't counted as heads. Also re-applied in the fine-tune loop (_roi_active).
+    _roi_active = False  # True only once a ROI keep-mask is actually built (drives the fine-tune re-cull below)
+    if roi_cull or height_band or marker_exclude:
+        keep = build_roi_keep_mask(gaussians.get_xyz, dataset.source_path,
+                                   roi_cull=roi_cull, height_band=height_band, marker_exclude=marker_exclude,
+                                   roi_buffer_m=roi_buffer_m, marker_radius_m=marker_radius_m)
+        if keep is not None:
+            pts_filter = ~keep  # cull = everything NOT kept by the ROI
+            _roi_active = True
+        else:
+            print("ROI flags set but markers unavailable -> keeping the ground cull above")
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -567,8 +603,11 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
             for i in range(1, 100):
                 # print(f"-- fine-tuning iteration {i} --")  # up to 100x per head x 300 heads = 30000 lines
                 assert len(new_viewpoint_stack) == len(new_mask_paths)
-                # Update 3D Segmentation
-                update_counts = opt_label_w_seg(gaussians, new_viewpoint_stack, new_mask_paths, pipe, background, mask_cache=mask_cache)
+                # Update 3D Segmentation. When the ROI is active, re-apply pts_filter here too so
+                # culled background Gaussians can't re-enter during fine-tuning (the initial lift
+                # already filters them). ROI off -> pts_filter stays None here = original behaviour.
+                update_counts = opt_label_w_seg(gaussians, new_viewpoint_stack, new_mask_paths, pipe, background,
+                                                pts_filter=(pts_filter if _roi_active else None), mask_cache=mask_cache)
                 assert update_counts.shape == all_counts.shape
                 all_counts += update_counts # update all counts
                 all_obj_labels = counts_to_obj_labels(all_counts)
@@ -669,26 +708,41 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
                     if _SEG_TIMING:
                         torch.cuda.synchronize(); _t = time.perf_counter()
                     render_pkg = flashsplat_render(viewpoint_cam, gaussians, pipe, background, used_mask=obj_used_mask, inference=True)
-                    render_alpha = render_pkg["alpha"].squeeze().detach().cpu()
+                    render_alpha = render_pkg["alpha"].squeeze().detach()  # keep on GPU; transfer only what we paint
+                    pos = render_alpha > 0.5                               # the pixels this head paints
                     if _SEG_TIMING:
                         torch.cuda.synchronize(); _SEG_TIMER["commit_render"] += time.perf_counter() - _t
-                        _t = time.perf_counter()  # commit_paint = the CPU threshold/paint below (no GPU sync needed)
-                    pred_seg = render_alpha.numpy() > 0.5
-                    mask = Image.fromarray(np.where(pred_seg, 255, 0).astype(np.uint8), mode='L')
-                    # mask.save(f"{this_mask_dir}/masks/{viewpoint_cam.image_name}.jpg")
-                    if save_vis_overlay and (vis_max_heads == 0 or which_wheat_head <= vis_max_heads):
-                        # async: submit overlay save to background thread while GPU renders next camera
-                        overlay_futures.append(_overlay_executor.submit(
-                            vis_image_w_overlay,
-                            img_tensor=viewpoint_cam.original_image.detach().cpu(),  # CPU copy for thread safety
-                            save_dir=f"{this_mask_dir}",
-                            save_name=viewpoint_cam.image_name,
-                            pred_seg=pred_seg,
-                            resize_factor=4
-                        ))
-                    # Update the 2D seg&count results
-                    assert twoD_seg_results[viewpoint_cam.image_name].shape == render_alpha.shape
-                    twoD_seg_results[viewpoint_cam.image_name][render_alpha > 0.5] = which_wheat_head
+                        _t = time.perf_counter()  # commit_paint = the threshold->crop->paint below
+                    target = twoD_seg_results[viewpoint_cam.image_name]
+                    assert target.shape == render_alpha.shape
+                    want_overlay = save_vis_overlay and (vis_max_heads == 0 or which_wheat_head <= vis_max_heads)
+                    if _FAST_PAINT and not want_overlay:
+                        # fast path: paint only the head's bounding box. Bit-identical to the full-frame paint
+                        # because outside the bbox no alpha exceeds 0.5, so nothing would be written there.
+                        rows = torch.any(pos, dim=1)
+                        if bool(rows.any()):
+                            cols = torch.any(pos, dim=0)
+                            ys = torch.nonzero(rows, as_tuple=False)
+                            xs = torch.nonzero(cols, as_tuple=False)
+                            y0, y1 = int(ys[0]), int(ys[-1]) + 1
+                            x0, x1 = int(xs[0]), int(xs[-1]) + 1
+                            crop = pos[y0:y1, x0:x1].cpu()                 # tiny transfer (head bbox only)
+                            target[y0:y1, x0:x1][crop] = which_wheat_head  # writes back through the view slice
+                    else:
+                        # full-frame path: needed when we also save the overlay (it wants a full-frame mask)
+                        pos_cpu = pos.cpu()
+                        if want_overlay:
+                            pred_seg = pos_cpu.numpy()
+                            # async: submit overlay save to background thread while GPU renders next camera
+                            overlay_futures.append(_overlay_executor.submit(
+                                vis_image_w_overlay,
+                                img_tensor=viewpoint_cam.original_image.detach().cpu(),  # CPU copy for thread safety
+                                save_dir=f"{this_mask_dir}",
+                                save_name=viewpoint_cam.image_name,
+                                pred_seg=pred_seg,
+                                resize_factor=4
+                            ))
+                        target[pos_cpu] = which_wheat_head
                     if _SEG_TIMING:
                         _SEG_TIMER["commit_paint"] += time.perf_counter() - _t
                     # 2DSeg saved once at end of pipeline (optimization 2: was per-camera per-head = 10,800 writes)
@@ -811,6 +865,13 @@ if __name__ == "__main__":
     parser.add_argument("--seg_seed", type=int, default=0, help="Seed for the mask-processing shuffle (reproducible seg)")
     parser.add_argument("--frustum_cull", action="store_true", default=False, help="Skip rendering a head into cameras where its Gaussians don't project (bit-identical/lossless). DEFAULT OFF — barely helps on FIP-overhead / phone-orbit captures where heads are in ~every view; enable for a long linear sweep.")
     parser.add_argument("--no_frustum_cull", dest="frustum_cull", action="store_false", help="Render every camera (the default now).")
+    parser.add_argument("--roi_cull", action="store_true", default=False, help="Restrict segmentation to the plot ROI: cull Gaussians whose horizontal position is outside the marker hull so the background (ground/canopy behind the plot) can't form one big blob. Needs logs/marker_points3d.json. DEFAULT OFF (byte-identical).")
+    parser.add_argument("--roi_buffer_m", type=float, default=0.25, help="Grow the ROI hull outward this many metres so plot-edge heads aren't clipped (default 0.25).")
+    parser.add_argument("--height_band", action="store_true", default=False, help="Separate vertical filter (NOT the ROI): also cull Gaussians outside a height band around the marker plane (sky floaters / underground junk). Near a no-op on flat wheat. DEFAULT OFF.")
+    parser.add_argument("--marker_exclude", action="store_true", default=False, help="Drop Gaussians in a small 3D sphere around each coded-marker plate (just the plate, not a vertical column, so nearby heads survive) so markers aren't segmented as heads. DEFAULT OFF.")
+    parser.add_argument("--marker_radius_m", type=float, default=0.075, help="Marker-exclusion sphere radius in metres (plates are ~13 cm circle / 15 cm square, so ~0.075 covers the plate; default 0.075).")
+    parser.add_argument("--legacy_ground_cull", action="store_true", default=False, help="Force the OLD world-z ground cull (z<z_mean, culls the lower HALF and bisects phone heads) instead of the gentle marker-plane cull. Only for reproducing pre-fix runs.")
+    parser.add_argument("--ground_percentile", type=float, default=10.0, help="Default ground cull: cull the bottom this-percent of Gaussians by height above the marker plane (scale-free, keeps heads whole). Default 10.")
     parser.add_argument("--wandb_enabled", action="store_true", default=False)
     args = parser.parse_args(sys.argv[1:])
     print("Optimizing " + args.model_path)
@@ -818,4 +879,7 @@ if __name__ == "__main__":
     training(lp.extract(args), op.extract(args), pp.extract(args),
              args.load_iteration, args.exp_name, args.iou_threshold,
              args.save_vis_overlay, args.vis_max_heads, args.wandb_enabled,
-             use_mask_cache=args.use_mask_cache, seg_seed=args.seg_seed, frustum_cull=args.frustum_cull)
+             use_mask_cache=args.use_mask_cache, seg_seed=args.seg_seed, frustum_cull=args.frustum_cull,
+             roi_cull=args.roi_cull, height_band=args.height_band, marker_exclude=args.marker_exclude,
+             roi_buffer_m=args.roi_buffer_m, marker_radius_m=args.marker_radius_m,
+             legacy_ground_cull=args.legacy_ground_cull, ground_percentile=args.ground_percentile)

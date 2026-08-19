@@ -1,0 +1,31 @@
+# warp_gt_to_variant.py — warp the finished pinhole/raw GT masks into each SfM variant's
+# undistorted frame, so eval_seg_2d can later score the variant's 3D-seg output against GT.
+# THIS SCRIPT ONLY WARPS + VALIDATES — it runs NO evaluation. It NEVER writes into the source
+# manual_label/ (the finished GT); warped copies go to <variant>/manual_label/ only.
+defaults:
+  - dataset: phone
+  - _self_
+
+field: field_A
+date: "20250715"          # the session folder (only A/0715 has a finished GT mask right now)
+
+# which SfM variants to warp the GT into. opencv = our COLMAP OPENCV undistortion (in-tree distorted
+# model); agisoft = Agisoft's own undistortion (distortion model comes from the demoanlage export).
+variants: ["opencv", "agisoft"]
+
+# Agisoft's DISTORTED (FULL_OPENCV) camera model lives in the local-only demoanlage dump (never rsynced).
+# {field}/{date} are substituted in. Only needed for the agisoft variant.
+agisoft_distorted_dir: "demoanlage2025_v0/demoanlage2025_v0_additions/${field}/${date}/processed/colmap_distorted"
+
+# validation gate: warn if our rebuilt undistortion differs from the pipeline's real undistorted image
+# by more than this many pixels (phase-correlation shift). Above it the warp is flagged untrustworthy.
+max_offset_px: 2.0
+
+# some pipelines (Agisoft) re-center the principal point differently than cv2, leaving a pure translation
+# between our rebuilt undistortion and their real undistorted image. When true, solve that translation out
+# by nudging the output K (validated by re-checking the offset). Opencv/radial (our own COLMAP undistort)
+# already match to ~0 px so this never triggers there. false = pure analytic warp only.
+auto_translation_fix: true
+
+# safety: never overwrite an already-present GT file. false = skip existing targets (recommended).
+overwrite: false

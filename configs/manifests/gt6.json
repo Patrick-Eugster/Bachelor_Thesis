@@ -1,0 +1,38 @@
+[
+  {
+    "stem": "IMG_20250627_101017",
+    "image": "input_plots/phone/field_A/20250627/images/IMG_20250627_101017.jpg",
+    "gt": "input_plots/phone/field_A/20250627/manual_label/IMG_20250627_101017_sets/set0_instances.png",
+    "bbox": "results/mask_generation/phone/field_A/20250627/yolo_sam_v1/metrics_v1/bboxes_with_conf/IMG_20250627_101017.pt"
+  },
+  {
+    "stem": "IMG_20250706_121516",
+    "image": "input_plots/phone/field_A/20250706/images/IMG_20250706_121516.jpg",
+    "gt": "input_plots/phone/field_A/20250706/manual_label/IMG_20250706_121516_sets/set0_instances.png",
+    "bbox": "results/mask_generation/phone/field_A/20250706/yolo_sam_v1/metrics_v1/bboxes_with_conf/IMG_20250706_121516.pt"
+  },
+  {
+    "stem": "IMG_20250715_153912",
+    "image": "input_plots/phone/field_A/20250715/images/IMG_20250715_153912.jpg",
+    "gt": "input_plots/phone/field_A/20250715/manual_label/IMG_20250715_153912_sets/set0_instances.png",
+    "bbox": "results/mask_generation/phone/field_A/20250715/yolo_sam_v1/metrics_v1/bboxes_with_conf/IMG_20250715_153912.pt"
+  },
+  {
+    "stem": "IMG_20250627_102602",
+    "image": "input_plots/phone/field_D/20250627/images/IMG_20250627_102602.jpg",
+    "gt": "input_plots/phone/field_D/20250627/manual_label/IMG_20250627_102602_sets/set0_instances.png",
+    "bbox": "results/mask_generation/phone/field_D/20250627/yolo_sam_v1/metrics_v1/bboxes_with_conf/IMG_20250627_102602.pt"
+  },
+  {
+    "stem": "IMG_20250706_123031",
+    "image": "input_plots/phone/field_D/20250706/images/IMG_20250706_123031.jpg",
+    "gt": "input_plots/phone/field_D/20250706/manual_label/IMG_20250706_123031_sets/set0_instances.png",
+    "bbox": "results/mask_generation/phone/field_D/20250706/yolo_sam_v1/metrics_v1/bboxes_with_conf/IMG_20250706_123031.pt"
+  },
+  {
+    "stem": "IMG_20250715_155705",
+    "image": "input_plots/phone/field_D/20250715/images/IMG_20250715_155705.jpg",
+    "gt": "input_plots/phone/field_D/20250715/manual_label/IMG_20250715_155705_sets/set0_instances.png",
+    "bbox": "results/mask_generation/phone/field_D/20250715/yolo_sam_v1/metrics_v1/bboxes_with_conf/IMG_20250715_155705.pt"
+  }
+]

@@ -537,6 +537,13 @@ def _run_pipeline(cfg):
         ] + seg_dir_flag + ([] if cfg.segmentation_3d.save_vis_overlay else ["--no_save_vis_overlay"])
           + ([] if cfg.segmentation_3d.use_mask_cache else ["--no_mask_cache"])
           + (["--frustum_cull"] if cfg.segmentation_3d.get("frustum_cull", False) else ["--no_frustum_cull"])
+          + (["--roi_cull"] if cfg.segmentation_3d.get("roi_cull", False) else [])
+          + (["--roi_buffer_m", str(cfg.segmentation_3d.get("roi_buffer_m", 0.25))])
+          + (["--height_band"] if cfg.segmentation_3d.get("height_band", False) else [])
+          + (["--marker_exclude"] if cfg.segmentation_3d.get("marker_exclude", False) else [])
+          + (["--marker_radius_m", str(cfg.segmentation_3d.get("marker_radius_m", 0.075))])
+          + (["--legacy_ground_cull"] if cfg.segmentation_3d.get("legacy_ground_cull", False) else [])
+          + (["--ground_percentile", str(cfg.segmentation_3d.get("ground_percentile", 10.0))])
           + ["--seg_seed", str(cfg.segmentation_3d.seg_seed)]
           + data_device_flag + pp_flag + wandb_flag, log_file, depends_on="train")
         if seg_tee:

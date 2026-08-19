@@ -147,3 +147,9 @@ logs/
 
 # ALIKED CUDA-12 onnxruntime libs (~2.5 GB) — persistent local copy, never commit/rsync
 tools/cuda12libs/
+
+# Local scratch / working files — one-off aggregation scripts + generated table fragments (not part of the codebase)
+scratchpad/
+
+# Hydra per-run output dirs (timestamped .hydra config snapshots — throwaway byproduct of @hydra.main scripts)
+outputs/
