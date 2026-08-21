@@ -29,3 +29,9 @@ auto_translation_fix: true
 
 # safety: never overwrite an already-present GT file. false = skip existing targets (recommended).
 overwrite: false
+
+# also warp the per-head INSTANCE map (<stem>_sets/set*_instances.png) + copy its manifest into the
+# variant's manual_label/, so eval_masks_instance can score mask-gen on the variant frame (needed for the
+# E1 pinhole-vs-opencv mask-gen validation). false = only the binary gt_mask is warped (byte-identical to
+# the previous behaviour). Uses NEAREST so head ids never blend; never overwrites unless overwrite=true.
+warp_instances: false

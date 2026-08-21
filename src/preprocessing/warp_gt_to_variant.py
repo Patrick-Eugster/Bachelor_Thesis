@@ -15,6 +15,7 @@ Run:  python src/preprocessing/warp_gt_to_variant.py field=field_A date=20250715
 import glob
 import json
 import os
+import shutil
 import sys
 import time
 
@@ -130,12 +131,24 @@ def _max_quadrant_offset(a, b):
     return float(max(_phase_offset(a[y0:y1, x0:x1], b[y0:y1, x0:x1]) for (y0, y1, x0, x1) in quads))
 
 
+def _largest_submodel(sparse_root):
+    """Pick the COLMAP sub-model with the most images under sparse_root (0/, 1/, ...). The mapper can
+    spawn a stray small sub-model (e.g. 3 images) alongside the real one, and run_colmap undistorts the
+    LARGEST — but the leftover distorted/sparse/0 may be the stray, so hardcoding /0 reads the wrong model.
+    Returns the sub-dir path, or sparse_root itself if it has no numbered sub-dirs."""
+    subs = sorted(glob.glob(os.path.join(sparse_root, "*")))
+    subs = [s for s in subs if os.path.isdir(s) and os.path.basename(s).isdigit()]
+    if not subs:
+        return sparse_root
+    return max(subs, key=lambda s: len(_read_images(s)))
+
+
 def _variant_camera_maps(base, variant, agisoft_distorted_dir):
     """Resolve, for a variant, the (distorted cameras, undistorted cameras, distorted images,
     undistorted images) needed to build a per-image undistortion. Returns a dict, or None if a
     required file is missing (variant is then skipped)."""
     if variant == "opencv":
-        dist_sparse = os.path.join(base, "opencv", "distorted", "sparse", "0")
+        dist_sparse = _largest_submodel(os.path.join(base, "opencv", "distorted", "sparse"))
         und_sparse = os.path.join(base, "opencv", "sparse", "0")
         if not (os.path.isdir(dist_sparse) and os.path.isdir(und_sparse)):
             return None
@@ -151,6 +164,42 @@ def _variant_camera_maps(base, variant, agisoft_distorted_dir):
                 "dist_imgs": _read_images(dist_sparse), "und_imgs": _read_images(und_sparse),
                 "rename": True}
     return None
+
+
+def _warp_instance_gt(src_label, out_label, stem, out_stem, mapx, mapy, applied_shift, overwrite):
+    """Warp the per-head INSTANCE map (uint16 ids) into the variant frame with the SAME undistortion maps
+    the binary GT used, NEAREST so head ids are never blended. Writes <out>/{out_stem}_sets/ + copies the
+    manifest so eval_masks_instance reads the same active set. Never overwrites unless overwrite=true.
+    Returns a short status string (does not modify the source _sets/)."""
+    src_sets = os.path.join(src_label, f"{stem}_sets")
+    man_path = os.path.join(src_sets, "manifest.json")
+    if not os.path.exists(man_path):
+        return "no_instance_gt"
+    man = json.load(open(man_path))
+    entry = next((e for e in man.get("sets", []) if e["name"] == man.get("active")), None) \
+        or (man.get("sets") or [None])[0]
+    if entry is None:
+        return "no_active_set"
+    inst_png = os.path.join(src_sets, f"{entry['file']}_instances.png")
+    inst = cv2.imread(inst_png, cv2.IMREAD_UNCHANGED)
+    if inst is None:
+        return "instance_png_unreadable"
+    if inst.ndim == 3:
+        inst = inst[..., 0]
+    # same remap as the binary GT (NEAREST keeps integer ids intact), then the same post-shift if one was applied
+    w = cv2.remap(inst, mapx, mapy, cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    if applied_shift != [0.0, 0.0]:
+        M = np.float32([[1, 0, applied_shift[0]], [0, 1, applied_shift[1]]])
+        w = cv2.warpAffine(w, M, (w.shape[1], w.shape[0]), flags=cv2.INTER_NEAREST)
+    out_sets = os.path.join(out_label, f"{out_stem}_sets")
+    out_inst = os.path.join(out_sets, f"{entry['file']}_instances.png")
+    if os.path.exists(out_inst) and not overwrite:
+        return "exists_skipped"
+    os.makedirs(out_sets, exist_ok=True)
+    cv2.imwrite(out_inst, w.astype(np.uint16))                 # 16-bit PNG preserves the ids
+    shutil.copy(man_path, os.path.join(out_sets, "manifest.json"))
+    ids = np.unique(w)
+    return f"written({int((ids != 0).sum())} heads)"
 
 
 def process_variant(base, variant, gt_masks, cfg):
@@ -187,7 +236,10 @@ def process_variant(base, variant, gt_masks, cfg):
             continue
         out_stem = os.path.splitext(os.path.basename(und_name))[0] if maps["rename"] else stem
         out_path = os.path.join(out_label, f"{out_stem}_gt_mask.png")
-        if os.path.exists(out_path) and not cfg.overwrite:
+        # skip the whole image only when the binary is done AND we're not additionally warping instances;
+        # if warp_instances is on we still proceed (binary is re-saved only when missing, never overwritten)
+        binary_done = os.path.exists(out_path) and not cfg.overwrite
+        if binary_done and not cfg.get("warp_instances", False):
             print(f"  [{variant}] {out_stem}: target exists -> skip (overwrite=false)")
             rows.append({"stem": stem, "out_stem": out_stem, "status": "exists_skipped"})
             continue
@@ -244,8 +296,16 @@ def process_variant(base, variant, gt_masks, cfg):
             cv2.imwrite(os.path.join(log_dir, f"{out_stem}_overlay.jpg"), real_bgr)
 
         # the GT only enters manual_label if it PASSED validation; a failed warp stays in logs (REJECTED)
+        inst_status = None
         if ok:
-            Image.fromarray(warped).save(out_path); dest = out_path
+            if not binary_done:                    # never re-write an existing binary GT
+                Image.fromarray(warped).save(out_path)
+            dest = out_path
+            # optionally warp the per-head INSTANCE map too (needed for eval_masks_instance on the variant)
+            if cfg.get("warp_instances", False):
+                inst_status = _warp_instance_gt(src_label, out_label, stem, out_stem,
+                                                mapx, mapy, applied_shift, cfg.overwrite)
+                print(f"    [{variant}] {out_stem}: instance GT -> {inst_status}")
         else:
             dest = os.path.join(log_dir, f"{out_stem}_gt_mask_REJECTED.png")
             Image.fromarray(warped).save(dest)
@@ -256,7 +316,8 @@ def process_variant(base, variant, gt_masks, cfg):
               + ("" if ok else "   (REJECTED -> logs only, NOT in manual_label)"))
         rows.append({"stem": stem, "out_stem": out_stem, "status": "written" if ok else "rejected",
                      "out_path": dest, "size": [Wu, Hu], "dist_model": maps["dist_cams"][dist_cid].model,
-                     "offset_px": offset, "ssim": ssim_val, "applied_shift": applied_shift, "validation": flag})
+                     "offset_px": offset, "ssim": ssim_val, "applied_shift": applied_shift, "validation": flag,
+                     "instance_gt": inst_status})
 
     report = {"variant": variant, "items": rows}
     with open(os.path.join(log_dir, "warp_gt_report.json"), "w") as f:

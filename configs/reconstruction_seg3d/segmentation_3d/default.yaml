@@ -47,14 +47,18 @@ frustum_cull: false
 #   outward so plot-edge heads aren't clipped.
 # height_band (separate vertical filter, NOT the ROI): also cull Gaussians outside a height band around
 #   the marker plane (sky floaters / underground junk). Near a no-op on flat wheat plots.
-# marker_exclude (F2): drop the Gaussians in a small 3D sphere (marker_radius_m) around each coded-marker
-#   plate — just the plate, not a vertical column — so markers aren't segmented as heads while nearby
-#   heads are kept. Plates are ~13 cm circle / 15 cm square, so ~0.075 m covers the plate.
+# marker_exclude (F2): drop the Gaussians in a 3D sphere around each coded-marker — just the marker blob,
+#   not a vertical column — so markers aren't segmented as heads while nearby heads are kept. The RECON-
+#   STRUCTED marker is ~3x the physical plate (3DGS bakes plate + shadow + halo, measured ~0.20-0.25 u on
+#   A/0715), so the old 0.075 only carved the core and the coloured rim leaked into neighbour heads.
+#   PREFER marker_radius_rel: COLMAP units are arbitrary per session, so a fixed metre radius is unsafe
+#   across sessions; a fraction of the median marker spacing tracks the real geometry (~0.065 -> ~0.20 u).
 roi_cull: false
 roi_buffer_m: 0.25
 height_band: false
 marker_exclude: false
-marker_radius_m: 0.075
+marker_radius_m: 0.075        # absolute fallback (units = COLMAP world units); used only when marker_radius_rel = 0
+marker_radius_rel: 0.0        # if >0, radius = this x median marker spacing (scale-free; 0.065 ~ 0.20 u on A/0715)
 
 # The DEFAULT ground cull is a gentle, tilt-correct, scale-free cut that KEEPS HEADS WHOLE: when the plot
 # has markers it fits the marker plane and culls only the bottom `ground_percentile` % of Gaussians by

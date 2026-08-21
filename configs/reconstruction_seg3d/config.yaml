@@ -70,6 +70,8 @@ elevation: 45
 
 # 360° video resolution = training image / render_360_downscale (1 = full res, 2 = half [default])
 render_360_downscale: 2
+# orbit camera distance = scene_radius * render_360_distance_mult (higher = further out / less zoomed; 2.0 = old default)
+render_360_distance_mult: 2.0
 
 # viewer settings
 # "full" = colored segmentation viewer (needs step 4 output), "single" = plain Gaussian viewer (works after step 1)

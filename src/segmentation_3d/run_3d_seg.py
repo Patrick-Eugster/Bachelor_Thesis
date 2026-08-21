@@ -289,7 +289,7 @@ def update_processed_masks(processed_masks, new_mask_paths):
 
 ########### End of Find & Match helper methods ###########
         
-def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_vis_overlay, vis_max_heads, wandb_enabled=False, use_mask_cache=True, seg_seed=0, frustum_cull=False, roi_cull=False, height_band=False, marker_exclude=False, roi_buffer_m=0.25, marker_radius_m=0.075, legacy_ground_cull=False, ground_percentile=10.0):
+def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_vis_overlay, vis_max_heads, wandb_enabled=False, use_mask_cache=True, seg_seed=0, frustum_cull=False, roi_cull=False, height_band=False, marker_exclude=False, roi_buffer_m=0.25, marker_radius_m=0.075, marker_radius_rel=0.0, legacy_ground_cull=False, ground_percentile=10.0):
     _t_setup = time.perf_counter()  # one-time load + cache build, recorded just before the main loop
     # All 3DSeg results will be saved under 3dgs_model_path/segmentation_3d/(exp_name)
     out_dir = os.path.join(dataset.model_path, "segmentation_3d", exp_name)
@@ -341,7 +341,8 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
     if roi_cull or height_band or marker_exclude:
         keep = build_roi_keep_mask(gaussians.get_xyz, dataset.source_path,
                                    roi_cull=roi_cull, height_band=height_band, marker_exclude=marker_exclude,
-                                   roi_buffer_m=roi_buffer_m, marker_radius_m=marker_radius_m)
+                                   roi_buffer_m=roi_buffer_m, marker_radius_m=marker_radius_m,
+                                   marker_radius_rel=marker_radius_rel)
         if keep is not None:
             pts_filter = ~keep  # cull = everything NOT kept by the ROI
             _roi_active = True
@@ -869,7 +870,8 @@ if __name__ == "__main__":
     parser.add_argument("--roi_buffer_m", type=float, default=0.25, help="Grow the ROI hull outward this many metres so plot-edge heads aren't clipped (default 0.25).")
     parser.add_argument("--height_band", action="store_true", default=False, help="Separate vertical filter (NOT the ROI): also cull Gaussians outside a height band around the marker plane (sky floaters / underground junk). Near a no-op on flat wheat. DEFAULT OFF.")
     parser.add_argument("--marker_exclude", action="store_true", default=False, help="Drop Gaussians in a small 3D sphere around each coded-marker plate (just the plate, not a vertical column, so nearby heads survive) so markers aren't segmented as heads. DEFAULT OFF.")
-    parser.add_argument("--marker_radius_m", type=float, default=0.075, help="Marker-exclusion sphere radius in metres (plates are ~13 cm circle / 15 cm square, so ~0.075 covers the plate; default 0.075).")
+    parser.add_argument("--marker_radius_m", type=float, default=0.075, help="Marker-exclusion sphere radius in metres (plates are ~13 cm circle / 15 cm square; but the RECONSTRUCTED marker is ~3x that, so 0.075 leaks the rim — prefer --marker_radius_rel; default 0.075).")
+    parser.add_argument("--marker_radius_rel", type=float, default=0.0, help="If >0, override --marker_radius_m with (this x median marker spacing) — SCALE-FREE, safe across sessions with different COLMAP units. ~0.065 gives ~0.20 u on A/0715. Default 0.0 = use the absolute metre value.")
     parser.add_argument("--legacy_ground_cull", action="store_true", default=False, help="Force the OLD world-z ground cull (z<z_mean, culls the lower HALF and bisects phone heads) instead of the gentle marker-plane cull. Only for reproducing pre-fix runs.")
     parser.add_argument("--ground_percentile", type=float, default=10.0, help="Default ground cull: cull the bottom this-percent of Gaussians by height above the marker plane (scale-free, keeps heads whole). Default 10.")
     parser.add_argument("--wandb_enabled", action="store_true", default=False)
@@ -882,4 +884,5 @@ if __name__ == "__main__":
              use_mask_cache=args.use_mask_cache, seg_seed=args.seg_seed, frustum_cull=args.frustum_cull,
              roi_cull=args.roi_cull, height_band=args.height_band, marker_exclude=args.marker_exclude,
              roi_buffer_m=args.roi_buffer_m, marker_radius_m=args.marker_radius_m,
+             marker_radius_rel=args.marker_radius_rel,
              legacy_ground_cull=args.legacy_ground_cull, ground_percentile=args.ground_percentile)

@@ -324,7 +324,7 @@ def eval_obj_labels(all_obj_labels, viewpoint_cam, gaussians, pipe, background):
         max_alpha[pix_mask] = render_alpha[pix_mask]
     return pred_mask
 
-def render_360(og_view, scene_radius, render_path, n_frames, framerate, gaussians, pipeline, background, elevation=45, all_obj_labels=None, all_counts=None, up=None, downscale=2):
+def render_360(og_view, scene_radius, render_path, n_frames, framerate, gaussians, pipeline, background, elevation=45, all_obj_labels=None, all_counts=None, up=None, downscale=2, distance_mult=2.0):
     from gaussians.gaussian_renderer import render
     os.makedirs(render_path, exist_ok=True)
     gs_centroid = torch.mean(gaussians.get_xyz.detach(), dim=0).cpu().tolist()
@@ -332,7 +332,7 @@ def render_360(og_view, scene_radius, render_path, n_frames, framerate, gaussian
     width, height = math.floor(og_view.image_width / downscale), math.floor(og_view.image_height / downscale)
     fovy, fovx = og_view.FoVy, og_view.FoVx
     znear, zfar = og_view.znear, og_view.zfar
-    camera_distance = scene_radius * 2
+    camera_distance = scene_radius * distance_mult
     c2ws = get_camera_path_fixed_elevation(n_frames=n_frames, n_circles=1, camera_distance=camera_distance, cam_center=gs_centroid, elevation=elevation, up=up)
     print_every = max(1, n_frames // 10)  # print progress ~10 times total
     for idx in range(len(c2ws)):
@@ -395,7 +395,7 @@ def render_360(og_view, scene_radius, render_path, n_frames, framerate, gaussian
     return output_video
 
 
-def render_360_fast(og_view, scene_radius, render_path, n_frames, framerate, gaussians, pipeline, background, elevation=45, all_obj_labels=None, all_counts=None, up=None, downscale=2):
+def render_360_fast(og_view, scene_radius, render_path, n_frames, framerate, gaussians, pipeline, background, elevation=45, all_obj_labels=None, all_counts=None, up=None, downscale=2, distance_mult=2.0):
     """Per-Gaussian colored 360 flyaround — bakes head colors into Gaussians, 1 render per frame.
 
     ~N_heads times faster than render_360 while still showing distinct per-head colors.
@@ -411,7 +411,7 @@ def render_360_fast(og_view, scene_radius, render_path, n_frames, framerate, gau
     width, height = math.floor(og_view.image_width / downscale), math.floor(og_view.image_height / downscale)
     fovy, fovx = og_view.FoVy, og_view.FoVx
     znear, zfar = og_view.znear, og_view.zfar
-    camera_distance = scene_radius * 2
+    camera_distance = scene_radius * distance_mult
     c2ws = get_camera_path_fixed_elevation(n_frames=n_frames, n_circles=1, camera_distance=camera_distance, cam_center=gs_centroid, elevation=elevation, up=up)
 
     orig_features_dc = None
@@ -420,10 +420,20 @@ def render_360_fast(og_view, scene_radius, render_path, n_frames, framerate, gau
         # build HSV palette for heads 1..n_heads-1 (index 0 = background, skipped)
         n_heads = all_obj_labels.shape[0]
         SH_C0 = 0.28209479177387814
+        # opt-in high-contrast palette (WHEAT_SEG_CONTRAST_PALETTE=1): golden-ratio hue hop + alternating
+        # sat/val so ADJACENT head IDs look clearly different — makes over-merged clumps (one solid colour)
+        # vs many separate heads visible. Default (unset) = the original thin hue=(i-1)/n ramp, byte-identical.
+        _contrast = os.environ.get("WHEAT_SEG_CONTRAST_PALETTE") == "1"
         palette = []
         for i in range(1, n_heads):
-            hue = (i - 1) / max(n_heads - 1, 1)
-            r, g, b = colorsys.hsv_to_rgb(hue, 0.85, 0.95)
+            if _contrast:
+                hue = (i * 0.6180339887498949) % 1.0        # golden-ratio conjugate — max-spread hop
+                sat = [0.95, 0.70, 0.85, 0.60][i % 4]
+                val = [0.95, 0.75][i % 2]
+                r, g, b = colorsys.hsv_to_rgb(hue, sat, val)
+            else:
+                hue = (i - 1) / max(n_heads - 1, 1)
+                r, g, b = colorsys.hsv_to_rgb(hue, 0.85, 0.95)
             palette.append([r, g, b])
         palette = torch.tensor(palette, dtype=torch.float32)  # (n_heads-1, 3)
 

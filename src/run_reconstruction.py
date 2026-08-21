@@ -542,6 +542,7 @@ def _run_pipeline(cfg):
           + (["--height_band"] if cfg.segmentation_3d.get("height_band", False) else [])
           + (["--marker_exclude"] if cfg.segmentation_3d.get("marker_exclude", False) else [])
           + (["--marker_radius_m", str(cfg.segmentation_3d.get("marker_radius_m", 0.075))])
+          + (["--marker_radius_rel", str(cfg.segmentation_3d.get("marker_radius_rel", 0.0))])
           + (["--legacy_ground_cull"] if cfg.segmentation_3d.get("legacy_ground_cull", False) else [])
           + (["--ground_percentile", str(cfg.segmentation_3d.get("ground_percentile", 10.0))])
           + ["--seg_seed", str(cfg.segmentation_3d.seg_seed)]
@@ -556,6 +557,14 @@ def _run_pipeline(cfg):
             "--labels_path",   os.path.join(exp_dir, "all_obj_labels.pth"),
             "--output_ply",    os.path.join(exp_dir, "gaussians_colored.ply"),
             "--sh_degree",     str(cfg.reconstruction.sh_degree),
+        ], log_file, depends_on="seg")
+        # auto head-size stats right after segmentation — per-head Gaussian-count distribution
+        # (over/under-seg diagnostic: over-merge >800g, fragments <20g, empty heads). No separate toggle;
+        # writes head_size_stats.md/.json + histogram into the seg exp dir so it rsyncs back with the run.
+        run_step(ctx, "head_stats", "4c. Head-size stats", [
+            "python", "src/analysis/seg_head_size_stats.py",
+            "--seg", f"{cfg.segmentation_3d.exp_name}={exp_dir}",
+            "--out_dir", exp_dir,
         ], log_file, depends_on="seg")
 
     # Step 5: Render 360 flyaround video of the segmented wheat field
@@ -572,6 +581,7 @@ def _run_pipeline(cfg):
             "--framerate", str(cfg.framerate),
             "--elevation", str(cfg.elevation),
             "--downscale", str(cfg.get("render_360_downscale", 2)),
+            "--distance_mult", str(cfg.get("render_360_distance_mult", 2.0)),
         ] + fast_render_flag + white_bg_flag + data_device_flag + pp_flag, log_file, depends_on="seg")
 
     # Step 6: Evaluate 3D segmentation quality — saves overlay PNGs per camera

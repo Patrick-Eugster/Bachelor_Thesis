@@ -70,12 +70,14 @@ def count_pred_heads(model_path, exp_name, stem):
 
 
 def make_visualization(binary_gt, binary_pred, base_img, alpha=0.6):
-    """Color-coded overlay: red=TP, gray=FN, light yellow=FP, blended over the RGB image."""
+    """Color-coded overlay: green=TP, blue=FN, red=FP, blended over the RGB image (BGR colors)."""
     h, w = binary_gt.shape
     vis = np.zeros((h, w, 3), dtype=np.uint8)
-    vis[np.logical_and(binary_gt,  binary_pred)]  = [0,   0,   255]  # red:          TP
-    vis[np.logical_and(binary_gt,  ~binary_pred)] = [128, 128, 128]  # gray:         FN (missed)
-    vis[np.logical_and(~binary_gt, binary_pred)]  = [128, 213, 255]  # light yellow: FP (wrong)
+    # old scheme (BGR): TP=[0,0,255] red, FN=[128,128,128] gray, FP=[128,213,255] light yellow.
+    # switched to green=correct / red=FP / blue=FN because red-for-TP read as an error at a glance.
+    vis[np.logical_and(binary_gt,  binary_pred)]  = [0,   255, 0]    # green: TP (correct)
+    vis[np.logical_and(binary_gt,  ~binary_pred)] = [255, 0,   0]    # blue:  FN (missed head)
+    vis[np.logical_and(~binary_gt, binary_pred)]  = [0,   0,   255]  # red:   FP (invented head)
     base_f = base_img.astype(np.float32) / 255.0
     vis_f  = vis.astype(np.float32) / 255.0
     blended = cv2.addWeighted(vis_f, alpha, base_f, 1 - alpha, 0)

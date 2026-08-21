@@ -145,7 +145,7 @@ def render_wheat_head(dataset : ModelParams, pipeline : PipelineParams, exp_name
                 shutil.rmtree(render_path)
 
 def render_wheat_field(dataset : ModelParams, pipeline : PipelineParams, exp_name,
-                       n_frames=100, framerate=10, elevation=45, save_frames=False, load_iteration=-1, fast_render=False, downscale=2):
+                       n_frames=100, framerate=10, elevation=45, save_frames=False, load_iteration=-1, fast_render=False, downscale=2, distance_mult=2.0):
     seg2d_dir = os.path.join(dataset.model_path, "segmentation_3d", exp_name, "2DSeg")
     out_dir = os.path.join(dataset.model_path, "segmentation_3d", exp_name, "3DSeg")
     os.makedirs(out_dir, exist_ok=True)
@@ -233,7 +233,7 @@ def render_wheat_field(dataset : ModelParams, pipeline : PipelineParams, exp_nam
     print(f"Scene up axis: {'world-Z (default)' if scene_up is None else scene_up.tolist()}")
     render_fn = render_360_fast if fast_render else render_360
     output_video = render_fn(viewpoint_stack[0], scene.cameras_extent, out_dir, n_frames, framerate, gaussians, pipeline, background,
-                             all_obj_labels=all_obj_labels, all_counts=None, elevation=elevation, up=scene_up, downscale=downscale)
+                             all_obj_labels=all_obj_labels, all_counts=None, elevation=elevation, up=scene_up, downscale=downscale, distance_mult=distance_mult)
     if not save_frames: # if not specified then remove the saved frames for generating video
         shutil.rmtree(out_dir)
 
@@ -252,11 +252,12 @@ if __name__ == "__main__":
     parser.add_argument("--save_frames", action="store_true", help="If specified, save frames in addition to output video")
     parser.add_argument("--fast_render", action="store_true", help="Use single colored render per frame instead of N_heads flashsplat renders (~N_heads× faster)")
     parser.add_argument("--downscale", type=int, default=2, help="render resolution divisor of the training image: 1 = full res, 2 = half (default)")
+    parser.add_argument("--distance_mult", type=float, default=2.0, help="orbit camera distance as a multiple of the scene radius (higher = further out / less zoomed; default 2.0)")
     args = get_combined_args(parser)
     print(f"Rendering {args.model_path} for 3D segmentation experiment {args.exp_name}, Option: {args.render_type}")
     if args.render_type == "field":
         print("Render the 3D segmentation on the whole wheat field")
-        render_wheat_field(model.extract(args), pipeline.extract(args), args.exp_name, args.n_frames, args.framerate, args.elevation, args.save_frames, fast_render=args.fast_render, downscale=args.downscale)
+        render_wheat_field(model.extract(args), pipeline.extract(args), args.exp_name, args.n_frames, args.framerate, args.elevation, args.save_frames, fast_render=args.fast_render, downscale=args.downscale, distance_mult=args.distance_mult)
     elif args.render_type == "head":
         print("Render each individual segmented wheat head")
         render_wheat_head(model.extract(args), pipeline.extract(args), args.exp_name, args.n_frames, args.framerate, args.elevation, args.save_frames)

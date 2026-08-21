@@ -19,6 +19,17 @@ import os
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.ticker import MultipleLocator  # noqa: E402
+
+
+def _style_conf_axis(ax):
+    """Label the conf axis every 0.1 and draw a faint minor gridline every 0.05, so the
+    reader can read off any dot's conf even though we can't label all ~31 sweep steps."""
+    ax.set_xlim(0, 1)
+    ax.xaxis.set_major_locator(MultipleLocator(0.1))
+    ax.xaxis.set_minor_locator(MultipleLocator(0.05))
+    ax.grid(which="major", alpha=0.3)
+    ax.grid(which="minor", alpha=0.12)
 
 
 def _load_cells(indir):
@@ -66,12 +77,27 @@ def main():
         a1.plot(confs, prec, "-", alpha=.6, label="precision")
         a1.plot(confs, rec, "-", alpha=.6, label="recall")
         bi = max(range(len(f1)), key=lambda i: f1[i])
-        a1.axvline(confs[bi], color="k", ls=":", lw=1)
+        a1.axvline(confs[bi], color="k", ls=":", lw=1, label=f"best-F1 conf ({confs[bi]})")
         a1.set_title(f"{cell['_name']}  best F1={f1[bi]:.3f}@{confs[bi]}")
         a1.set_xlabel("YOLO conf threshold"); a1.set_ylabel("score"); a1.set_ylim(0, 1); a1.legend(fontsize=8)
+        _style_conf_axis(a1)
         a2.plot(rec, prec, "-o", ms=3)
+        # label only the meaningful conf anchors: the two ends, the F1-opt, and the 3 3D-seg
+        # test candidates — enough to orient the curve without labelling all ~31 dots.
+        labelled = False
+        for tc in (0.05, 0.26, 0.40, 0.55, 0.70, 0.90):
+            j = min(range(len(confs)), key=lambda i: abs(confs[i] - tc))
+            if abs(confs[j] - tc) < 0.02:                 # nearest dot (0.55 isn't on the grid -> 0.54)
+                a2.annotate(f"{confs[j]:.2f}", (rec[j], prec[j]), textcoords="offset points",
+                            xytext=(5, 4), fontsize=7, color="#333")
+                a2.plot(rec[j], prec[j], "o", ms=5, color="#d62728",
+                        label="YOLO conf threshold" if not labelled else None)
+                labelled = True
         a2.set_title(f"PR (IoU>={args.iou})"); a2.set_xlabel("recall"); a2.set_ylabel("precision")
-        a2.set_xlim(0, 1); a2.set_ylim(0, 1)
+        a2.set_xlim(0, 1); a2.set_ylim(0, 1); a2.legend(fontsize=8, loc="lower left")
+        a2.xaxis.set_major_locator(MultipleLocator(0.1)); a2.xaxis.set_minor_locator(MultipleLocator(0.05))
+        a2.yaxis.set_major_locator(MultipleLocator(0.1)); a2.yaxis.set_minor_locator(MultipleLocator(0.05))
+        a2.grid(which="major", alpha=0.3); a2.grid(which="minor", alpha=0.12)
         fig.tight_layout()
         out = os.path.join(args.outdir, f"{cell['_name']}_iou{args.iou}.png")
         fig.savefig(out, dpi=130); plt.close(fig)
@@ -87,6 +113,7 @@ def main():
         axf.plot(confs, f1, "-o", ms=2.5, label=cell["_name"])
     axf.set_title(f"F1 vs conf — all cells (IoU>={args.iou})")
     axf.set_xlabel("YOLO conf threshold"); axf.set_ylabel("F1"); axf.set_ylim(0, 1); axf.legend(fontsize=8)
+    _style_conf_axis(axf)
     fig.tight_layout()
     ov = os.path.join(args.outdir, f"_overlay_f1_iou{args.iou}.png")
     fig.savefig(ov, dpi=130); plt.close(fig)

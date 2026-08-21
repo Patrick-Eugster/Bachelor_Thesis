@@ -155,7 +155,7 @@ def default_ground_filter(gaussian_xyz, plot_dir, ground_percentile=10.0, verbos
 def build_roi_keep_mask(gaussian_xyz, plot_dir,
                         roi_cull=True, height_band=False, marker_exclude=False,
                         roi_buffer_m=0.25, band_m=(-0.50, 1.50),
-                        marker_radius_m=0.075, verbose=True):
+                        marker_radius_m=0.075, marker_radius_rel=0.0, verbose=True):
     """Boolean keep-mask over the Gaussians (True = keep). Three INDEPENDENT filters that AND together
     — enable any combination:
 
@@ -172,7 +172,14 @@ def build_roi_keep_mask(gaussian_xyz, plot_dir,
     roi_buffer_m : grow the ROI hull outward this many metres so plot-edge heads aren't clipped.
     band_m       : (low, high) metres relative to the marker plane, used only when height_band=True.
     marker_radius_m : 3D-sphere radius around each marker centre (plates are ~13 cm circle / 15 cm
-                      square, so ~0.075 m covers the plate without reaching into nearby heads).
+                      square). NOTE the RECONSTRUCTED marker is ~3x the plate (3DGS also bakes the plate's
+                      shadow + a fuzzy halo, measured ~0.20-0.25 m radius on A/0715), so 0.075 only carves
+                      the core and the coloured rim leaks into neighbour heads — prefer marker_radius_rel.
+    marker_radius_rel : if > 0, OVERRIDE marker_radius_m with (marker_radius_rel * median pairwise marker
+                      spacing). This is SCALE-FREE — COLMAP's world units are arbitrary per session, so a
+                      fixed metre radius silently means different physical sizes across sessions; a fraction
+                      of the marker spacing tracks the real geometry. ~0.065 reproduces the 0.20 m we want
+                      on A/0715 (median spacing ~3.1 u). Default 0.0 = off = use the absolute marker_radius_m.
 
     Returns a boolean torch tensor (G,), or None if nothing is enabled or the markers can't be built
     (missing/partial ring) — the caller then keeps its previous behaviour (byte-identical).
@@ -205,19 +212,30 @@ def build_roi_keep_mask(gaussian_xyz, plot_dir,
         keep &= (height >= band_m[0]) & (height <= band_m[1])
 
     if marker_exclude:
-        # CONSERVATIVE: exclude only a small 3D SPHERE around each marker centre — i.e. the coded
-        # plate itself — NOT the whole vertical column. An in-plane (column) test would cull heads
-        # that sit above/beside a marker; a 3D sphere with a small radius removes just the plate, so
-        # heads a few cm away in any direction survive. Uses true 3D distance to the marker xyz.
+        # CONSERVATIVE: exclude only a 3D SPHERE around each marker centre — the coded marker as
+        # reconstructed (plate + shadow + halo) — NOT the whole vertical column. An in-plane (column)
+        # test would cull heads above/beside a marker; a sphere removes just the marker blob so heads a
+        # bit away in any direction survive. Uses true 3D distance to the marker xyz.
+        if marker_radius_rel > 0 and len(markers) >= 2:
+            # scale-free radius: a fraction of the median pairwise marker spacing (COLMAP units are
+            # arbitrary per session, so a fixed metre value is unsafe across sessions).
+            dmat = np.linalg.norm(markers[:, None, :] - markers[None, :, :], axis=2)
+            spacing = np.median(dmat[np.triu_indices(len(markers), k=1)])
+            radius = marker_radius_rel * spacing
+        else:
+            radius = marker_radius_m
         near = np.zeros(len(xyz), dtype=bool)
         for m in markers:
-            near |= (np.linalg.norm(xyz - m, axis=1) <= marker_radius_m)
+            near |= (np.linalg.norm(xyz - m, axis=1) <= radius)
         keep &= ~near
 
     if verbose:
         g = len(xyz)
+        mr = (f"{radius:.3f}u (rel {marker_radius_rel}xspacing)" if (marker_exclude and marker_radius_rel > 0
+                                                                     and len(markers) >= 2)
+              else f"{marker_radius_m}m")
         print(f"[seg_roi] keep {int(keep.sum())}/{g} Gaussians "
               f"({100.0 * keep.sum() / max(g, 1):.1f}%) — culled {g - int(keep.sum())} "
               f"(roi_cull={roi_cull} buffer={roi_buffer_m}m, height_band={height_band} band={band_m}m, "
-              f"marker_exclude={marker_exclude} marker_r={marker_radius_m}m)")
+              f"marker_exclude={marker_exclude} marker_r={mr})")
     return torch.from_numpy(keep)
