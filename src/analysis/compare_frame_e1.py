@@ -57,11 +57,32 @@ def _fmt(v, w=6):
     return f"{v:{w}.3f}" if isinstance(v, float) else (f"{v:>{w}}" if v is not None else " " * w)
 
 
+def emit_latex(P, O):
+    """LaTeX tabular for the thesis E1 table, straight from the pooled numbers, so nobody hand-copies
+    them. Numbers only: the caption is authored by hand in main.tex, never generated here."""
+    rows = [("f1", "F1"), ("precision", "precision"), ("recall", "recall"),
+            ("iou_m", "matched-mask IoU"), ("biou", "boundary IoU"), ("pred_heads", "predicted heads")]
+    out = ["% E1 frame-validation table --- numbers auto-generated; caption authored in main.tex",
+           "\\begin{table}[H]", "\\centering", "\\begin{tabular}{l ccc}", "\\hline",
+           " & pinhole & \\texttt{OPENCV} & $\\Delta$ \\\\", "\\hline"]
+    for key, label in rows:
+        pv, ov = P.get(key), O.get(key)
+        if isinstance(pv, float):
+            out.append(f"{label} & {pv:.3f} & {ov:.3f} & ${ov - pv:+.3f}$ \\\\")
+        else:
+            out.append(f"{label} & {pv} & {ov} & ${ov - pv:+d}$ \\\\")
+    out += ["\\hline", "\\end{tabular}", "\\caption{}  % caption authored in main.tex",
+            "\\label{tab:maskgen-frame}", "\\end{table}"]
+    return "\n".join(out)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pinhole", required=True, help="eval_masks_instance.json of the pinhole run")
     ap.add_argument("--opencv", required=True, help="eval_masks_instance.json of the opencv run")
     ap.add_argument("--out", default="docs/analysis_results/e1_frame/E1_frame_validation.md")
+    ap.add_argument("--latex", action="store_true",
+                    help="print the thesis LaTeX tabular (numbers only) and exit, without writing the md")
     a = ap.parse_args()
 
     ph, ph_imgs = _load(a.pinhole)
@@ -79,6 +100,9 @@ def main():
 
     # pooled
     P, O = _pooled([ph[k] for k in common]), _pooled([oc[k] for k in common])
+    if a.latex:                                   # numbers-only LaTeX for the thesis table, then stop
+        print(emit_latex(P, O))
+        return
     lines += ["## Pooled (micro-average over the matched images)",
               "",
               "| metric | pinhole | opencv | Δ (oc−ph) |",

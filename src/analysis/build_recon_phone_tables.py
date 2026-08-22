@@ -120,7 +120,15 @@ def latex_cell(v, metric, best):
     return s
 
 
-def emit_split_table(region, data, row_order, display, caption, label):
+# Captions are written by hand in the thesis (main.tex), never generated here, so a
+# machine-written caption can never leak into the prose. We emit an empty caption as a
+# placeholder; the real one lives in the thesis next to the pasted table.
+def caption_placeholder():
+    """Empty caption line. The real caption is authored in main.tex, not generated."""
+    return "\\caption{}  % caption authored in main.tex"
+
+
+def emit_split_table(region, data, row_order, display, label):
     """LaTeX for one self-contained region table: the given arms (one experiment),
     all metrics, best-per-column bolded (sharpness never bolded)."""
     bests = {m: best_value({a: data[a] for a in row_order}, region, m, hi)
@@ -137,18 +145,13 @@ def emit_split_table(region, data, row_order, display, caption, label):
         lines.append(f"{display.get(a, a)} & {cells} \\\\")
     lines.append("\\hline")
     lines.append("\\end{tabular}")
-    lines.append(f"\\caption{{{caption}}}")
+    lines.append(caption_placeholder())
     lines.append(f"\\label{{{label}}}")
     lines.append("\\end{table}")
     return "\n".join(lines)
 
 
-SHARP_NOTE = ("The sharpness ratio is the render's Laplacian variance over the ground "
-              "truth's and is not bolded, as a higher ratio trades against PSNR rather "
-              "than being uniformly better.")
-
-
-def emit_combined_table(data, row_order, display, caption, label):
+def emit_combined_table(data, row_order, display, label):
     """One table stacking all four regions as labelled blocks, separated by rules.
     Best-per-column is bolded within each region block (cross-region bests are
     meaningless: markers always beat wheat on PSNR)."""
@@ -168,7 +171,7 @@ def emit_combined_table(data, row_order, display, caption, label):
             lines.append(f"{display.get(a, a)} & {cells} \\\\")
     lines.append("\\hline")
     lines.append("\\end{tabular}")
-    lines.append(f"\\caption{{{caption}}}")
+    lines.append(caption_placeholder())
     lines.append(f"\\label{{{label}}}")
     lines.append("\\end{table}")
     return "\n".join(lines)
@@ -176,45 +179,25 @@ def emit_combined_table(data, row_order, display, caption, label):
 
 # captions stay lean: Setup already defines the metrics, regions, camera models, and
 # sharpness ratio, so the caption only states the table's identity and what bold means.
-BOLD_NOTE = ("Bold marks the best value per column within each region block. Sharpness is "
-             "left unbolded because a higher value is not simply better.")
-
-
 def emit_camera_combined(cam):
     """All four regions of the camera-parameter comparison in one table."""
-    cap = ("Phone reconstruction under four sources of camera parameters, scored over the "
-           "whole image and three sub-regions at 15{,}000 iterations with default "
-           "densification and averaged over the four sessions. " + BOLD_NOTE)
-    return emit_combined_table(cam, CAM_ROWS, {}, cap, "tab:recon-phone-cam")
+    return emit_combined_table(cam, CAM_ROWS, {}, "tab:recon-phone-cam")
 
 
 def emit_dense_combined(dense):
     """All four regions of the densification/training-length comparison in one table."""
-    cap = ("Phone reconstruction under two densification settings and two training lengths "
-           "on \\texttt{OPENCV}, scored over the whole image and three sub-regions and "
-           "averaged over the four sessions. The default is the original 3DGS "
-           "densification. " + BOLD_NOTE)
-    return emit_combined_table(dense, DENSE_ROWS, DENSE_DISPLAY, cap, "tab:recon-phone-dense")
+    return emit_combined_table(dense, DENSE_ROWS, DENSE_DISPLAY, "tab:recon-phone-dense")
 
 
 def emit_camera_table(region, cam):
     """Camera-parameter comparison for one region (4 sources, 15k default)."""
-    cap = (f"{REGION_TITLE[region]} scores of the phone reconstruction under four "
-           "sources of camera parameters, at 15{,}000 iterations with default "
-           "densification, averaged over the four sessions. \\texttt{PINHOLE} "
-           "(\\texttt{SIMPLE\\_PINHOLE}) leaves the lens distortion in; \\texttt{OPENCV} "
-           "and \\texttt{RADIAL} (\\texttt{SIMPLE\\_RADIAL}) undistort; Agisoft is the "
-           f"reference reconstruction. {SHARP_NOTE}")
-    return emit_split_table(region, cam, CAM_ROWS, {}, cap,
+    return emit_split_table(region, cam, CAM_ROWS, {},
                             f"tab:recon-phone-cam-{REGION_LABEL[region]}")
 
 
 def emit_dense_table(region, dense):
     """Densification/training-length comparison for one region (OPENCV, 4 configs)."""
-    cap = (f"{REGION_TITLE[region]} scores of the phone reconstruction under two "
-           "densification settings and two training lengths on \\texttt{OPENCV}, "
-           f"averaged over the four sessions. {SHARP_NOTE}")
-    return emit_split_table(region, dense, DENSE_ROWS, DENSE_DISPLAY, cap,
+    return emit_split_table(region, dense, DENSE_ROWS, DENSE_DISPLAY,
                             f"tab:recon-phone-dense-{REGION_LABEL[region]}")
 
 
@@ -253,11 +236,7 @@ def emit_appendix_region_table(region):
     block("Densification and training length (\\texttt{OPENCV})", DENSE_SPEC)
     lines.append("\\hline")
     lines.append("\\end{tabular}")
-    lines.append(f"\\caption{{Per-session {REGION_TITLE[region].lower()} scores for the phone "
-                 "reconstruction, the values averaged in "
-                 f"Table~\\ref{{tab:recon-phone-{REGION_LABEL[region]}}}. Sessions are field/date "
-                 "(A/0627 is field~A, 27~June). The sharpness ratio is the render's Laplacian "
-                 "variance over the ground truth's.}")
+    lines.append(caption_placeholder())
     lines.append(f"\\label{{tab:recon-phone-app-{REGION_LABEL[region]}}}")
     lines.append("\\end{table}")
     return "\n".join(lines)

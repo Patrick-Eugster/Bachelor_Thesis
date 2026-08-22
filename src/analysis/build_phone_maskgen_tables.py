@@ -121,13 +121,14 @@ def prose_numbers(rows):
 
 
 def threshold_table():
-    """F1 (and recall) at IoU 0.25 / 0.5 / 0.75 for YOLO11's best cell at each granularity,
-    from each cell's f1_curve_mean. Shows how the scores hold up under a looser and a stricter match."""
-    print("\n=== Threshold sensitivity: YOLO11 best cell per granularity ===")
-    rows = [("full frame", "gt_ff_sam3"), ("per tile", "gt_tile_sam3"), ("per head", "gt_head_sam3")]
+    """F1 (and recall) at IoU 0.25 / 0.5 / 0.75 for the winning detector (YOLOv5 @4032)'s best cell
+    at each granularity, from each cell's f1_curve_mean. Best SAM per granularity is SAM3 (see the
+    full-res grid). Shows how the scores hold up under a looser and a stricter match."""
+    print("\n=== Threshold sensitivity: YOLOv5 @4032 best cell per granularity ===")
+    rows = [("full frame", "e2_ff_sam3"), ("per tile", "e2_pt_sam3"), ("per head", "e2_ph_sam3")]
     print(f"{'granularity':11}  F1@.25  F1@.5  F1@.75   R@.25  R@.5  R@.75")
     for label, exp in rows:
-        f = f"results/mask_generation/phone/evaluation/yolo11_sam/masks_instance/{exp}/eval_masks_instance.json"
+        f = f"results/mask_generation/phone/evaluation/yolo_sam_v1/masks_instance/{exp}/eval_masks_instance.json"
         if not os.path.exists(f):
             print(f"{label:11}  MISSING ({f})"); continue
         curve = {pt["iou"]: pt for pt in json.load(open(f))["aggregate_curve_hist"]["f1_curve_mean"]}
@@ -136,28 +137,46 @@ def threshold_table():
         print(f"{label:11}  {f1[0]:.3f}  {f1[1]:.3f}  {f1[2]:.3f}    {rc[0]:.3f} {rc[1]:.3f} {rc[2]:.3f}")
 
 
+# YOLOv5 @4032 SAM3 has no sam_perf.json (that full-res run saved only the eval, not timing), so its three
+# values are read from the Euler log slurm_logs/e2_sam3_fullres_11416384.out (the 6-GT-image "Average Time
+# Per Image" per granularity, same basis as every other cell). Listed here as constants with that provenance.
+SAM3_4032 = {"full frame": 19.22, "per tile": 13.35, "per head": 150.61}
+
+
 def runtime_table():
-    """SAM-phase seconds per image, averaged over detectors, as a granularity x SAM-version grid.
-    Reads each cell's sam_perf.json (avg_sec_per_image). Runtime depends on granularity, SAM version,
-    and head count --- not really the detector --- so we average over the three detectors."""
-    print("\n=== Runtime: SAM seconds per image (granularity x SAM version) ===")
+    """SAM-phase seconds per image, averaged over the four detector configurations (YOLOv5@1280,
+    YOLOv5@4032, SAHI, YOLO11), as a granularity x SAM-version grid. Reads each config's sam_perf.json
+    (avg_sec_per_image): gt_* are the three original-resolution configs (one dir per detector), e2_* is the
+    full-res YOLOv5@4032 config. The @4032 SAM3 cell has no sam_perf.json so it comes from SAM3_4032 above."""
+    print("\n=== Runtime: SAM seconds per image (granularity x SAM version, 4 detector configs) ===")
     times = collections.defaultdict(list)
     for f in glob.glob("results/mask_generation/phone/**/sam_perf.json", recursive=True):
         d = json.load(open(f))
         exp = os.path.basename(os.path.dirname(f))
-        gran = "full frame" if "_ff_" in exp else "per tile" if "_tile_" in exp else "per head" if "_head_" in exp else None
+        # gt_* = the three original-resolution detector configs; e2_* = the full-res YOLOv5@4032 config
+        # (its granularity is tagged _pt_/_ph_ rather than _tile_/_head_).
+        if exp.startswith("gt_"):
+            gran = "full frame" if "_ff_" in exp else "per tile" if "_tile_" in exp else "per head" if "_head_" in exp else None
+        elif exp.startswith("e2_"):
+            gran = "full frame" if "_ff_" in exp else "per tile" if "_pt_" in exp else "per head" if "_ph_" in exp else None
+        else:
+            continue
         if gran is None or "avg_sec_per_image" not in d:
             continue
         sam = {"sam1": "SAM1", "sam2": "SAM2", "sam3": "SAM3"}.get(d.get("backend"))
         if sam:
             times[(gran, sam)].append(d["avg_sec_per_image"])
-    print(f"{'gran':11} SAM1  SAM2  SAM3")
+    # add the @4032 SAM3 cell (log-sourced, no sam_perf.json) so SAM3 also averages over four configs
+    for gran, v in SAM3_4032.items():
+        times[(gran, "SAM3")].append(v)
+    print(f"{'gran':11} SAM1  SAM2  SAM3   (n configs)")
     for gran in GRAN_ORDER:
-        cells = []
+        cells, ns = [], []
         for s in SAM_ORDER:
             v = times.get((gran, s), [])
             cells.append(f"{sum(v)/len(v):4.0f}" if v else "  --")
-        print(f"{gran:11} " + "  ".join(cells))
+            ns.append(len(v))
+        print(f"{gran:11} " + "  ".join(cells) + f"    (n={ns})")
 
 
 def main():

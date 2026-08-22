@@ -1,13 +1,15 @@
 """Plots the matched-pair IoU distribution for three phone configurations, pooled
-over the 6 phone GT images and all anchored on the winner YOLO11 + per-head + SAM2.
-The other two each change one axis: SAHI + per-head + SAM2 varies only the detector,
-and YOLO11 + per-tile + SAM2 varies only the granularity (the cheaper practical
-choice, since per-head is far slower in SAM). Each matched prediction/GT-head pair
-contributes its mask IoU; only pairs at or above the 0.5 matching gate are kept, so
-the mean of each distribution equals that configuration's matched-mask IoU in the
-results table. The figure shows the spread behind those single means --- most matched
-heads are segmented well (mass at 0.8-0.95) with a thin low-quality tail near the 0.5
-gate, and dropping to per-tile only shifts the distribution slightly left.
+over the 6 phone GT images and all anchored on the winner YOLOv5 @4032 + per-head + SAM2.
+The other two each change one axis: YOLO11 + per-head + SAM2 varies only the detector,
+and YOLOv5 @4032 + per-tile + SAM2 varies only the granularity (the cheaper practical
+choice, since per-head is far slower in SAM). SAM2 is used here rather than the marginally
+higher-F1 SAM3 because the figure is about mask quality and SAM2's masks are the tighter
+of the two. Each matched prediction/GT-head pair contributes its mask IoU; only pairs at
+or above the 0.5 matching gate are kept, so the mean of each distribution equals that
+configuration's matched-mask IoU in the results table. The figure shows the spread behind
+those single means --- most matched heads are segmented well (mass at 0.8-0.95) with a thin
+low-quality tail near the 0.5 gate, and dropping to per-tile only shifts the distribution
+slightly left.
 
 Run: python src/analysis/plot_matched_iou_hist.py
 Output: thesis/figures/maskgen_phone_matched_iou.png
@@ -21,9 +23,9 @@ import matplotlib.pyplot as plt
 
 BASE = "results/mask_generation/phone/evaluation"
 CONFIGS = [
-    ("YOLO11 + per head + SAM2", f"{BASE}/yolo11_sam/masks_instance/gt_head_sam2/eval_masks_instance.json", "#4C72B0"),
-    ("SAHI + per head + SAM2",   f"{BASE}/sahi_yolo_sam/masks_instance/gt_head_sam2/eval_masks_instance.json", "#DD8452"),
-    ("YOLO11 + per tile + SAM2", f"{BASE}/yolo11_sam/masks_instance/gt_tile_sam2/eval_masks_instance.json", "#55A868"),
+    ("YOLOv5 @4032 + per head + SAM2", f"{BASE}/yolo_sam_v1/masks_instance/e2_ph_sam2/eval_masks_instance.json", "#4C72B0"),
+    ("YOLO11 + per head + SAM2",       f"{BASE}/yolo11_sam/masks_instance/gt_head_sam2/eval_masks_instance.json", "#DD8452"),
+    ("YOLOv5 @4032 + per tile + SAM2", f"{BASE}/yolo_sam_v1/masks_instance/e2_pt_sam2/eval_masks_instance.json", "#55A868"),
 ]
 OUT = "thesis/figures/maskgen_phone_matched_iou.png"
 GATE = 0.5   # matching gate used everywhere in the results table

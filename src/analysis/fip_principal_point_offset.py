@@ -42,6 +42,9 @@ def main():
 
     pattern = f"input_plots/{args.dataset}/**/sparse/0/cameras.txt"
     files = sorted(glob.glob(pattern, recursive=True))
+    # skip the reprocessed_png duplicate copies: they are the same 7 plots re-exported with a
+    # centered principal point (0 offset), so counting them halves the reported mean (n=14 vs n=7).
+    files = [f for f in files if "reprocessed" not in f]
     if not files:
         print("no cameras.txt found under", pattern)
         return
