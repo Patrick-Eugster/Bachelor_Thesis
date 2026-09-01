@@ -153,3 +153,10 @@ scratchpad/
 
 # Hydra per-run output dirs (timestamped .hydra config snapshots — throwaway byproduct of @hydra.main scripts)
 outputs/
+
+# --- scripts/ : the public repo ships ONLY the reusable templates + README. The authors'
+#     per-experiment Euler run scripts hardcode a cluster path + account and aren't reusable,
+#     so they stay local-only (still on disk, just untracked). Templates are whitelisted below. ---
+scripts/*
+!scripts/README.md
+!scripts/example_*_job.sh

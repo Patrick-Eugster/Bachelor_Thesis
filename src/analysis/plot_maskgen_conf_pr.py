@@ -13,6 +13,7 @@ import os
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 
 BASE = "results/mask_generation/phone/evaluation/conf_sweep"
 OPPT = 0.35  # the fixed operating point used by the grid
@@ -49,21 +50,38 @@ def main():
         prec = [r["precision"] for r in rows]
         conf = [r["conf"] for r in rows]
         f1 = [r["f1"] for r in rows]
-        # left: PR curve, dot at the 0.35 operating point
+        # left: PR curve, dot at the 0.35 operating point, X at the F1 peak
         axl.plot(rec, prec, "-", color=color, linewidth=1.8, label=f"{label}  (AP {apv:.2f})")
         op = _op_row(rows)
         axl.plot(op["recall"], op["precision"], "o", color=color, markersize=5, zorder=5)
-        # right: F1 vs confidence
+        best = max(rows, key=lambda r: r["f1"])
+        axl.plot(best["recall"], best["precision"], "X", color=color, markersize=8,
+                 markeredgecolor="white", markeredgewidth=0.6, zorder=6)
+        # right: F1 vs confidence, X at each curve's F1 peak (the F1-optimal conf) — same marker as left
         axr.plot(conf, f1, "-", color=color, linewidth=1.8, label=label)
+        axr.plot(best["conf"], best["f1"], "X", color=color, markersize=8,
+                 markeredgecolor="white", markeredgewidth=0.6, zorder=6)
     axr.axvline(OPPT, color="0.4", linestyle="--", linewidth=1.0)
     axr.text(OPPT + 0.01, 0.02, "0.35", color="0.4", fontsize=8.5, transform=axr.get_xaxis_transform())
 
     axl.set_xlabel("recall"); axl.set_ylabel("precision")
     axl.set_xlim(0, None); axl.set_ylim(0, 1.0)
-    axl.legend(frameon=False, fontsize=9, loc="upper right")
+    # left legend: the three curves plus grey marker keys for the dot (0.35) and X (F1 peak)
+    h, l = axl.get_legend_handles_labels()
+    h += [Line2D([], [], marker="o", color="0.3", linestyle="None", markersize=5),
+          Line2D([], [], marker="X", color="0.3", linestyle="None", markersize=8,
+                 markeredgecolor="white", markeredgewidth=0.6)]
+    l += ["0.35 conf", "F1 peak conf"]
+    axl.legend(h, l, frameon=False, fontsize=9, loc="lower right")
     axr.set_xlabel("confidence threshold"); axr.set_ylabel("F1")
     axr.set_xlim(0, 1.0); axr.set_ylim(0, None)
-    axr.legend(frameon=False, fontsize=9, loc="upper right")
+    # right legend: the three curves plus grey keys for the 0.35 line and the X (F1 peak) — mirrors left
+    hr, lr = axr.get_legend_handles_labels()
+    hr += [Line2D([], [], color="0.4", linestyle="--", linewidth=1.0),
+           Line2D([], [], marker="X", color="0.3", linestyle="None", markersize=8,
+                  markeredgecolor="white", markeredgewidth=0.6)]
+    lr += ["0.35 conf", "F1 peak conf"]
+    axr.legend(hr, lr, frameon=False, fontsize=9, loc="upper right")
     for ax in (axl, axr):
         ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
     fig.tight_layout()

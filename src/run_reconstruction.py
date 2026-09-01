@@ -531,7 +531,7 @@ def _run_pipeline(cfg):
             "-m", model_path,
             "--resolution", resolution_str,
             "--eval",
-            "--iou_threshold", "0.5",
+            "--iou_threshold", str(cfg.segmentation_3d.get("iou_threshold", 0.5)),
             "--exp_name", cfg.segmentation_3d.exp_name,
             "--vis_max_heads", str(cfg.segmentation_3d.vis_max_heads),
         ] + seg_dir_flag + ([] if cfg.segmentation_3d.save_vis_overlay else ["--no_save_vis_overlay"])

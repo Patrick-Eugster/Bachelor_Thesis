@@ -4,6 +4,11 @@
 # e.g. exp_name=run_2 → results/.../segmentation_3d/run_2/
 exp_name: "run_1"
 
+# cross-view match acceptance threshold in find_match (segmentation IoU between the rendered blob and the
+# best-overlapping SAM mask). 0.5 = code default AND our runs so far; the Wheat3DGS authors' README command
+# recommends 0.6 (stricter). Higher = stricter matching = fewer/looser matches accepted = less over-merging.
+iou_threshold: 0.5
+
 # which detection METHOD's output to read masks from (the method-name subfolder under the plot).
 # default "yolo_sam_v1"; set "sahi_yolo_sam" to segment a SAHI detection run instead (Option C)
 detection_method: "yolo_sam_v1"

@@ -144,7 +144,9 @@ flat colors). Drop it for per-head-overlay colors (much slower).
   byte-identical sibling seg run, or re-run seg.)
 - **Port busy:** change `viewer_port` (orchestrator) or `--port` (standalone).
 - **`sh_degree` must match training** (default 3; if you trained with `sh_degree=0`, pass that).
-- **`singlewheat_rendering.py` (`viewer_type: "single"`) is broken** — old nerfview/Camera API, hardcoded
-  `.bin` COLMAP format, etc. Use `viewer_type: "full"`. (Tracked in the root `CLAUDE.md` "Known Issues".)
+- **`singlewheat_rendering.py` (`viewer_type: "single"`) is broken** — the plain post-step-1 viewer, unused
+  since `viewer_type: "full"` is the default. Broken by multiple API drifts: old nerfview `img_wh`, old
+  `Camera` constructor args, dropped `load_ply(remove_features_rest=…)` kwarg, hardcoded `.bin` COLMAP format,
+  and no `--colmap_path`/`--images_path` passed by `run_reconstruction.py`. Use `viewer_type: "full"`.
 - **FIP principal-point:** FIP models are trained `use_principal_point=true`; the viewer reads COLMAP
   intrinsics directly so a small shift is possible, but it's visualization-only. Phone pp ≈ center → no-op.

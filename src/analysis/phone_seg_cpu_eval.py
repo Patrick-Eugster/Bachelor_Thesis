@@ -20,9 +20,13 @@ BASE = f"results/reconstruction/phone/{S}"
 GT_PIN = f"input_plots/phone/{S}/manual_label/IMG_20250715_153912_gt_mask.png"
 GT_OCV = f"input_plots/phone/{S}/opencv/manual_label/IMG_20250715_153912_gt_mask.png"
 GT_AGI = f"input_plots/phone/{S}/agisoft/manual_label/IMG_20250715_153912_25_gt_mask.png"
+# second session (generalization) — field_D/20250627, its own opencv-warped GT
+S_D0627 = "field_D/20250627"
+GT_OCV_D0627 = f"input_plots/phone/{S_D0627}/opencv/manual_label/IMG_20250627_102602_gt_mask.png"
 OUT = "docs/analysis_results/phone_seg_cpu_eval.json"
 
-# (label, model_path (rel to BASE), exp_name, gt_path, gt_stem, mask_tag, sfm, iters)
+# (label, model_path (rel to session base), exp_name, gt_path, gt_stem, mask_tag, sfm, iters[, session])
+# session is optional (9th element); when absent it defaults to S (field_A/20250715).
 RUNS = [
     ("pin15k",        "vanilla_3dgs/baseline",          "pin15k_yolov5_pertile",             GT_PIN, "IMG_20250715_153912",    "yolov5_fullres+per_tile+ROI", "pinhole", 15000),
     ("pin30k",        "vanilla_3dgs/colmap_dense17k",   "pin30k_yolov5_pertile",             GT_PIN, "IMG_20250715_153912",    "yolov5_fullres+per_tile+ROI", "pinhole", 30000),
@@ -44,6 +48,26 @@ RUNS = [
     ("ocv15k_conf070",           "opencv/vanilla_3dgs/baseline",  "ocv15k_conf070",          GT_OCV, "IMG_20250715_153912",    "SAM2 per_tile conf0.70, full cull",     "opencv",  15000),
     ("ocv15k_absgrad_fullcull",  "opencv/vanilla_3dgs/absgrad",   "ocv15k_absgrad_fullcull", GT_OCV, "IMG_20250715_153912",    "SAM1 per_tile, full cull, ABSGRAD model","opencv",  15000),
     ("ocv15k_sam1_conf070",      "opencv/vanilla_3dgs/baseline",  "ocv15k_sam1_conf070",     GT_OCV, "IMG_20250715_153912",    "SAM1 per_tile conf0.70, full cull",     "opencv",  15000),
+    # per-head granularity A/B (conf 0.35, full cull) — decides per_head SAM1 vs SAM2 (finished 2026-08-22)
+    ("ocv15k_perhead_sam1",      "opencv/vanilla_3dgs/baseline",  "ocv15k_perhead_sam1",     GT_OCV, "IMG_20250715_153912",    "SAM1 per_head conf0.35, full cull",     "opencv",  15000),
+    ("ocv15k_perhead_sam2",      "opencv/vanilla_3dgs/baseline",  "ocv15k_perhead_sam2",     GT_OCV, "IMG_20250715_153912",    "SAM2 per_head conf0.35, full cull",     "opencv",  15000),
+    # per_head SAM2 conf-endpoints (divergence study) — A/0715 conf0.70; conf0.22 pending
+    ("ocv15k_perhead_sam2_conf070", "opencv/vanilla_3dgs/baseline", "ocv15k_perhead_sam2_conf070", GT_OCV, "IMG_20250715_153912", "SAM2 per_head conf0.70, full cull", "opencv", 15000),
+    # generalization to field_D/20250627 (own opencv-warped GT) — per_head SAM2 conf0.70; conf0.22 pending
+    ("D0627_ocv15k_perhead_sam2_conf070", "opencv/vanilla_3dgs/baseline", "ocv15k_perhead_sam2_conf070", GT_OCV_D0627, "IMG_20250627_102602", "SAM2 per_head conf0.70, full cull (D/0627)", "opencv", 15000, S_D0627),
+    # conf0.22 endpoint (the mask-optimal conf, other end of the divergence study) — A/0715 done, D/0627 still running
+    ("ocv15k_perhead_sam2_conf022", "opencv/vanilla_3dgs/baseline", "ocv15k_perhead_sam2_conf022", GT_OCV, "IMG_20250715_153912", "SAM2 per_head conf0.22, full cull", "opencv", 15000),
+    ("D0627_ocv15k_perhead_sam2_conf022", "opencv/vanilla_3dgs/baseline", "ocv15k_perhead_sam2_conf022", GT_OCV_D0627, "IMG_20250627_102602", "SAM2 per_head conf0.22, full cull (D/0627)", "opencv", 15000, S_D0627),
+    # IoU-0.6 seg match threshold (reuses conf0.70 masks, only iou_threshold 0.5->0.6) — A/0715 + D/0627
+    ("ocv15k_perhead_sam2_conf070_iou06", "opencv/vanilla_3dgs/baseline", "ocv15k_perhead_sam2_conf070_iou06", GT_OCV, "IMG_20250715_153912", "SAM2 per_head conf0.70, full cull, IoU0.6", "opencv", 15000),
+    ("D0627_ocv15k_perhead_sam2_conf070_iou06", "opencv/vanilla_3dgs/baseline", "ocv15k_perhead_sam2_conf070_iou06", GT_OCV_D0627, "IMG_20250627_102602", "SAM2 per_head conf0.70, full cull, IoU0.6 (D/0627)", "opencv", 15000, S_D0627),
+    # IoU-0.7 seg match threshold (reuses conf0.70 masks, only iou_threshold 0.6->0.7) — A/0715
+    ("ocv15k_perhead_sam2_conf070_iou07", "opencv/vanilla_3dgs/baseline", "ocv15k_perhead_sam2_conf070_iou07", GT_OCV, "IMG_20250715_153912", "SAM2 per_head conf0.70, full cull, IoU0.7", "opencv", 15000),
+    # AbsGS model on the winner masks (conf0.70 per_head + IoU0.6) — does denser cloud help seg? A/0715 + D/0627
+    ("A0715_absgrad_perhead_conf070_iou06", "opencv/vanilla_3dgs/absgrad", "ocv15k_absgrad_perhead_sam2_conf070_iou06", GT_OCV, "IMG_20250715_153912", "SAM2 per_head conf0.70, full cull, IoU0.6, ABSGRAD model", "opencv", 15000),
+    ("D0627_absgrad_perhead_conf070_iou06", "opencv/vanilla_3dgs/absgrad", "ocv15k_absgrad_perhead_sam2_conf070_iou06", GT_OCV_D0627, "IMG_20250627_102602", "SAM2 per_head conf0.70, full cull, IoU0.6, ABSGRAD model (D/0627)", "opencv", 15000, S_D0627),
+    # plain 30k (dense17k_noabsgrad) on the winner masks — does longer default training help seg? A/0715
+    ("A0715_ocv30k_noabsgrad_perhead_conf070_iou06", "opencv/vanilla_3dgs/dense17k_noabsgrad", "ocv30k_noabsgrad_perhead_sam2_conf070_iou06", GT_OCV, "IMG_20250715_153912", "SAM2 per_head conf0.70, full cull, IoU0.6, 30k default", "opencv", 30000),
     # SAHI opt-suite (pinhole recon, SAHI masks) — different mask source, kept for the runtime study
     ("sahi_cropcache",  "vanilla_3dgs/phone_sahi", "seg_cropcache",  GT_PIN, "IMG_20250715_153912", "SAHI (opt-suite)", "pinhole", 15000),
     ("sahi_cull_v3",    "vanilla_3dgs/phone_sahi", "seg_cull_v3",    GT_PIN, "IMG_20250715_153912", "SAHI (opt-suite)", "pinhole", 15000),
@@ -64,8 +88,11 @@ def metrics(gt, pred):
 def main():
     rows = []
     selfcheck = []
-    for (name, mp, exp, gtp, stem, tag, sfm, iters) in RUNS:
-        pt = f"{BASE}/{mp}/segmentation_3d/{exp}/2DSeg/{stem}.pt"
+    for run in RUNS:
+        name, mp, exp, gtp, stem, tag, sfm, iters = run[:8]
+        sess = run[8] if len(run) > 8 else S      # optional per-run session override
+        base = f"results/reconstruction/phone/{sess}"
+        pt = f"{base}/{mp}/segmentation_3d/{exp}/2DSeg/{stem}.pt"
         if not (os.path.exists(pt) and os.path.exists(gtp)):
             rows.append(dict(name=name, status="missing", pt_exists=os.path.exists(pt), gt_exists=os.path.exists(gtp)))
             continue
@@ -81,7 +108,7 @@ def main():
         rows.append(dict(name=name, status="ok", sfm=sfm, iters=iters, mask=tag,
                          **{k: (round(v, 4) if isinstance(v, float) else v) for k, v in m.items()}))
         # self-check against stored official eval for the two pinhole runs
-        stored_json = f"{BASE}/{mp}/segmentation_3d/{exp}/eval_2d/metrics_2d.json"
+        stored_json = f"{base}/{mp}/segmentation_3d/{exp}/eval_2d/metrics_2d.json"
         if os.path.exists(stored_json):
             st = json.load(open(stored_json)); st = st[0] if isinstance(st, list) else st
             selfcheck.append((name, abs(m["iou"] - st.get("iou", -9)), abs(m["precision"] - st.get("precision", -9))))

@@ -163,14 +163,16 @@ def preds_from_labelmap(lab):
     return preds
 
 
-def score_run(mp, exp, stem, sfm):
-    """Instance metrics for one seg run, or a status string if its pred / GT is unavailable."""
-    pt = f"{BASE}/{mp}/segmentation_3d/{exp}/2DSeg/{stem}.pt"
+def score_run(mp, exp, stem, sfm, sess=S):
+    """Instance metrics for one seg run, or a status string if its pred / GT is unavailable.
+    sess = the run's session (defaults to the A/0715 anchor; generalization runs pass their own)."""
+    base = f"results/reconstruction/phone/{sess}"
+    pt = f"{base}/{mp}/segmentation_3d/{exp}/2DSeg/{stem}.pt"
     if not os.path.exists(pt):
         return {"status": "missing_pred"}
     sub = VARIANT_SUBDIR.get(sfm, "")
-    label_dir = os.path.join("input_plots", "phone", S, sub, "manual_label") if sub \
-        else os.path.join("input_plots", "phone", S, "manual_label")
+    label_dir = os.path.join("input_plots", "phone", sess, sub, "manual_label") if sub \
+        else os.path.join("input_plots", "phone", sess, "manual_label")
     gt_map, gt_ids, gt_areas = load_gt_instances(label_dir, stem)
     if gt_map is None:
         return {"status": "no_instance_gt"}     # e.g. agisoft frame — only a warped union mask exists
@@ -202,8 +204,10 @@ def main():
     args = ap.parse_args()
 
     rows = []
-    for (name, mp, exp, gtp, stem, tag, sfm, iters) in RUNS:
-        r = score_run(mp, exp, stem, sfm)
+    for run in RUNS:
+        name, mp, exp, gtp, stem, tag, sfm, iters = run[:8]
+        sess = run[8] if len(run) > 8 else S      # optional per-run session override
+        r = score_run(mp, exp, stem, sfm, sess)
         r.update({"name": name, "sfm": sfm, "iters": iters, "mask": tag})
         rows.append(r)
 

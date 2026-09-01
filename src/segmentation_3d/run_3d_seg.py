@@ -59,6 +59,8 @@ _SEG_TIMER = {"render": 0.0, "match": 0.0, "lift_decode": 0.0, "lift_render": 0.
 # outside the head's bbox the rendered alpha never exceeds 0.5, so no pixel there would ever be painted.
 # On by default; WHEAT_SEG_NO_FAST_PAINT=1 forces the old full-frame path (for the lossless A/B md5 check).
 _FAST_PAINT = os.environ.get("WHEAT_SEG_NO_FAST_PAINT") != "1"
+# On by default; WHEAT_SEG_NO_INFERENCE=1 keeps the gradient machinery (for an inference-only A/B).
+_INFERENCE = os.environ.get("WHEAT_SEG_NO_INFERENCE") != "1"
 
 def find_new_mask_dir(overlap_counter, num_wheat_head):
     """Return next letter suffix (a, b, c…) for an overlapping head, tracked in memory."""
@@ -133,7 +135,7 @@ def opt_label_w_seg(gaussians : GaussianModel,
         with torch.no_grad():
             # inference=True: the lift renders the FULL model (no used_mask) but never backprops, so skip
             # the screen-space grad machinery — pure speedup on the heaviest render, byte-identical counts.
-            render_pkg = flashsplat_render(viewpoint_cam, gaussians, pipeline, background, gt_mask=gt_mask, obj_num=1, inference=True)
+            render_pkg = flashsplat_render(viewpoint_cam, gaussians, pipeline, background, gt_mask=gt_mask, obj_num=1, inference=_INFERENCE)
             rendering = render_pkg["render"]
             used_count = render_pkg["used_count"]
             if all_counts is None:
@@ -225,7 +227,7 @@ def find_match(target_viewpoint_stack, gs_params, obj_used_mask, iou_threshold, 
             torch.cuda.synchronize(); _t = time.perf_counter()
         with torch.no_grad():
             # Go through other cameras to find match
-            render_pkg = flashsplat_render(viewpoint_cam, gaussians, pipe, background, used_mask=obj_used_mask, inference=True)
+            render_pkg = flashsplat_render(viewpoint_cam, gaussians, pipe, background, used_mask=obj_used_mask, inference=_INFERENCE)
             render_alpha = render_pkg["alpha"]
             pred_seg = render_alpha.squeeze() > 0.5  # stays on GPU — avoids GPU→CPU sync per render
         pred_bbox = get_bbox_from_mask_gpu(pred_seg)  # GPU torch ops, returns same (x,y,x,y) tuple
@@ -708,7 +710,7 @@ def training(dataset, opt, pipe, load_iteration, exp_name, iou_threshold, save_v
                 with torch.no_grad():
                     if _SEG_TIMING:
                         torch.cuda.synchronize(); _t = time.perf_counter()
-                    render_pkg = flashsplat_render(viewpoint_cam, gaussians, pipe, background, used_mask=obj_used_mask, inference=True)
+                    render_pkg = flashsplat_render(viewpoint_cam, gaussians, pipe, background, used_mask=obj_used_mask, inference=_INFERENCE)
                     render_alpha = render_pkg["alpha"].squeeze().detach()  # keep on GPU; transfer only what we paint
                     pos = render_alpha > 0.5                               # the pixels this head paints
                     if _SEG_TIMING:
