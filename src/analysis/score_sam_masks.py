@@ -105,11 +105,11 @@ def score_experiment(field, plot, method, exp, gt_dir):
 def main():
     ap = argparse.ArgumentParser(description="Score raw SAM masks vs manual GT (binary foreground IoU).")
     ap.add_argument("--field", default="fip")
-    ap.add_argument("--plot", default="plot_461")
+    ap.add_argument("--plot", required=True, help="fip plot (e.g. plot_461) or phone session")
     ap.add_argument("--method", default="yolo_sam_v1", help="result subtree (matches the mask-gen method)")
     ap.add_argument("--exp", nargs="+", required=True, help="one or more experiment names to compare")
     ap.add_argument("--gt_dir", default=None, help="override GT dir (default input_plots/<field>/<plot>/manual_label)")
-    ap.add_argument("--out", default=None, help="write JSON here (default docs/analysis_results/sam_backend_ab/<plot>.json)")
+    ap.add_argument("--out", default=None, help="write JSON here (default results/analysis/sam_backend_ab/<plot>.json)")
     args = ap.parse_args()
 
     gt_dir = args.gt_dir or os.path.join("input_plots", args.field, args.plot, "manual_label")

@@ -20,7 +20,8 @@ import glob
 import os
 import zipfile
 
-PHONE_ROOT = "/workspace/input_plots/phone"
+_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
+PHONE_ROOT = os.path.join(_REPO, "input_plots", "phone")
 
 
 def main():

@@ -2,10 +2,10 @@
 
 Reads every results/mask_generation/phone/evaluation/<method>/masks_instance/<exp>/eval_masks_instance.json,
 pools the per-image records into P/R/F1 + mean matched IoU + boundary IoU/F + merge/split counts, prints the
-cells sorted by instance F1, and writes grid_summary.csv. Run after scripts/run_maskgen_grid.sh.
+cells sorted by instance F1, and writes grid_summary.csv. Run after the mask-gen grid eval.
 
 No confidence / AP here — the mask eval is confidence-free on purpose (SAM has no per-mask score; ranking by
-the detector's box score would measure the detector, not the mask). See docs/mask_generation/MASK_EVAL_METRICS.md.
+the detector's box score would measure the detector, not the mask).
 """
 import os
 import glob

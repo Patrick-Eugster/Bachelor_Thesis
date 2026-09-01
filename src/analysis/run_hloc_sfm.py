@@ -1,23 +1,21 @@
 """Run an hloc-based SfM on a phone session and write a COLMAP model, so we can A/B a
 detector-free / better-matching front-end against our default ALIKED+LightGlue `sparse/0`.
 
-WHY: on repetitive wheat our ALIKED matcher emits false matches -> pose drift (see
-docs/preprocessing/sfm/POSE_DRIFT_GPS_FREE_FIXES.md). GLOMAP (a *mapper*) reused those bad matches
+WHY: on repetitive wheat our ALIKED matcher emits false matches -> pose drift. GLOMAP (a *mapper*) reused those bad matches
 and was worse. This script swaps the *matcher* (stage 1) instead: SuperPoint+LightGlue (still
 detector-based, a sanity swap) or LoFTR (detector-free / semi-dense, the real test), then feeds the
 better matches into COLMAP's own incremental mapper (via hloc/pycolmap) -> `sparse_<matcher>/0`.
 
 The output model is forced to SINGLE-camera SIMPLE_PINHOLE (same as our baseline sparse/0) so that
-src/analysis/compare_sfm_models_markers.py can read f/cx/cy from params[0:3] and compare fairly.
+a downstream marker-geometry comparison can read f/cx/cy from params[0:3] and compare fairly.
 
 Runs in the isolated hloc venv (NOT the wheat3dgs CUDA env):
-  source /root/venvs/hloc/bin/activate
-  python src/analysis/run_hloc_sfm.py --field field_D --plot 20250706 --matcher splg
-  python src/analysis/run_hloc_sfm.py --field field_D --plot 20250706 --matcher loftr
+  source <your-hloc-venv>/bin/activate
+  python src/analysis/run_hloc_sfm.py --field field_A --plot 20250715 --matcher splg
+  python src/analysis/run_hloc_sfm.py --field field_A --plot 20250715 --matcher loftr
 
-Then measure (either venv, needs pycolmap):
-  python src/analysis/compare_sfm_models_markers.py --field field_D --plot 20250706 \
-      --models sparse/0 sparse_splg/0 sparse_loftr/0
+Then compare the resulting sparse_<matcher>/0 against the baseline sparse/0 with your own
+marker-geometry / pose check.
 """
 
 import os
@@ -106,8 +104,8 @@ def run(field, plot, matcher, image_subdir, out_name, keep_work, resize_max=None
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--field", default="field_D")
-    ap.add_argument("--plot", default="20250706")
+    ap.add_argument("--field", required=True, help="e.g. field_A")
+    ap.add_argument("--plot", required=True, help="session, e.g. 20250715")
     ap.add_argument("--matcher", default="splg",
                     choices=list(SPARSE) + list(DENSE))
     ap.add_argument("--image_subdir", default="input_uniform",

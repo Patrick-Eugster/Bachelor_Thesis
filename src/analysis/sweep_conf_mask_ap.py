@@ -33,7 +33,7 @@ Smoke test (one image, one mode):
 
 Full run (6 images via a manifest JSON list of {image, gt, bbox}):
   python src/analysis/sweep_conf_mask_ap.py --manifest configs/manifests/gt6.json \
-      --backend sam1 --mode per_tile --sweep dense --out docs/analysis_results/conf_sweep/sam1_per_tile.json
+      --backend sam1 --mode per_tile --sweep dense --out results/analysis/conf_sweep/sam1_per_tile.json
 """
 import argparse
 import json

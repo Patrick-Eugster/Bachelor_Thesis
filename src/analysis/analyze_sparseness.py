@@ -2,7 +2,7 @@
 Diagnostic: measure how "sparse" each COLMAP/Agisoft reconstruction is.
 
 3DGS densification methods behave differently depending on how well-constrained the
-input is (see docs/reconstruction/DENSIFICATION_OPTIONS.md). "Sparse / limited views" is not just the
+input is. "Sparse / limited views" is not just the
 image count — it is mostly about multi-view OVERLAP (how many cameras see each 3D point)
 and ANGULAR diversity (do the cameras look from many directions or all from one cone).
 This script reads the sparse SfM model and reports those numbers so we can decide, per
@@ -13,7 +13,7 @@ Run:
     python src/analysis/analyze_sparseness.py                 # auto: all FIP plots + phone sessions
     python src/analysis/analyze_sparseness.py --sparse <dir>  # one specific sparse/0 dir
 Output:
-    docs/analysis_results/sparseness.json   (raw numbers, git-tracked for the report)
+    results/analysis/sparseness.json   (raw numbers)
     + a printed summary table
 """
 
@@ -27,8 +27,8 @@ import numpy as np
 # reuse the project's COLMAP reader for the image (extrinsics) side
 from gaussians.scene.colmap_loader import read_extrinsics_text, qvec2rotmat
 
-REPO = "/workspace"
-OUT_JSON = os.path.join(REPO, "docs", "analysis_results", "sparseness.json")
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root (src/analysis/../..)
+OUT_JSON = os.path.join(REPO, "results", "analysis", "sparseness.json")
 
 
 def parse_track_lengths(points3D_txt):

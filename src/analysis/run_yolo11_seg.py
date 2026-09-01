@@ -33,9 +33,10 @@ from ultralytics import YOLO
 
 from mask_generation.roi_mask import apply_roi, roi_crop_box, roi_keep_mask
 
-WEIGHTS = "/workspace/src/mask_generation/weights/yolo-medium-segment.pt"
-INPUT_ROOT = "/workspace/input_plots"
-RESULT_ROOT = "/workspace/results/mask_generation"
+_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
+WEIGHTS = os.path.join(_REPO, "src", "mask_generation", "weights", "yolo-medium-segment.pt")
+INPUT_ROOT = os.path.join(_REPO, "input_plots")
+RESULT_ROOT = os.path.join(_REPO, "results", "mask_generation")
 # seg-head mask upsample needs N×imgsz² on the GPU. On DENSE images (phone ~700+ heads) even 2048
 # OOMs 16 GB, and a driver/allocator OOM CORRUPTS the CUDA context → the next image hard-crashes
 # (not a catchable OOM). So the safe move is to pick a start imgsz that never OOMs for the density,

@@ -15,7 +15,7 @@ Give one or more seg dirs (each with gaussians.ply + all_obj_labels.pth). Writes
 table + per-run JSON + a head-size histogram PNG. Read-only on the seg outputs.
 
 Usage:
-  python src/analysis/seg_head_size_stats.py \
+  python src/segmentation_3d/seg_head_size_stats.py \
     --seg NAME=path/to/segmentation_3d/EXP [--seg NAME2=...] \
     --out_dir docs/analysis_results/seg_head_sizes
 """

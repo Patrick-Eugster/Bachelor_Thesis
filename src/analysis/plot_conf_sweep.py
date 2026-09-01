@@ -5,11 +5,11 @@ Reads every <indir>/*.json, and for a chosen IoU threshold produces:
   - overlay :  F1-vs-conf for ALL cells on one axis -> <outdir>/_overlay_f1_iou{thr}.png
   - a summary table (best-F1 conf, best F1, AP estimate per cell) printed + saved as _summary_iou{thr}.md
 
-This is the Issue-1 readout: the best conf per SAM mode/backend and which mode wins. Matplotlib only.
+This shows the best conf per SAM mode/backend and which mode wins. Matplotlib only.
 
   python src/analysis/plot_conf_sweep.py \
       --indir results/mask_generation/phone/evaluation/conf_sweep \
-      --outdir docs/analysis_results/conf_sweep --iou 0.5
+      --outdir results/analysis/conf_sweep --iou 0.5
 """
 import argparse
 import glob
@@ -55,7 +55,7 @@ def _curve(cell, iou_key):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--indir", default="results/mask_generation/phone/evaluation/conf_sweep")
-    ap.add_argument("--outdir", default="docs/analysis_results/conf_sweep")
+    ap.add_argument("--outdir", default="results/analysis/conf_sweep")
     ap.add_argument("--iou", type=float, default=0.5, help="which IoU-threshold curve to plot")
     args = ap.parse_args()
     iou_key = str(args.iou)

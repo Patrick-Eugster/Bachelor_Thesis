@@ -26,9 +26,10 @@ import torch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "mask_generation"))
 import roi_mask  # noqa: E402
 
-PHONE_ROOT = "/workspace/input_plots/phone"
-RESULTS_ROOT = "/workspace/results/mask_generation/phone"
-DEFAULT_SELECTION = "/workspace/input_plots/phone/gt_selection.json"  # 36 GT images (12 sessions × 3)
+_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
+PHONE_ROOT = os.path.join(_REPO, "input_plots", "phone")
+RESULTS_ROOT = os.path.join(_REPO, "results", "mask_generation", "phone")
+DEFAULT_SELECTION = os.path.join(PHONE_ROOT, "gt_selection.json")  # 36 GT images (12 sessions × 3)
 
 
 def iou_vec(a, boxes):

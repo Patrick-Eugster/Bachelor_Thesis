@@ -8,7 +8,7 @@ centroid, in-plane) of big vs normal heads, so the "center" claim is quantified,
 
 Read-only. Usage:
   python src/analysis/seg_head_size_map.py --seg path/to/segmentation_3d/EXP \
-    --plot_dir input_plots/phone/field_A/20250715/opencv --out_dir docs/analysis_results/seg_head_sizes
+    --plot_dir input_plots/phone/field_A/20250715/opencv --out_dir results/analysis/seg_head_sizes
 """
 import argparse
 import os
@@ -25,7 +25,7 @@ def main():
     ap.add_argument("--seg", required=True, help="segmentation_3d/EXP dir (gaussians.ply + all_obj_labels.pth)")
     ap.add_argument("--plot_dir", required=True, help="the SfM source dir (holds logs/marker_points3d.json)")
     ap.add_argument("--big_thresh", type=int, default=800, help="heads with > this many Gaussians = likely merged")
-    ap.add_argument("--out_dir", default="docs/analysis_results/seg_head_sizes")
+    ap.add_argument("--out_dir", default="results/analysis/seg_head_sizes")
     a = ap.parse_args()
 
     L = torch.load(os.path.join(a.seg, "all_obj_labels.pth"), map_location="cpu")

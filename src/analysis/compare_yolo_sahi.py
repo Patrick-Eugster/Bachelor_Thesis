@@ -7,7 +7,7 @@ It reads the saved boxes from each detector's result tree:
   ... falling back to .../bboxes/*.pt (4 cols, no conf) if the conf files aren't there.
 
 Per image it counts boxes (>= --count_threshold when confidences are available) and matches YOLO
-to SAHI by image stem. Outputs to docs/analysis_results/yolo_sahi_<session>/:
+to SAHI by image stem. Outputs to results/analysis/yolo_sahi_<session>/:
   - counts.csv              per-image yolo/sahi counts (+ diff)
   - count_compare.png       per-image comparison (scatter vs identity + sorted lines)
   - conf_hist.png           confidence histograms (yolo vs sahi) — only if conf is available
@@ -87,7 +87,7 @@ def main():
         print("No boxes found for either detector — check session/exp names.")
         return
 
-    out = args.out or os.path.join("docs/analysis_results", "yolo_sahi_" + args.session.replace("/", "_"))
+    out = args.out or os.path.join("results/analysis", "yolo_sahi_" + args.session.replace("/", "_"))
     os.makedirs(out, exist_ok=True)
     t = args.count_threshold
 

@@ -562,7 +562,7 @@ def _run_pipeline(cfg):
         # (over/under-seg diagnostic: over-merge >800g, fragments <20g, empty heads). No separate toggle;
         # writes head_size_stats.md/.json + histogram into the seg exp dir so it rsyncs back with the run.
         run_step(ctx, "head_stats", "4c. Head-size stats", [
-            "python", "src/analysis/seg_head_size_stats.py",
+            "python", "src/segmentation_3d/seg_head_size_stats.py",
             "--seg", f"{cfg.segmentation_3d.exp_name}={exp_dir}",
             "--out_dir", exp_dir,
         ], log_file, depends_on="seg")
