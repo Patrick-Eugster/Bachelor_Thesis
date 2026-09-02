@@ -52,10 +52,10 @@ def main():
         if count == 0:
             continue
         n_labeled += count
-        # opt-in high-contrast palette (WHEAT_SEG_CONTRAST_PALETTE=1): golden-ratio hue hop + alternating
-        # sat/val so adjacent head IDs look clearly different — same formula render_360 uses, so the baked
-        # .ply matches the golden fly-around video. Default (unset) = the original thin hue ramp.
-        if os.environ.get("WHEAT_SEG_CONTRAST_PALETTE") == "1":
+        # high-contrast palette (DEFAULT ON): golden-ratio hue hop + alternating sat/val so adjacent head
+        # IDs look clearly different — same formula render_360 uses, so the baked .ply matches the
+        # fly-around video. Set WHEAT_SEG_CONTRAST_PALETTE=0 for the original thin hue ramp.
+        if os.environ.get("WHEAT_SEG_CONTRAST_PALETTE", "1") != "0":
             hue = (head_id * 0.6180339887498949) % 1.0        # golden-ratio conjugate — max-spread hop
             sat = [0.95, 0.70, 0.85, 0.60][head_id % 4]
             val = [0.95, 0.75][head_id % 2]

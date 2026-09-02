@@ -1,137 +1,164 @@
-# 3DGS Reconstruction — `src/reconstruction/`
+# 3DGS reconstruction — `src/reconstruction/`
 
-## Overview
+This stage trains a 3D Gaussian Splatting (3DGS) model of a wheat plot from its
+multi-view images and the COLMAP camera calibration. The trained model is what the 3D
+segmentation stage later lifts the 2D masks into, so 3DGS reconstruction always runs
+before 3D segmentation.
 
-Trains a 3D Gaussian Splatting model of a wheat plot from multi-view images and COLMAP camera calibration. The trained model is the input for 3D segmentation (step 4).
+This folder holds the training-side scripts (`train_vanilla_3dgs.py`, `render.py`,
+`metrics.py`, plus a couple of small helpers). You do not launch them directly. You run the conductor
+`src/run_reconstruction.py`, which sits at the top of `src/`, and it launches each
+step as its own process.
 
-Entry point: `src/run_reconstruction.py` — configured via `configs/reconstruction_seg3d/config.yaml`.
+## How to run
 
----
+Run everything from the workspace root. You pick the dataset with a single switch,
+`profile=phone` (the default) or `profile=fip`, and the profile sets the right
+dataset, defaults, and per-stage values for you.
 
-## How to Run
-
-Run from the workspace root:
+All steps are **off by default**. You turn on the ones you want with `run_*` flags:
 
 ```bash
-python src/run_reconstruction.py
-```
-
-All pipeline steps are **off by default** — enable the ones you want in `configs/reconstruction_seg3d/config.yaml` or pass them on the CLI:
-
-```bash
+# train only (phone default)
 python src/run_reconstruction.py run_train=true
+
+# train, render the views, and compute metrics
 python src/run_reconstruction.py run_train=true run_render=true run_metrics=true
-python src/run_reconstruction.py dataset=phone plot=field_A date=20250618 run_train=true experiment_name=phone_test
+
+# a single FIP plot
+python src/run_reconstruction.py profile=fip plot=plot_463 run_train=true
 ```
 
----
+Any config value can be overridden on the command line, so a specific plot, session,
+or run name is just an extra argument:
 
-## Experiment Names
-
-Experiment names are split across two config files:
-
-`configs/reconstruction_seg3d/config.yaml`:
-```yaml
-plot: "plot_461"             # which plot to process
-experiment_name: "initial"   # name for the 3DGS training output folder
-prepend_date: false          # prepends today's date: "2025-04-28_initial"
+```bash
+python src/run_reconstruction.py run_train=true plot=field_A date=20250627 experiment_name=my_run
 ```
 
-`configs/reconstruction_seg3d/segmentation_3d/default.yaml`:
-```yaml
-mask_gen_experiment: "initial"   # which mask-generation run to read masks from
-exp_name: "run_1"                # name for the segmentation subfolder
-```
+## Steps the conductor runs
 
-- **`experiment_name`** — controls the top-level output folder `results/reconstruction/fip/{plot}/vanilla_3dgs/{experiment_name}/`. All training, render, and metrics outputs go here. Named experiments (not `"initial"`) warn before overwriting.
-- **`mask_gen_experiment`** — points to the mask-generation run whose `bboxes/` and `masks/` are used as input for training and segmentation. Must match the folder name in `results/mask_generation/`.
-- **`exp_name`** — controls the segmentation subfolder `segmentation_3d/{exp_name}/`. Lets you re-run segmentation with different settings on the same trained model without retraining.
+The conductor `src/run_reconstruction.py` drives the whole 3DGS reconstruction and 3D
+segmentation flow. Each step is a separate process, and each one reuses the output
+of the steps before it, so run them in order the first time. After that you can
+re-run any single step on the already-trained model.
 
----
-
-## Pipeline Steps
-
-All steps are independent toggles. Run them in order, but you can re-run any individual step without repeating earlier ones.
+**3DGS reconstruction steps** (this stage, documented below):
 
 | Step | Toggle | Script | What it does |
 |------|--------|--------|--------------|
-| 1 | `run_train` | `vanilla_3dgs/train_vanilla_3dgs.py` | Train 3DGS model — L1 + SSIM loss |
-| 2 | `run_render` | `render.py` | Render from training + test camera positions |
-| 3 | `run_metrics` | `metrics.py` | Compute PSNR / SSIM / LPIPS on test views → `results.json` |
-| 4 | `run_seg` | `segmentation_3d/run_3d_seg.py` | Assign 3D wheat head IDs to Gaussians |
-| 4b | auto after 4 | `segmentation_3d/export_colored_ply.py` | Bake per-head HSV colors into `gaussians_colored.ply` |
-| 5 | `run_render_360` | `viewer/render_360.py` | Render 360° flyaround video → `wheat_field_360.mp4` |
-| 6 | `run_eval` | `segmentation_3d/eval_wheatgs.py` | Evaluate 3D segmentation quality vs SAM masks |
-| 7 | `run_viewer` | `viewer/wheatgs_rendering.py` | Open interactive viser viewer at `http://localhost:8080` — in the GUI set render res to `2560 × 1920` for good quality |
+| 1 | `run_train` | `reconstruction/vanilla_3dgs/train_vanilla_3dgs.py` | Train the 3DGS model of the plot |
+| 2 | `run_render` | `reconstruction/render.py` | Produce 2D images from the trained 3D model, one per training and test camera, so the result can be looked at and scored |
+| 3 | `run_metrics` | `reconstruction/metrics.py` | Score those test renders against the real images (PSNR, SSIM, LPIPS etc.) |
 
-### Input / Output per step
+**3D segmentation and viewer steps** (documented in the [3D segmentation README](../segmentation_3d/README.md)):
 
-| Step | Input | Output |
-|------|-------|--------|
-| 1 | `images/` + `sparse/` + `bboxes/` | `point_cloud/iteration_{N}/point_cloud.ply` |
-| 2 | `point_cloud/iteration_{N}/point_cloud.ply` | `train/` + `test/ours_{N}/` |
-| 3 | `test/ours_{N}/` + `images/` | `results.json` |
-| 4 | `point_cloud/iteration_{N}/point_cloud.ply` + `masks/` | `segmentation_3d/{exp_name}/gaussians.ply` + `2DSeg/` + `ply/` |
-| 4b | `segmentation_3d/{exp_name}/gaussians.ply` | `segmentation_3d/{exp_name}/gaussians_colored.ply` |
-| 5 | `segmentation_3d/{exp_name}/gaussians.ply` | `segmentation_3d/{exp_name}/3DSeg/wheat_field_360.mp4` |
-| 6 | `segmentation_3d/{exp_name}/2DSeg/` + `gaussians.ply` | `train/overlay/` + `train/segmentation/` + `test/overlay/` + `test/segmentation/` |
-| 7 | `segmentation_3d/{exp_name}/gaussians.ply` + `sparse/` + `images/` | — (interactive) |
+| Step | Toggle | Script | What it does |
+|------|--------|--------|--------------|
+| 4 | `run_seg` | `segmentation_3d/run_3d_seg.py` | Give every Gaussian a 3D wheat head ID |
+| 5 | `run_render_360` | `viewer/render_360.py` | Render a 360 degree flyaround video of the plot |
+| 6 | `run_eval` | `segmentation_3d/eval_wheatgs.py` | Score the 3D segmentation quality |
+| 6b | `run_eval_2d` | `segmentation_3d/eval_seg_2d.py` | Score the 2D masks per pixel against the manual ground truth |
+| 7 | `run_viewer` | `viewer/wheatgs_rendering.py` | Open the interactive browser viewer |
 
----
+Steps 4, 6, and 6b are the 3D segmentation stage, and steps 5 and 7 use the tools in
+[src/viewer/](../viewer/). Step 4 (`run_seg`) also exports a per-head colored PLY right
+after it finishes, and step 6b depends on step 6, so run them together.
 
-## Key Training Parameters
+## The three 3DGS reconstruction steps
+
+- **Train** (`run_train`) optimizes a cloud of 3D Gaussians so that rendering them
+  from each camera reproduces the input images. It starts from the sparse SfM points
+  and refines and densifies the Gaussians over the training iterations. The model is
+  saved as a point cloud partway through (`point_cloud/iteration_7000/`) and at the end
+  (`point_cloud/iteration_15000/`).
+
+- **Render** (`run_render`) produces 2D images from the trained 3D model, one per
+  training and test camera, so you can look at the 3DGS reconstruction quality.
+
+- **Metrics** (`run_metrics`) reads those test renders and computes PSNR, SSIM, LPIPS etc.
+  against the real images, writing the scores to `results.json`.
+
+## Experiment names
+
+Set in `configs/reconstruction_seg3d/config.yaml`:
+
+```yaml
+experiment_name: "thesis_baseline"   # name of the output folder
+prepend_date: false                  # true prepends today's date, e.g. 2025-04-28_thesis_baseline
+allow_overwrite: false               # a named run that already exists is refused, not overwritten
+```
+
+`thesis_baseline` can be shared across mask generation, 3DGS
+reconstruction, and 3D segmentation, so the stages find each other's outputs and chain
+automatically.
+A named run that already exists on disk is **refused** with a hard error so finished
+runs are never clobbered. Set `allow_overwrite=true` to overwrite on purpose. Leave
+`experiment_name` empty (`""`) for an auto timestamp.
+
+## Key training parameters
 
 Set in `configs/reconstruction_seg3d/reconstruction/vanilla_3dgs.yaml`:
 
 | Parameter | Default | Notes |
 |-----------|---------|-------|
-| `resolution` | `2` | Downscale factor — `1` = full res (may OOM on 16 GB GPU), `2` = half res (safe) |
-| `sh_degree` | `3` | Spherical harmonics degree — set `0` to save ~1.3 GB VRAM (wheat has no shiny surfaces) |
-| `opacity_prune_threshold` | `0.005` | Raise to `0.01` if OOM — prunes more Gaussians, no quality loss for wheat |
-| `data_device_cpu` | `true` | **Keep true on 16 GB GPU** — images stay in RAM, only active render goes to VRAM |
-| `densify_until_iter` | `11000` | Gaussian count peaks here — most likely OOM point if it happens |
-| `densify_grad_threshold` | `0.0002` | Lower = more Gaussians = higher quality but more VRAM |
+| `iterations` | `15000` | Total number of training iterations. |
+| `resolution` | `1` | Downscale factor for the training images. `1` is full resolution and is the pipeline default. |
+| `sh_degree` | `3` | Spherical harmonics degree, which controls view-dependent color. |
+| `opacity_prune_threshold` | `0.005` | Gaussians below this opacity get pruned. Raise to `0.01` to prune more and save VRAM. |
+| `data_device_cpu` | `true` | Keep the training images in RAM instead of VRAM. Strongly recommended on a 16 GB GPU. |
+| `densify_grad_threshold` | set by profile | Gradient threshold for splitting and cloning Gaussians. Lower means more Gaussians, so finer detail but more VRAM. FIP uses `0.0008` and phone `0.0002`, because FIP turns on AbsGS (see `absgrad`) whose gradients are larger. |
+| `densify_until_iter` | `11000` | Stop adding new Gaussians after this iteration. The Gaussian count peaks around here. |
+| `absgrad` | set by profile | AbsGS densification, which can help preserve finer wheat detail. FIP `true`, phone `false`. When `true` you must raise `densify_grad_threshold`. |
+| `use_principal_point` | `true` | Uses COLMAP's off-center principal point through an asymmetric frustum. A big quality gain on FIP. On phone it does nothing, since COLMAP re-centers the principal point. |
 
-Training takes ~1.5h at `resolution: 2` on a 24 GB GPU, ~45 min at `resolution: 2` locally.
+## Thesis baseline configuration
 
----
+The two profiles, `profile=fip` and `profile=phone`, carry the configuration we settled
+on for the thesis, so the defaults already match what we actually ran. For 3DGS
+reconstruction that is the gsplat engine, the principal point accounted for, 15k
+iterations, and resolution 1. FIP additionally turns on AbsGS densification, which can
+help preserve finer detail (with the raised gradient threshold), and phone uses the
+standard densification threshold.
 
-## Output Structure
+## Outputs
 
 ```
-results/reconstruction/fip/{plot}/vanilla_3dgs/{experiment_name}/
-├── config.yaml                          ← auto-saved full config at run start
+results/reconstruction/<dataset>/<plot>/vanilla_3dgs/<experiment_name>/
+├── config.yaml                          ← the full config, auto-saved at run start
 ├── point_cloud/
-│   ├── iteration_7000/point_cloud.ply   ← mid-training Gaussian model
-│   └── iteration_15000/point_cloud.ply  ← final trained Gaussian model
-├── train/                               ← renders from training camera positions
-├── test/ours_15000/                     ← renders from test camera positions
-├── results.json                         ← PSNR / SSIM / LPIPS scores (step 3)
-├── seg_logs/{exp_name}.txt              ← full segmentation log (step 4)
-└── segmentation_3d/{exp_name}/          ← segmentation outputs (see segmentation README)
+│   ├── iteration_7000/point_cloud.ply   ← mid-training model
+│   └── iteration_15000/point_cloud.ply  ← final trained model
+├── train/                               ← renders from the training cameras (step 2)
+├── test/                                ← renders from the test cameras (step 2)
+├── results.json                         ← PSNR / SSIM / LPIPS on the test views (step 3), plus per_view.json
+├── run_report.txt                       ← per-step OK / FAIL / SKIP with timings for the run
+├── seg_logs/                            ← 3D segmentation logs
+└── segmentation_3d/<exp_name>/          ← 3D segmentation outputs (check 3D segmentation README)
 ```
 
----
+`<dataset>` is `fip` or `phone`, and phone additionally nests `<field>/<session>` in
+the plot path. Only the main outputs are shown here. Each experiment folder also holds
+extra visualizations and logs.
 
-## Phone Data — Preprocessing
+## Phone preprocessing
 
-Phone data needs two preprocessing steps before reconstruction (uniform-size cropping + COLMAP SfM). These have been moved to their own folder — see [`src/preprocessing/README.md`](../preprocessing/README.md) for full documentation.
+Phone data must run the SfM stage first to build `images/` and `sparse/0/` before any
+3DGS reconstruction step. See [src/preprocessing/README.md](../preprocessing/README.md).
+FIP plots come pre-calibrated from Agisoft and skip preprocessing entirely.
 
-Quick reference (run before any reconstruction step on phone data):
-```bash
-# 1. center-crop all images to the majority resolution (fixes HDR-mode size mismatch)
-python src/preprocessing/preprocess_uniform_size.py plot=20250618
+## Subfolders
 
-# 2. run COLMAP Structure-from-Motion (auto-reads from input_uniform/)
-python src/preprocessing/convert.py plot=20250618
-```
+- `vanilla_3dgs/` — the 3DGS trainer (`train_vanilla_3dgs.py`).
+- `compare_renderers.py`, `vis_cam.py` — small helper scripts for A/B renderer checks
+  and camera visualization.
 
-Both scripts default to `dataset=phone` and `field=field_A`. Override on CLI if needed (`field=field_B`, etc).
+## Optional analysis helpers
 
-FIP plots are pre-calibrated and skip both steps.
+[`src/analysis/`](../analysis/) holds standalone scripts that are not part of a run. The one most
+useful here is `collect_experiment_results.py`, which harvests every 3DGS reconstruction, 3D
+segmentation and evaluation run into a single results table. Read the notes at the top of
+[`src/analysis/README.md`](../analysis/README.md) first, since it needs its output path adjusted
+before it runs.
 
----
-
-## Logging
-
-The full pipeline output (all steps) is logged to `seg_logs/{exp_name}.txt` inside the experiment folder. Set `log_seg_only: true` (default) to only log the segmentation step — training output stays terminal-only since it's already verbose.
+Detailed write-ups on the 3DGS reconstruction flags live in the private `docs/` folder.

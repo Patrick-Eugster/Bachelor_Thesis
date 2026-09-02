@@ -1,3 +1,50 @@
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+
+> # 🗄️ OUTDATED — DEEP DIVE ON THE MASK-GENERATION EVALUATION SCRIPTS
+>
+>
+> **This file is a dense reference for the evaluation scripts and links into the private `docs/` notes. For the current entry point and how to run the mask-generation stage, start at the [stage README](../README.md).**
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+
 # Mask-generation Evaluation — quick reference
 
 | file | what it does |

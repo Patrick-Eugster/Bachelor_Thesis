@@ -420,10 +420,10 @@ def render_360_fast(og_view, scene_radius, render_path, n_frames, framerate, gau
         # build HSV palette for heads 1..n_heads-1 (index 0 = background, skipped)
         n_heads = all_obj_labels.shape[0]
         SH_C0 = 0.28209479177387814
-        # opt-in high-contrast palette (WHEAT_SEG_CONTRAST_PALETTE=1): golden-ratio hue hop + alternating
-        # sat/val so ADJACENT head IDs look clearly different — makes over-merged clumps (one solid colour)
-        # vs many separate heads visible. Default (unset) = the original thin hue=(i-1)/n ramp, byte-identical.
-        _contrast = os.environ.get("WHEAT_SEG_CONTRAST_PALETTE") == "1"
+        # high-contrast palette (DEFAULT ON): golden-ratio hue hop + alternating sat/val so ADJACENT head
+        # IDs look clearly different — makes over-merged clumps (one solid colour) vs many separate heads
+        # visible. Set WHEAT_SEG_CONTRAST_PALETTE=0 for the original thin hue=(i-1)/n ramp.
+        _contrast = os.environ.get("WHEAT_SEG_CONTRAST_PALETTE", "1") != "0"
         palette = []
         for i in range(1, n_heads):
             if _contrast:

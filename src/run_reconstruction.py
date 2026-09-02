@@ -464,6 +464,11 @@ def _run_pipeline(cfg):
     seg_source   = get_seg_source_dir(cfg)
     log_file     = get_log_file(model_path, cfg.segmentation_3d.exp_name)
 
+    # head coloring palette — exported once here so every step we launch inherits it. Read by the
+    # gaussians_colored.ply export and by render_360 (the viewer has its own bake and ignores it).
+    # Standalone calls can set the env var themselves.
+    os.environ["WHEAT_SEG_CONTRAST_PALETTE"] = "1" if cfg.segmentation_3d.get("contrast_palette", True) else "0"
+
     data_device_flag  = ["--data_device", "cpu"] if cfg.reconstruction.data_device_cpu else []
     wandb_flag        = ["--wandb_enabled"] if cfg.wandb_enabled else []
     resolution_str    = str(cfg.reconstruction.resolution)

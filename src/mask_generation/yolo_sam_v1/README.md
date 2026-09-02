@@ -1,3 +1,50 @@
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+
+> # 🗄️ OUTDATED — DEEP DIVE ON THE `yolo_sam_v1` INTERNALS, NOT THE ENTRY POINT
+>
+>
+> **This file documents the internals of the `yolo_sam_v1` detector, and some commands below use the older per-script entry (`main_v1.py`, `dataset=`). For the current entry point and how to run the mask-generation stage, start at the [stage README](../README.md).**
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+
 # YOLO + SAM Pipeline — `yolo_sam_v1`
 
 ## Overview

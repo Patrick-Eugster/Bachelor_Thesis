@@ -1,13 +1,30 @@
 # `src/analysis/` — optional analysis & QA helpers
 
-These are small, standalone scripts for **inspecting and sanity-checking** the pipeline's output —
-they are *not* part of a normal run. You never need them to go from images to a segmented 3D model;
-reach for one when you want to compare two runs, score quality, visualise a step, or prepare
-ground-truth labels. Each script is run on its own from the repo root (most take `--help`), and the
-ones that save numbers/plots write into `docs/analysis_results/`.
+> ## ⚠️ Read this before running any script here
+>
+> **These scripts were written for our own runs and most of them need adjusting before they work
+> for you.**
+>
+> - **Output paths.** Most write their results into `docs/analysis_results/`, which is a private
+>   submodule folder that a public clone does not have. The output path needs to be adjusted before
+>   you run one. Some scripts take an `--out` option, others have the path written near the top of
+>   the file.
+> - **Hardcoded runs.** Several carry a built-in list of the sessions or experiments they score.
+>   Point that list at your own data first.
+> - **Local reference data.** The marker and SfM geometry evaluations read survey coordinates and
+>   tape measurements that are not part of this repo, so they only run where that data is present.
+>
+> Open a script and read its top before you run it. None of them are needed for a normal pipeline
+> run.
 
-> Note: this folder used to hold ~130 thesis-specific figure/table/diagnostic scripts. Those have been
-> moved out to keep the public repo clean; only the reusable helpers below remain. (The rest are kept
+These are small, standalone scripts for **inspecting and sanity-checking** the pipeline's output —
+they are *not* part of a normal run. You never need them to go from images to a segmented 3D model.
+Reach for one when you want to compare two runs, score quality, visualise a step, or prepare
+ground-truth labels. Each script is run on its own from the repo root (most take `--help`), and the
+ones that save numbers/plots write into `docs/analysis_results/` by default.
+
+> Note: this folder used to hold ~130 thesis-specific figure/table/diagnostic scripts. Most have been
+> moved out to keep the public repo clean. (The rest are kept
 > for provenance in the project's private notes.)
 
 ---
@@ -25,7 +42,13 @@ ones that save numbers/plots write into `docs/analysis_results/`.
 
 - **run_hloc_sfm.py** — run an alternative SfM front-end (hloc: SuperPoint+LightGlue / LoFTR) and
   write a COLMAP model. Lets you A/B a different feature matcher against the default COLMAP pipeline on
-  the same session, to see which gives better camera poses.
+  the same session, to see which gives better camera poses. This one needs the `hloc` package
+  installed separately, since it is not part of the pipeline's own requirements, and it crashes on
+  startup without it.
+
+- **fip_principal_point_offset.py** — measure how far each camera's principal point sits from the image
+  center, across a dataset. This is where the "off-center by up to ~90 px" figure comes from, and it
+  reads the COLMAP `sparse/0` cameras.
 
 ## Mask generation (detection + SAM)
 
@@ -57,7 +80,26 @@ ones that save numbers/plots write into `docs/analysis_results/`.
 - **run_yolo11_seg.py** — standalone runner for a YOLO11 instance-segmentation model. A self-contained
   way to try a YOLO11-seg checkpoint on images outside the main mask-generation entry point.
 
+- **make_gt6_manifest.py** — build the small ground-truth manifest (the labeled images plus their
+  per-head instance masks and boxes) that `sweep_conf_mask_ap.py` reads. Re-run it when the ground-truth
+  set changes.
+
 ## 3D segmentation
+
+- **phone_seg_instance_eval.py** — per-instance (per-head) evaluation of the phone 3D segmentation. Each
+  predicted head in the 2D projection is Hungarian-matched one-to-one against the manual per-head
+  ground-truth instance masks, and it reports head-count precision/recall/F1, matched-mask IoU, and
+  merge/split counts. This is the per-instance seg-quality metric behind the phone results.
+
+- **phone_seg_cpu_eval.py** — pixel evaluation of the phone 3D segmentation (IoU/precision/recall/F1 of
+  the wheat-head area) against the ground-truth mask, and the shared run registry that the instance eval
+  reads. The companion binary-foreground scorer to the instance eval.
+
+- **fip_seg_marker_excluded_eval.py** — recompute the FIP 3D segmentation 2D metrics with the coded-marker
+  disks cut out, so the score is not helped or hurt by the markers.
+
+- **fip_seg_marker_masked_eval.py** — the same marker-excluded FIP seg score, but it finds the marker
+  plates by detecting their white blobs instead of using the survey disks.
 
 - **compare_seg_runs.py** — check whether two `segmentation_3d` runs produced the *same* result, by
   hashing their outputs. Deterministic yes/no (with an exit code), so you can verify in a script that a
@@ -74,6 +116,31 @@ ones that save numbers/plots write into `docs/analysis_results/`.
 - **recolor_heads_contrast.py** — recolour a segmentation PLY with a high-contrast palette. Neighbouring
   heads get visibly different colours, which makes it much easier to see individual heads when
   inspecting the coloured point cloud.
+
+## Markers & SfM geometry
+
+These evaluate the coded-marker geometry and the SfM pose quality against physical ground truth. They read
+the private supervisor reference data (survey coordinates and tape measurements), so they run only where
+that reference tree is present.
+
+- **rescore_models_geometry.py** — score different SfM front-ends by triangulating the coded markers
+  through each model's poses and comparing all pairwise marker distances to the physical survey and tape
+  ground truth, in centimetres. The "which SfM front-end is best" evaluation.
+
+- **eval_marker_geometry_gt.py** — detection-free marker geometry error: triangulate the verified marker
+  pins through our poses and compare the pairwise distances to survey and tape.
+
+- **eval_marker_detection.py** — marker-detector accuracy in 2D (recall, precision, localization error in
+  pixels) against hand-verified marker pins, per session.
+
+- **marker_geometry_gt.py** — validate the triangulated marker geometry against the surveyed XYZ and tape
+  measurements using all pairwise marker distances.
+
+- **compare_sfm_models_markers.py** — compare SfM models by marker reprojection error against the Agisoft
+  reference, with a shared triangulation so the comparison is fair.
+
+- **marker_cross_session_repeatability.py** — measure how repeatable the triangulated marker positions are
+  across sessions, the source of the marker repeatability number.
 
 ## Ground-truth labeling prep
 
@@ -92,3 +159,7 @@ ones that save numbers/plots write into `docs/analysis_results/`.
 - **aggregate_maskgen_grid.py** — pool the mask-generation grid's evaluation JSONs into one ranked
   table. When you've run a grid of detector/SAM settings, this collects all the per-cell scores and
   ranks them so the best configuration is easy to spot.
+
+- **collect_experiment_results.py** — harvest every reconstruction, 3D segmentation, and evaluation run
+  into one master results table (CSV and markdown), reading each run's saved config and metrics. A
+  pipeline-wide results tracker for when you have many experiments.

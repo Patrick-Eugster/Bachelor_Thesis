@@ -17,6 +17,14 @@ detection_method: "yolo_sam_v1"
 # thesis_baseline = the shared end-to-end name: mask-gen writes it, seg reads it (keep the stages in sync)
 mask_gen_experiment: "thesis_baseline"
 
+# high-contrast head palette for everything that colors heads (gaussians_colored.ply + the 360 video).
+# true = each head's hue hops by the golden-ratio conjugate (0.618) with alternating saturation/brightness,
+# so neighbouring head IDs look clearly different. false = the old plain hue ramp (head_id / n_heads), where
+# consecutive IDs get nearly the same color and touching heads are impossible to tell apart by eye.
+# The conductor exports this as WHEAT_SEG_CONTRAST_PALETTE for every step it launches, so a standalone
+# script call can set that env var directly (WHEAT_SEG_CONTRAST_PALETTE=0 forces the old ramp).
+contrast_palette: true
+
 # save colored overlay images showing which Gaussians were assigned to each head (useful for debugging)
 save_vis_overlay: true
 
@@ -35,12 +43,12 @@ use_mask_cache: true
 seg_seed: 0
 
 # frustum cull: skip rendering a head into cameras where its Gaussians don't project (per-Gaussian
-# test). Provably bit-identical (verified lossless on 7 FIP plots + phone). BUT it barely helps on
-# the capture geometries we have: FIP overhead + phone close-orbit both put every head in ~every
-# view, so there's almost nothing to skip — and the per-head cull matmul made phone slightly SLOWER
-# (5h41m off vs 5h56m on). The real seg speedups are the crop cache (FIP ~7×) and inference=True
-# (phone ~2.7×), not the cull. So DEFAULT OFF. Turn it on (true) only for a capture where heads are
-# genuinely local to a few views (a long linear sweep) — it's lossless either way. DEFAULT ON (thesis).
+# test). Provably bit-identical (verified lossless on 7 FIP plots + phone), so it is safe either way.
+# DEFAULT ON — the thesis runs used it. But do not expect a speedup from it: FIP overhead + phone
+# close-orbit both put every head in ~every view, so there's almost nothing to skip — and the per-head
+# cull matmul made phone slightly SLOWER (5h41m off vs 5h56m on). The real seg speedups are the crop
+# cache (FIP ~7×) and inference=True (phone ~2.7×), not the cull. It only pays off on a capture where
+# heads are genuinely local to a few views (a long linear sweep).
 frustum_cull: true
 
 # --- plot region of interest (ROI) for the 3D segmentation (phone; future-work quality fixes) ---
