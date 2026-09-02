@@ -27,11 +27,14 @@ run_compare: false  # step 3: compare our sparse/0/ to agisoft/sparse/0/ (only i
 # master switch: when false the whole marker block below is skipped (base pipeline unchanged).
 run_markers: false
 # sub-toggles, only consulted when run_markers=true — skip individual marker steps:
+# DEFAULT split: detect+triangulate ON (they produce marker_points3d.json, all the 3D-seg ROI needs);
+# scale/metric/gcp OFF (those give METRIC scale, which only phenotyping needs — and phenotyping is not
+# adapted here). Flip scale/metric/gcp on only if you have a survey/tape file and want metric size.
 run_marker_detect:     true   # step 4: CCT decode per image + manifest filter   → marker_detections_v8_manifest.json
 run_marker_triangulate: true  # step 5: lift detections to one 3D point/marker    → marker_points3d.json + overlays
-run_marker_scale:      true   # step 6: metric scale (survey XYZ or tape)          → marker_scale.json
-run_marker_metric:     true   # step 7: Flavour 1 — similarity → metric model      → sparse_metric/
-run_marker_gcp:        true   # step 8: Flavour 2 — GCP-constrained BA (pycolmap)   → sparse_metric_gcp/  (needs survey + local pycolmap)
+run_marker_scale:      false  # step 6: metric scale (survey XYZ or tape)          → marker_scale.json  (phenotyping only)
+run_marker_metric:     false  # step 7: Flavour 1 — similarity → metric model      → sparse_metric/     (phenotyping only)
+run_marker_gcp:        false  # step 8: Flavour 2 — GCP-constrained BA (pycolmap)   → sparse_metric_gcp/ (phenotyping only)
 # WHERE metric scale comes from (steps 6+7): 'survey' = Umeyama onto surveyed XYZ (metric + georeferenced,
 # needs the survey file); 'tape' = TAPE distances only (metric SIZE, no GPS/survey, not georeferenced).
 # tape mode also auto-SKIPS step 8 (GCP-BA is survey-anchored). See docs/MARKER_INTEGRATION_PLAN.md.

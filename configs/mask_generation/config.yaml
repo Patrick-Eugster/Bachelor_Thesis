@@ -1,14 +1,17 @@
 # @package _global_
 defaults:
-  - /dataset: fip              # override on CLI: dataset=phone
-  - method: yolo_sam_v1        # override on CLI: method=sahi_yolo_sam  (clean override works via the hydra_plugins searchpath plugin)
+  # per-dataset best-config bundle: profile=phone (default) | profile=fip. Each profile composes its
+  # dataset + the yolo_sam_v1 detector and sets the thesis-best per-dataset mask-gen values.
+  # To use a different detector, override the composed method: profile=phone method=sahi_yolo_sam
+  - profile: phone
   - override /hydra/job_logging: disabled    # don't create a .log file in CWD — we print()
   - override /hydra/hydra_logging: disabled
   - _self_
 
-# name for the detection output folder — "initial" is a safe scratch name (no overwrite warning)
-# leave empty ("") for an auto timestamp: "2025-04-28_1430"
-experiment_name: "initial"
+# name for the detection output folder — "thesis_baseline" is the shared end-to-end name threaded
+# through mask-gen → recon → seg so the 3D-seg step finds these masks. Leave empty ("") for an auto
+# timestamp "2025-04-28_1430"; "initial" is a scratch name that overwrites silently.
+experiment_name: "thesis_baseline"
 
 # set true to prepend today's date to experiment_name: "2025-04-28_my_run" (ignored for "initial" or "")
 prepend_date: false

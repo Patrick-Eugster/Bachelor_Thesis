@@ -157,7 +157,7 @@ def inject(db_path, detections_json):
     }
 
 
-@hydra.main(version_base=None, config_path="../../configs/preprocessing", config_name="inject_markers")
+@hydra.main(version_base=None, config_path="../../../configs/preprocessing", config_name="inject_markers")
 def main(cfg: DictConfig):
     """Standalone: inject marker tie-points into a session's distorted/database.db."""
     print(OmegaConf.to_yaml(cfg))

@@ -1,6 +1,8 @@
 [submodule "thesis"]
 	path = thesis
 	url = https://github.com/Patrick-Eugster/Bachelor_Thesis_Report.git
+	update = none
 [submodule "docs"]
 	path = docs
 	url = https://github.com/Patrick-Eugster/Bachelor_Thesis_Docs.git
+	update = none

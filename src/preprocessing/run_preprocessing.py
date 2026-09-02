@@ -6,12 +6,12 @@ Base SfM steps (always available, toggle to skip any):
     3. compare_to_agisoft.py     — per-camera translation/rotation error vs Agisoft reference (optional)
 
 Marker layer (steps 4-8, only when run_markers=true; each is fail-soft — a missing survey file or
-local-only pycolmap warns and continues instead of aborting):
-    4. detect_markers_v8_cct.py    — CCT decode per image + manifest filter
-    5. triangulate_markers.py      — lift detections to one 3D point per marker
-    6. marker_scale.py             — metric scale: survey XYZ or tape (marker_scale_source)
-    7. apply_metric_transform.py   — Flavour 1: similarity → metric model (same scale source)
-    8. marker_gcp_ba.py            — Flavour 2: GCP-constrained BA (pycolmap)   (survey only; skipped in tape mode)
+local-only pycolmap warns and continues instead of aborting). These live in the markers/ subpackage:
+    4. markers/detect_markers_v8_cct.py  — CCT decode per image + manifest filter
+    5. markers/triangulate_markers.py    — lift detections to one 3D point per marker
+    6. markers/marker_scale.py           — metric scale: survey XYZ or tape (marker_scale_source)
+    7. markers/apply_metric_transform.py — Flavour 1: similarity → metric model (same scale source)
+    8. markers/marker_gcp_ba.py          — Flavour 2: GCP-constrained BA (pycolmap)   (survey only; skipped in tape mode)
 
 Each step is launched as a subprocess so it can be run individually too. Hydra config:
 configs/preprocessing/config.yaml.
@@ -102,14 +102,14 @@ def _tape_gate(cfg, source_path, read_summary):
 def _count_quality_markers(source_path, read_summary, cfg):
     """How many markers pass the QUALITY guard (parallax / inlier-views / reproj) — the ones that can
     actually anchor the metric scale. Reads marker_points3d.json and applies the exact same gate as
-    marker_scale.py (single source of truth), so the failsafe doesn't green-light metric steps on weak
+    markers/marker_scale.py (single source of truth), so the failsafe doesn't green-light metric steps on weak
     markers that would poison the scale. Returns (n_quality, weak) where weak = [(code, reasons)].
     (0, []) if the file is missing (triangulation skipped or failed)."""
     pts = read_summary(source_path, "marker_points3d.json")
     if not pts:
         return 0, []
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import marker_scale  # same dir; reuse the guard so thresholds + logic never drift
+    from markers import marker_scale  # markers/ subpackage; reuse the guard so thresholds + logic never drift
     min_par, min_inl, max_rep = marker_scale.quality_thresholds(cfg)
     n_quality, weak = 0, []
     for code, v in pts.get("points3d", {}).items():
@@ -222,7 +222,7 @@ def main(cfg: DictConfig):
     if cfg.get("markers_in_sfm", False) and cfg.run_colmap:
         det_json = cfg.get("marker_inputspace_json", "logs/marker_det_inputspace.json")
         run_step("1b. marker detect (input_uniform → SfM injection)", [
-            "python", "src/preprocessing/detect_markers_v8_cct.py", *common_args,
+            "python", "src/preprocessing/markers/detect_markers_v8_cct.py", *common_args,
             "image_subdir=input_uniform", f"output_json={det_json}",
             "output_vis_dir=marker_vis_inputspace",
         ], timings, fatal=False)
@@ -245,13 +245,13 @@ def main(cfg: DictConfig):
             # write the manifest-named JSON that triangulate (step 5) reads by default — detect's own
             # default is logs/marker_detections_v8.json, which wouldn't match the downstream name.
             run_step("4. marker detect (CCT v8)", [
-                "python", "src/preprocessing/detect_markers_v8_cct.py", *common_args,
+                "python", "src/preprocessing/markers/detect_markers_v8_cct.py", *common_args,
                 "output_json=logs/marker_detections_v8_manifest.json",
             ], timings, fatal=False)
 
         if cfg.get("run_marker_triangulate", True):
             run_step("5. marker triangulate", [
-                "python", "src/preprocessing/triangulate_markers.py", *common_args,
+                "python", "src/preprocessing/markers/triangulate_markers.py", *common_args,
             ], timings, fatal=False)
 
         # FAILSAFE: the metric steps (6-8) fit a similarity to the survey, which needs enough solved
@@ -277,12 +277,12 @@ def main(cfg: DictConfig):
 
         if markers_ok and cfg.get("run_marker_scale", True):
             run_step("6. marker metric scale", [
-                "python", "src/preprocessing/marker_scale.py", *common_args, *scale_arg,
+                "python", "src/preprocessing/markers/marker_scale.py", *common_args, *scale_arg,
             ], timings, fatal=False)
 
         if markers_ok and cfg.get("run_marker_metric", True):
             run_step("7. metric model (Flavour 1)", [
-                "python", "src/preprocessing/apply_metric_transform.py", *common_args, *scale_arg,
+                "python", "src/preprocessing/markers/apply_metric_transform.py", *common_args, *scale_arg,
             ], timings, fatal=False)
 
         # TAPE GATE: auto-decide whether Flavour 2 (GCP-BA) is trustworthy for this field. The LOMO
@@ -301,7 +301,7 @@ def main(cfg: DictConfig):
         elif markers_ok and cfg.get("run_marker_gcp", True):
             if gcp_allowed:
                 run_step("8. GCP-BA (Flavour 2)", [
-                    "python", "src/preprocessing/marker_gcp_ba.py", *common_args,
+                    "python", "src/preprocessing/markers/marker_gcp_ba.py", *common_args,
                 ], timings, fatal=False)
             else:
                 print("  [tape gate] skipping step 8 (GCP-BA) — survey suspect; "

@@ -1,22 +1,20 @@
 # @package _global_
 defaults:
-  - /dataset: fip                       # override on CLI: dataset=phone
-  - reconstruction: vanilla_3dgs        # override on CLI: reconstruction=2dgs
-  - segmentation_3d: default            # override on CLI: segmentation_3d=tight
+  # per-dataset best-config bundle: profile=phone (default) | profile=fip. Each profile composes its
+  # dataset + reconstruction + segmentation_3d and sets the thesis-best per-dataset values + default plot.
+  - profile: phone
   - override /hydra/job_logging: disabled   # don't create a .log file in CWD — we print()
   - override /hydra/hydra_logging: disabled
   - _self_
 
-# which plot folder to process (must exist inside dataset.input_dir)
-plot: "plot_461"
+# NOTE: plot + date defaults now live in the profile (configs/.../profile/{fip,phone}.yaml) because the
+# sensible default plot differs per dataset. Override on CLI as usual: plot=field_A date=20250715 (phone),
+# plot=plot_461 (fip).
 
-# date subfolder for phone data — leave empty for FIP (no date subfolder)
-# phone CLI: dataset=phone plot=field_A date=20250618
-date: ""
-
-# name for the 3DGS training output folder — "initial" is a safe scratch name (no overwrite warning)
-# leave empty ("") for an auto timestamp: "2025-04-28_1430"
-experiment_name: "initial"
+# name for the 3DGS training output folder — "thesis_baseline" is the shared end-to-end name threaded
+# through mask-gen → recon → seg so the stages chain automatically. A named run is refused if it already
+# exists (set allow_overwrite=true to overwrite). Leave empty ("") for an auto timestamp "2025-04-28_1430".
+experiment_name: "thesis_baseline"
 
 # set true to prepend today's date to experiment_name: "2025-04-28_my_run" (ignored for "initial" or "")
 prepend_date: false

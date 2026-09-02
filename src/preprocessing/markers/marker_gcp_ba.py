@@ -60,7 +60,7 @@ def camera_centers(rec):
     return {rec.image(i).name: rec.image(i).projection_center() for i in rec.reg_image_ids()}
 
 
-@hydra.main(version_base=None, config_path="../../configs/preprocessing", config_name="marker_gcp_ba")
+@hydra.main(version_base=None, config_path="../../../configs/preprocessing", config_name="marker_gcp_ba")
 def main(cfg: DictConfig):
     """Run marker GCP-constrained bundle adjustment on the metric model."""
     src = cfg.source_path

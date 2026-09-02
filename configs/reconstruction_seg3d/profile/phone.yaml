@@ -1,0 +1,17 @@
+# @package _global_
+# PHONE best-config profile for run_reconstruction.py. Selected with profile=phone (the default).
+# Composes the phone dataset + the shared 3DGS/seg base configs, then sets the phone-specific values.
+defaults:
+  - /dataset: phone
+  - /reconstruction: vanilla_3dgs
+  - /segmentation_3d: default
+  - _self_
+
+# phone recon: no AbsGS (not adopted on phone) → keep the vanilla densification threshold
+reconstruction:
+  absgrad: false
+  densify_grad_threshold: 0.0002
+
+# sensible default phone session (override on CLI: plot=field_A date=20250715)
+plot: field_A
+date: "20250715"

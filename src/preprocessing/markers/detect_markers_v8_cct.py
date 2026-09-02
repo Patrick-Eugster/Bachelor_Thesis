@@ -140,7 +140,7 @@ def _iter_draw_results(items, image_dir, vis_dir, overlay_max_width, num_workers
             yield from pool.imap_unordered(_draw_one, items, chunksize=4)
 
 
-@hydra.main(version_base=None, config_path="../../configs",
+@hydra.main(version_base=None, config_path="../../../configs",
             config_name="preprocessing/detect_markers_v8_cct")
 def main(cfg: DictConfig):
     """Run v8 (v6 proposal + concentric-consensus centre + CCTDecode) over a plot."""

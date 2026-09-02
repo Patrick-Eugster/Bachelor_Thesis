@@ -313,7 +313,7 @@ def draw_overlay(bgr, dets, max_width):
     return vis
 
 
-@hydra.main(version_base=None, config_path="../../configs", config_name="preprocessing/detect_markers_v6")
+@hydra.main(version_base=None, config_path="../../../configs", config_name="preprocessing/detect_markers_v6")
 def main(cfg: DictConfig):
     """Run the real-template NCC localizer over a plot, writing overlays + a JSON to v6 folders."""
     print("--- detect_markers_v6 config ---")

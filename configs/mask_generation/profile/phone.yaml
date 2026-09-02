@@ -1,0 +1,15 @@
+# @package _global_
+# PHONE best-config profile for run_mask_generation.py. Selected with profile=phone (the default).
+# Composes the phone dataset + the YOLOv5 (yolo_sam_v1) detector, then sets the phone-specific values:
+# full-res 4032 input, per-tile SAM at SAM2, a strict 0.70 good-box cut, and a VRAM-safe YOLO batch.
+defaults:
+  - /dataset: phone
+  - /method: yolo_sam_v1
+  - _self_
+
+method:
+  target_image_size: 4032      # full-res phone win (base default 1280 is for FIP)
+  sam_crop_mode: per_tile      # ~94% of per_head F1 at ~20x the speed
+  sam_backend: sam2            # SAM2 beats SAM1 once the head fills the encoder (per_tile/per_head)
+  conf_threshold_good_box: 0.70  # strict cut for the dense phone data
+  batch_size_yolo: 3           # 4032 full-res images are VRAM-heavy → small batch

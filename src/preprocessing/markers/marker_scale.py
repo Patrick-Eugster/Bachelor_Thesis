@@ -352,7 +352,7 @@ def run_tape_only(cfg, src, letter, ours, qreport=None):
     print(f"wrote {out_path}")
 
 
-@hydra.main(version_base=None, config_path="../../configs/preprocessing", config_name="marker_scale")
+@hydra.main(version_base=None, config_path="../../../configs/preprocessing", config_name="marker_scale")
 def main(cfg: DictConfig):
     """Recover metric scale from triangulated markers — survey (default) or tape-only mode."""
     src = cfg.source_path

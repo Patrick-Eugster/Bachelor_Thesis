@@ -1,0 +1,8 @@
+# @package _global_
+# FIP best-config profile for run_mask_generation.py. Selected with profile=fip.
+# Composes the FIP dataset + the YOLOv5 (yolo_sam_v1) detector. FIP uses the yolo_sam_v1 base defaults
+# as-is — the original thesis mask-gen: 1280 input, full_frame SAM1, conf 0.35, batch_size_yolo 25.
+defaults:
+  - /dataset: fip
+  - /method: yolo_sam_v1
+  - _self_

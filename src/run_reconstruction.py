@@ -469,7 +469,7 @@ def _run_pipeline(cfg):
     resolution_str    = str(cfg.reconstruction.resolution)
     seg_dir_flag      = ["--seg_dir", seg_source]
     # opt-in flag: when true, all stages honor the SfM cx/cy via asymmetric frustum
-    pp_flag           = ["--use_principal_point"] if cfg.reconstruction.get("use_principal_point", False) else []
+    pp_flag           = ["--use_principal_point"] if cfg.reconstruction.get("use_principal_point", True) else []
     # opt-in: AbsGS densification criterion (gsplat means2d.absgrad) — recovers fine wheat detail
     absgrad_flag      = ["--absgrad"] if cfg.reconstruction.get("absgrad", False) else []
     ctx               = RunContext()
@@ -531,12 +531,12 @@ def _run_pipeline(cfg):
             "-m", model_path,
             "--resolution", resolution_str,
             "--eval",
-            "--iou_threshold", str(cfg.segmentation_3d.get("iou_threshold", 0.5)),
+            "--iou_threshold", str(cfg.segmentation_3d.get("iou_threshold", 0.6)),
             "--exp_name", cfg.segmentation_3d.exp_name,
             "--vis_max_heads", str(cfg.segmentation_3d.vis_max_heads),
         ] + seg_dir_flag + ([] if cfg.segmentation_3d.save_vis_overlay else ["--no_save_vis_overlay"])
           + ([] if cfg.segmentation_3d.use_mask_cache else ["--no_mask_cache"])
-          + (["--frustum_cull"] if cfg.segmentation_3d.get("frustum_cull", False) else ["--no_frustum_cull"])
+          + (["--frustum_cull"] if cfg.segmentation_3d.get("frustum_cull", True) else ["--no_frustum_cull"])
           + (["--roi_cull"] if cfg.segmentation_3d.get("roi_cull", False) else [])
           + (["--roi_buffer_m", str(cfg.segmentation_3d.get("roi_buffer_m", 0.25))])
           + (["--height_band"] if cfg.segmentation_3d.get("height_band", False) else [])
@@ -640,7 +640,7 @@ def _run_pipeline(cfg):
     _print_and_write_report(ctx, model_path, cfg, exp_name)
 
 
-@hydra.main(version_base=None, config_path="../configs", config_name="reconstruction_seg3d/config")
+@hydra.main(version_base=None, config_path="../configs/reconstruction_seg3d", config_name="config")
 def main(cfg: DictConfig):
     log_file    = get_log_file(get_reconstruction_model_path(cfg, resolve_experiment_name(cfg)), cfg.segmentation_3d.exp_name)
     tee = _Tee(log_file) if log_file and not cfg.log_seg_only else None

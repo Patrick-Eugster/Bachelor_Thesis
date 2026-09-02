@@ -1,0 +1,17 @@
+# @package _global_
+# FIP best-config profile for run_reconstruction.py. Selected with profile=fip.
+# Composes the FIP dataset + the shared 3DGS/seg base configs, then sets the FIP-specific values.
+defaults:
+  - /dataset: fip
+  - /reconstruction: vanilla_3dgs
+  - /segmentation_3d: default
+  - _self_
+
+# FIP recon: AbsGS densification for finer wheat detail → MUST raise densify_grad_threshold ~4x
+reconstruction:
+  absgrad: true
+  densify_grad_threshold: 0.0008
+
+# sensible default FIP plot (override on CLI: plot=plot_461 … plot_467); FIP has no date subfolder
+plot: plot_461
+date: ""

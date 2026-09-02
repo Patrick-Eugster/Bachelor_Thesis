@@ -37,7 +37,7 @@ import hydra
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", "gaussians", "scene"))
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", "gaussians", "scene"))
 from colmap_loader import qvec2rotmat, rotmat2qvec  # noqa: E402
 import marker_scale  # noqa: E402  (reuse load_survey / load_ours / umeyama — single source of truth)
 
@@ -127,7 +127,7 @@ def camera_centers_from_images(path):
     return out
 
 
-@hydra.main(version_base=None, config_path="../../configs/preprocessing", config_name="marker_metric")
+@hydra.main(version_base=None, config_path="../../../configs/preprocessing", config_name="marker_metric")
 def main(cfg: DictConfig):
     """Apply the marker similarity transform to sparse/0 -> a metric sparse_metric/ text model."""
     src = cfg.source_path

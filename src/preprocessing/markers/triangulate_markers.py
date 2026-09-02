@@ -41,7 +41,7 @@ import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from scipy.optimize import least_squares
 
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", "gaussians", "scene"))
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", "gaussians", "scene"))
 from colmap_loader import qvec2rotmat, read_extrinsics_text, read_intrinsics_text  # noqa: E402
 import marker_codes  # noqa: E402
 
@@ -185,7 +185,7 @@ def load_detections(path, key):
     return out, data
 
 
-@hydra.main(version_base=None, config_path="../../configs",
+@hydra.main(version_base=None, config_path="../../../configs",
             config_name="preprocessing/triangulate_markers")
 def main(cfg: DictConfig):
     """Triangulate manifest markers from a detections JSON + COLMAP poses; snap misreads + recover

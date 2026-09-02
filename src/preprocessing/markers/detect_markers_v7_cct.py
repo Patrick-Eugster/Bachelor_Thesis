@@ -113,7 +113,7 @@ def draw_overlay(bgr, dets, max_width):
     return vis
 
 
-@hydra.main(version_base=None, config_path="../../configs",
+@hydra.main(version_base=None, config_path="../../../configs",
             config_name="preprocessing/detect_markers_v7_cct")
 def main(cfg: DictConfig):
     """Run v7 (v6 proposal + CCTDecode forced-centre decode) over a plot."""

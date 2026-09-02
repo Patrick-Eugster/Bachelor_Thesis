@@ -37,32 +37,26 @@ variant_dir: ""
 single_camera: true
 
 # COLMAP camera model
-# SIMPLE_PINHOLE — single focal length, no distortion (DEFAULT)
+# SIMPLE_PINHOLE — single focal length, no distortion
 # PINHOLE        — two focal lengths (fx, fy), no distortion
 # SIMPLE_RADIAL  — adds 1 radial distortion param (k1)
-# OPENCV         — full radial + tangential (k1,k2,p1,p2)
-# WHY SIMPLE_PINHOLE is the default (re-tested 2026-06-28 under the ALIKED front-end):
-#  * The OLD reason ("PINHOLE/OPENCV collapse to 2/93 on wheat") was a SIFT-era result and is now
-#    OBSOLETE — under ALIKED+LightGlue all three register 93/93 on field_A/20250618 (the strong learned
-#    matches easily constrain the extra distortion params SIFT couldn't).
-#  * The CURRENT reason is that modeling distortion buys ~nothing here: pose-vs-Agisoft is noise-level
-#    (~1mm / ~0.3°), Chamfer identical (~22mm), while SIMPLE_RADIAL/OPENCV cost 7-17% more time, CROP the
-#    undistorted image (4032->3942->3881), and drift focal +2.8%/+3.7% vs Agisoft.
-#  * HONEST caveat: that focal agreement with Agisoft is partly circular (Agisoft also uses SIMPLE_PINHOLE).
-#    The Agisoft-INDEPENDENT metric — internal reprojection error — does slightly favour the richer models
-#    (1.323 -> 1.299 -> 1.263 px), i.e. there IS real distortion (k1~0.05, ~50-60px at the extreme corner)
-#    and OPENCV is marginally MORE correct. The gain is tiny (0.06px) because distortion lives in the
-#    corners. So SIMPLE_PINHOLE is the robust default, NOT provably the most accurate model. The deciding
-#    test (does removing corner distortion improve 3DGS PSNR at the edges?) is UNRUN. For non-vegetation
-#    scenes (buildings) OPENCV is the better choice. Full write-up: docs/PHONE_SFM_CAMERA_MODEL.md.
-camera: SIMPLE_PINHOLE
+# OPENCV         — full radial + tangential (k1,k2,p1,p2) (DEFAULT)
+# WHY OPENCV is the default: our phone lens has real distortion (k1~0.05, ~50-60px at the extreme corner).
+# Under ALIKED+LightGlue every camera model registers 93/93 on wheat (the old "PINHOLE/OPENCV collapse to
+# 2/93" was a SIFT-era result, now obsolete — the strong learned matches easily constrain the extra params
+# SIFT couldn't). OPENCV is marginally the most correct by the Agisoft-INDEPENDENT metric — internal
+# reprojection error 1.323 -> 1.263 px. It costs a little more time and CROPS the undistorted image slightly
+# (4032->3881), which misaligns our hand-labeled GT masks, so eval_2d is validated pinhole-only — but that
+# only affects OUR GT scoring, not a new user's run. SIMPLE_PINHOLE is the lighter, crop-free fallback if you
+# don't want to model distortion. Full write-up: docs/PHONE_SFM_CAMERA_MODEL.md.
+camera: OPENCV
 
-# feature front-end: "sift" (classic, default — byte-identical to before) or "aliked" (learned ALIKED
-# detector + LightGlue learned matcher). ALIKED closes the SIFT fragmentation gap on repetitive wheat:
-# field_A/20250603 SIFT = 4 sub-models / largest 76-of-113, ALIKED = ONE model / 113-of-113 (denser than
-# Agisoft). ALIKED needs GPU + CUDA-12 onnxruntime libs (see aliked_cuda12_libdir). See
+# feature front-end: "aliked" (learned ALIKED detector + LightGlue learned matcher, DEFAULT) or "sift"
+# (classic). ALIKED closes the SIFT fragmentation gap on repetitive wheat: field_A/20250603 SIFT = 4
+# sub-models / largest 76-of-113, ALIKED = ONE model / 113-of-113 (denser than Agisoft). ALIKED needs GPU +
+# CUDA-12 onnxruntime libs (see aliked_cuda12_libdir). Set front_end=sift for the classic SIFT path. See
 # docs/PHONE_SFM_FRONTEND.md for the full benchmark.
-front_end: sift
+front_end: aliked
 
 # feature matcher: "exhaustive" (all-pairs — default) or "sequential" (ordered walk/video, matches each
 # frame to its time-neighbours only). DEFAULT FLIPPED to exhaustive 2026-06-28 for POSE ACCURACY:

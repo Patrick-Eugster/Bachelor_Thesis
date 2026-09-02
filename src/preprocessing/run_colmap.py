@@ -93,14 +93,20 @@ def main(cfg: DictConfig):
     # aborts (libcublasLt.so.12 missing). Prepend a user-supplied CUDA-12 lib dir to LD_LIBRARY_PATH so
     # it loads. Harmless when front_end=sift or aliked_cuda12_libdir is empty. See docs/preprocessing/sfm/PHONE_SFM_FRONTEND.md.
     if front_end == "aliked" and cfg.get("aliked_cuda12_libdir", ""):
-        libdirs = [dp for dp, _dn, _fn in os.walk(cfg.aliked_cuda12_libdir)
-                   if os.path.basename(dp) == "lib"]
-        if libdirs:
-            os.environ["LD_LIBRARY_PATH"] = ":".join(libdirs) + ":" + os.environ.get("LD_LIBRARY_PATH", "")
-            print(f"[aliked] prepended {len(libdirs)} CUDA-12 lib dir(s) to LD_LIBRARY_PATH")
+        _libdir = cfg.aliked_cuda12_libdir
+        if not os.path.isdir(_libdir):
+            # the local cuda12libs folder is absent (public / Euler box where the system CUDA already
+            # matches). Don't touch LD_LIBRARY_PATH — ALIKED loads against system CUDA. No flag needed.
+            print(f"[aliked] aliked_cuda12_libdir={_libdir} not found — using system CUDA")
         else:
-            print(f"WARNING: aliked_cuda12_libdir={cfg.aliked_cuda12_libdir} has no */lib subdirs — "
-                  f"ALIKED GPU may fail to load its CUDA-12 onnxruntime provider.")
+            libdirs = [dp for dp, _dn, _fn in os.walk(_libdir)
+                       if os.path.basename(dp) == "lib"]
+            if libdirs:
+                os.environ["LD_LIBRARY_PATH"] = ":".join(libdirs) + ":" + os.environ.get("LD_LIBRARY_PATH", "")
+                print(f"[aliked] prepended {len(libdirs)} CUDA-12 lib dir(s) to LD_LIBRARY_PATH")
+            else:
+                print(f"WARNING: aliked_cuda12_libdir={_libdir} has no */lib subdirs — "
+                      f"ALIKED GPU may fail to load its CUDA-12 onnxruntime provider.")
     # full path to the folder COLMAP reads images from
     image_path = os.path.join(source_path, cfg.image_subdir)
 
@@ -192,7 +198,7 @@ def main(cfg: DictConfig):
         # byte-identical to the normal run. The detections must be on the same image space the
         # extractor used (input_uniform) — run detect_markers_v8 image_subdir=input_uniform first.
         if cfg.get("inject_markers_json", ""):
-            import inject_markers_to_db
+            from markers import inject_markers_to_db  # markers/ subpackage
             det_json = os.path.join(source_path, cfg.inject_markers_json)
             db_path = output_root + "/distorted/database.db"
             print(f"Step 2b/3: Injecting marker tie-points from {cfg.inject_markers_json} ...")

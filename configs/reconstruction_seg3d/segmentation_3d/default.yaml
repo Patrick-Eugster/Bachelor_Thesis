@@ -2,19 +2,20 @@
 
 # output subfolder name inside segmentation_3d/ — change to re-run without overwriting previous results
 # e.g. exp_name=run_2 → results/.../segmentation_3d/run_2/
-exp_name: "run_1"
+exp_name: "thesis_baseline"
 
 # cross-view match acceptance threshold in find_match (segmentation IoU between the rendered blob and the
-# best-overlapping SAM mask). 0.5 = code default AND our runs so far; the Wheat3DGS authors' README command
-# recommends 0.6 (stricter). Higher = stricter matching = fewer/looser matches accepted = less over-merging.
-iou_threshold: 0.5
+# best-overlapping SAM mask). 0.6 = our thesis default (stricter, matches the Wheat3DGS authors' README).
+# Higher = stricter matching = fewer/looser matches accepted = less over-merging. Set 0.5 for the old runs.
+iou_threshold: 0.6
 
 # which detection METHOD's output to read masks from (the method-name subfolder under the plot).
 # default "yolo_sam_v1"; set "sahi_yolo_sam" to segment a SAHI detection run instead (Option C)
 detection_method: "yolo_sam_v1"
 
 # which mask-generation run (experiment folder) to read masks from — must match a folder in results/mask_generation/
-mask_gen_experiment: "initial"
+# thesis_baseline = the shared end-to-end name: mask-gen writes it, seg reads it (keep the stages in sync)
+mask_gen_experiment: "thesis_baseline"
 
 # save colored overlay images showing which Gaussians were assigned to each head (useful for debugging)
 save_vis_overlay: true
@@ -39,8 +40,8 @@ seg_seed: 0
 # view, so there's almost nothing to skip — and the per-head cull matmul made phone slightly SLOWER
 # (5h41m off vs 5h56m on). The real seg speedups are the crop cache (FIP ~7×) and inference=True
 # (phone ~2.7×), not the cull. So DEFAULT OFF. Turn it on (true) only for a capture where heads are
-# genuinely local to a few views (a long linear sweep) — it's lossless either way.
-frustum_cull: false
+# genuinely local to a few views (a long linear sweep) — it's lossless either way. DEFAULT ON (thesis).
+frustum_cull: true
 
 # --- plot region of interest (ROI) for the 3D segmentation (phone; future-work quality fixes) ---
 # Three INDEPENDENT filters (any combination); all DEFAULT OFF -> byte-identical to before. They need
