@@ -1,0 +1,20 @@
+# only code goes into the image, no data and no weights etc.
+
+input_plots/
+results/
+demoanlage2025_v0/
+wandb/
+slurm_logs/
+src/mask_generation/weights/
+archive/
+tools/
+docs/
+thesis/
+.git/
+.vscode/
+.claude/
+CLAUDE.md
+**/__pycache__/
+**/*.pyc
+**/build/
+**/*.egg-info/

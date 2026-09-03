@@ -73,32 +73,37 @@ directly.
 | `image_subdir` | `input_uniform` | Which subfolder COLMAP reads. Set `input` to skip the uniform-size step |
 | `num_threads` | `8` | Threads for extraction and matching. Lower uses less RAM |
 | `no_gpu` | `false` | Force CPU features. Only needed if your COLMAP build lacks CUDA |
-| `variant_dir` | `""` | Write COLMAP output into a subfolder instead of overwriting the baseline, for SfM A/B tests |
+| `variant_dir` | `""` | Write COLMAP output into a subfolder instead of overwriting the baseline, and start that run with a fresh feature database. Use it for every SfM A/B test |
 
 These are the options you are most likely to change, not the full list. The config file
 holds the rest.
 
 A few defaults are worth explaining, since they carry the phone pipeline:
 
+The examples below all pass `variant_dir=`, which sends the run into its own subfolder.
+Without it the run writes over the baseline `images/` and `sparse/`, and it reuses the
+baseline feature database, so the front end or camera model you asked for never actually
+gets used.
+
 - **ALIKED + LightGlue** keeps repetitive wheat in one connected model where **SIFT** fragments
   it into several. On one session SIFT produced four sub-models with the largest holding 76 of
   113 images, while ALIKED registered all 113 in a single model.
   ```bash
-  python src/preprocessing/run_colmap.py field=field_A plot=20250715 front_end=sift
+  python src/preprocessing/run_colmap.py field=field_A plot=20250715 front_end=sift variant_dir=sift
   ```
 
 - **OPENCV** models the real lens distortion of the phone camera. With the strong ALIKED matches
   every camera model registers fully on wheat, so OPENCV is the marginally most accurate choice.
   `SIMPLE_PINHOLE` is a lighter fallback that does not crop the undistorted image.
   ```bash
-  python src/preprocessing/run_colmap.py field=field_A plot=20250715 camera=SIMPLE_PINHOLE
+  python src/preprocessing/run_colmap.py field=field_A plot=20250715 camera=SIMPLE_PINHOLE variant_dir=pinhole
   ```
 
 - **Exhaustive matching** gives the walk loop closure, which cuts camera-pose drift at the ends
   of the sweep. For very large sessions the all-pairs cost grows quickly, so prefer
   `matcher=sequential` there.
   ```bash
-  python src/preprocessing/run_colmap.py field=field_A plot=big_session matcher=sequential
+  python src/preprocessing/run_colmap.py field=field_A plot=big_session matcher=sequential variant_dir=sequential
   ```
 
 ## ALIKED requirements
@@ -108,7 +113,8 @@ The ALIKED front end needs a GPU and a set of CUDA-12 onnxruntime libraries. By 
 a fresh clone). Two ways out if you do not have them:
 
 - set `aliked_cuda12_libdir=""` on a machine whose system CUDA already matches, or
-- set `front_end=sift` to use the classic SIFT path, which needs no extra libraries.
+- set `front_end: sift` in `configs/preprocessing/colmap.yaml` to use the classic SIFT path,
+  which needs no extra libraries.
 
 ## Outputs
 

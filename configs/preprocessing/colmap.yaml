@@ -33,6 +33,8 @@ image_subdir: input_uniform
 # overwriting the baseline sparse/ — it lands in source_path/sift/{distorted,images,sparse/0,logs}. Input
 # images are always read from source_path/image_subdir, so all variants share the same input. Compare a
 # variant with:   compare_to_agisoft ours_sparse_dir=<variant_dir>/sparse/0   (e.g. sift/sparse/0)
+# A variant also gets a FRESH feature database. With an empty variant_dir the old distorted/database.db
+# is reused, and COLMAP skips images already in it — so a changed front_end/camera does nothing.
 variant_dir: ""
 
 # force COLMAP to treat all images as one shared camera (one set of intrinsics for everything).

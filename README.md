@@ -1,12 +1,12 @@
 # Phone-Wheat3DGS
 
-Phone-Wheat3DGS is a smartphone adaptation of **Wheat3DGS**, a pipeline for 3D
-reconstruction and instance segmentation of wheat heads in a field plot. Given
-many overlapping images of a wheat plot, it reconstructs the plot with
-3D Gaussian Splatting (3DGS), segments every individual wheat head in 3D, and gives
-each head a consistent ID across all views. The original pipeline was built for a
+Phone-Wheat3DGS is a smartphone adaptation of [**Wheat3DGS**](https://github.com/zdwww/Wheat-3DGS), a pipeline for 3D instance
+segmentation of wheat heads in a field plot. From many overlapping images it recovers the
+camera calibration with SfM, detects and segments 2D masks of the wheat heads with YOLO
+and SAM, optimizes a 3D Gaussian Splatting (3DGS) model of the plot, and gives each head a
+consistent 3D ID in the model across all views. The original pipeline was built for a
 specialized FIP (Field Imaging Platform) camera rig, and this work adapts the full
-pipeline so that it also runs on images captured with a consumer smartphone.
+pipeline to a consumer smartphone and a denser field.
 
 This code accompanies the bachelor thesis: *3D Wheat Head Instance Segmentation from
 Smartphone Sideview Captures*.
@@ -16,11 +16,11 @@ Smartphone Sideview Captures*.
 
 ## Pipeline overview
 
-The pipeline has four stages. Each stage has its own entry point under `src/`, is
-configured through Hydra files under `configs/`, and writes into `results/`. The
-stages run in order, and each one consumes the previous stage's output, so run them
-in sequence (for example, 3D segmentation needs the masks from stage 2 and the
-trained model from stage 3).
+The pipeline has four stages. Each stage has its own entry point under `src/` and is
+configured through Hydra files under `configs/`. Stage 1 writes back into the session
+folder under `input_plots/`, and stages 2 to 4 write into `results/`. The stages run in
+order, and each one consumes the previous stage's output, so run them in sequence (for
+example, 3D segmentation needs the masks from stage 2 and the trained model from stage 3).
 
 1. **SfM (preprocessing)** — `src/preprocessing/run_preprocessing.py`
    Phone only: it crops the images to one uniform size and runs COLMAP structure
@@ -33,13 +33,13 @@ trained model from stage 3).
    image, using a YOLO/SAHI detector followed by SAM.
    → [src/mask_generation/README.md](src/mask_generation/README.md)
 
-3. **3DGS reconstruction** — `src/run_reconstruction.py`
+3. **3DGS reconstruction** — `src/reconstruction/vanilla_3dgs/train_vanilla_3dgs.py`
    Trains a 3D Gaussian Splatting model of the plot with the gsplat engine.
    → [src/reconstruction/README.md](src/reconstruction/README.md)
 
-4. **3D segmentation** — part of `src/run_reconstruction.py`
+4. **3D segmentation** — `src/segmentation_3d/run_3d_seg.py`
    Lifts each view's masks to 3D with FlashSplat, matches them across views, and
-   assigns every wheat head a single consistent 3D ID.
+   assigns each matched head a single consistent 3D ID.
    → [src/segmentation_3d/README.md](src/segmentation_3d/README.md)
 
 Stages 3 and 4 are both handled by the reconstruction orchestrator
@@ -54,8 +54,10 @@ example `run_train=true`).
 Phone-Wheat3DGS/
 ├── README.md               ← this file
 ├── INSTALL.md              ← how to install
+├── Dockerfile              ← the recommended install: one image with everything
+├── .dockerignore           ← keeps data, results and weights out of the image
 ├── pyproject.toml          ← pip package (pip install -e .) + [maskgen] extra
-├── environment.yml         ← conda environment for training and segmentation
+├── environment.yml         ← one of the three conda envs of the non-Docker route (INSTALL.md)
 ├── configs/                ← Hydra config files — edit these, not the scripts
 ├── scripts/                ← example SLURM job templates (see scripts/README.md)
 ├── src/
@@ -104,7 +106,7 @@ input_plots/
 ├── fip/                        ← provided (from the Wheat3DGS repo)
 │   └── <plot>/                 ← one folder per plot (e.g. plot_461)
 │       ├── images/             ← the plot images
-│       ├── sparse/             ← COLMAP SfM (poses + points)
+│       ├── sparse/0/           ← COLMAP SfM (poses + points)
 │       └── manual_label/       ← ground truth (for evaluation)
 │
 └── phone/
@@ -164,12 +166,18 @@ the right dataset, defaults, and per-stage values for you. Stage 1 has no profil
 since SfM only runs on phone data, and it takes the session directly with `field=`
 and `plot=`.
 
-Every stage writes into a folder named by `experiment_name`, and `thesis_baseline` is
-the default name in mask generation, 3DGS reconstruction, and 3D segmentation. When the
+Stages 2 to 4 each write into a folder named by `experiment_name`, and `thesis_baseline`
+is the default name in mask generation, 3DGS reconstruction, and 3D segmentation. When the
 names match, the stages find each other's outputs and chain automatically. They may also
 differ, since 3D segmentation picks its mask input by name
 (`segmentation_3d.mask_gen_experiment`), so one mask generation run can feed several
 3DGS reconstruction and 3D segmentation runs without being recomputed.
+
+A named 3DGS reconstruction run is refused if its folder already exists, so a finished
+run is never destroyed by accident. Pick a new `experiment_name`, or pass
+`allow_overwrite=true` to replace it deliberately. The other two stages have no such
+guard: mask generation deletes the previous boxes and masks of every plot it processes,
+and a 3D segmentation run started on its own replaces the previous `exp_name` output.
 
 ### Stage 1 — SfM (phone only)
 
@@ -178,6 +186,18 @@ Recover the camera poses and calibration for one phone session:
 ```bash
 python src/preprocessing/run_preprocessing.py field=field_A plot=20250715
 ```
+
+Then pin the train/test split for that session:
+
+```bash
+python src/preprocessing/make_phone_split.py field=field_A plot=20250715
+```
+
+This writes `phone_split.json`, which pins the held-out views by name and forces every
+ground-truth-labeled image into the test set. Without it phone falls back to holding out
+every eighth image, so most labeled images end up in the training set and the 2D
+evaluation in stage 4 has nothing to score. FIP pins its split in `transforms.json`
+already.
 
 ### Stage 2 — Mask generation
 
@@ -203,6 +223,10 @@ To use a different detector, override the composed method (here, SAHI):
 ```bash
 python src/mask_generation/run_mask_generation.py method=sahi_yolo_sam
 ```
+
+There are four: `yolo_sam_v1` (the default), `sahi_yolo_sam`, `yolo11_sam`, and
+`yolo11_seg`. The [mask generation README](src/mask_generation/README.md) explains what
+each one does, and [INSTALL.md](INSTALL.md) lists the weights they need.
 
 ### Stages 3 + 4 — 3DGS reconstruction and 3D segmentation
 
@@ -235,6 +259,7 @@ differ between stages for historical reasons, so follow the comments:
 ```bash
 # 1. SfM (phone only) — here plot is the session date
 python src/preprocessing/run_preprocessing.py field=field_A plot=20250715
+python src/preprocessing/make_phone_split.py field=field_A plot=20250715
 
 # 2. mask generation
 python src/mask_generation/run_mask_generation.py dataset.plot_glob=field_A/20250715

@@ -1,9 +1,12 @@
+# Dependency list below = MANUAL CONDA SETUP (the step by step install for conda on Euler, not needed for local run!!!). Docker installs its packages in the Dockerfile, then `pip install --no-deps -e .` — so it uses only the packages-find block at the bottom and none of these pins.
+
 [project]
 name = "wheat3dgs"
 version = "0.1.0"
 requires-python = ">=3.8"
 dependencies = [
-    # BASE deps — installed in EVERY env (the torch-2.1.2 "recon" env AND the modern "maskgen" env).
+    # BASE deps of the conda route — installed in BOTH of its envs (the torch-2.1.2 "recon" env
+    # AND the modern "maskgen" env).
     # MUST stay compatible with torch 2.1.2 (the compiled CUDA submodules + gsplat are built against
     # that exact ABI). Do NOT add anything here that forces a torch upgrade. In particular SAHI is NOT
     # here — it lives in the [maskgen] extra below (see the comment there for why it must stay separate).
@@ -24,11 +27,11 @@ dependencies = [
 # extension (undefined symbol _ZN2at4_ops5zeros...). This env compiles NOTHING (no submodules), so a
 # self-contained prebuilt torch wheel is all it needs. Install order: torch>=2.4 FIRST, then this.
 maskgen = [
-    "sahi",                 # SAHI tiled inference (the phone mask-gen default) — needs torch>=2.4.1
+    "sahi",                 # SAHI tiled inference, used by method=sahi_yolo_sam — needs torch>=2.4.1
     "segment-anything",     # SAM ViT-H: `from segment_anything import sam_model_registry`. If the PyPI build misbehaves, install from git: pip install git+https://github.com/facebookresearch/segment-anything.git
     "wandb",                # hard top-level import in sam_v1_pipelined.py (loaded even when wandb_enabled=false)
     # vendored yolov5 (src/mask_generation/yolov5) runtime libs — torch/torchvision come from the env, not here:
-    "ultralytics==8.4.21",  # pinned: matches the local-proven env. 8.4.82's GitRepo.__init__ reads .git/commondir at import → crashes on Euler's unreadable shared /cluster/home/.git; 8.4.21's __init__ never reads inside .git (only .is_repo/.root are used).
+    "ultralytics==8.4.21",  # pinned: matches the local-proven env (the Dockerfile pins the same version). 8.4.82's GitRepo.__init__ reads .git/commondir at import → crashes on Euler's unreadable shared /cluster/home/.git; 8.4.21's __init__ never reads inside .git (only .is_repo/.root are used).
     "pandas>=1.1.4",
     "seaborn>=0.11.0",
     "thop>=0.1.1",

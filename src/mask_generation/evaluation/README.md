@@ -49,7 +49,7 @@
 
 | file | what it does |
 |---|---|
-| [`eval_masks_instance.py`](eval_masks_instance.py) | ⭐ **instance-level MASK eval** vs the per-head GT instance map — mask-IoU matching → P/R/F1 + **merge/split counts** + PQ + union-IoU (for contrast). The one that can SEE merges (union eval can't). Reads GT via `manual_label/<stem>_sets/manifest.json`. `method_name=` scores unregistered folders. Plan: [`../../../docs/mask_generation/PHONE_MASKGEN_EXPERIMENTS.md`](../../../docs/mask_generation/PHONE_MASKGEN_EXPERIMENTS.md) |
+| [`eval_masks_instance.py`](eval_masks_instance.py) | ⭐ **instance-level MASK eval** vs the per-head GT instance map — mask-IoU matching → P/R/F1 + **merge/split counts** + PQ + union-IoU (for contrast). The one that can SEE merges (union eval can't). Reads GT via `manual_label/<stem>_sets/manifest.json`. `method_name=` scores unregistered folders. Plan: `docs/mask_generation/PHONE_MASKGEN_EXPERIMENTS.md` |
 | [`eval_yolo_boxes.py`](eval_yolo_boxes.py) | score **one** method (YOLO *or* SAHI) vs GT — P/R/F1/AP, match_viz, IoU histograms, FP/FN heatmaps, PR curves (BOX-level, needs `.txt` box GT) |
 | [`eval_compare_3way.py`](eval_compare_3way.py) | **SAHI vs YOLO vs GT**, head-by-head (7-region Venn) — coverage tables (tertiles+COCO), split/merge, FP breakdown, coverage/FP overlays |
 | [`eval_compare_nogt.py`](eval_compare_nogt.py) | **SAHI vs YOLO agreement, no GT** (FIP + phone) — agree / YOLO-only / SAHI-only + overlay |
@@ -189,7 +189,7 @@ Box centers binned into 50×50 grid, Gaussian blur sigma=1.5, cells below 10% of
 
 **Full design + the 7-region model + the metric→knob cheat-sheet:** `archive/docs/SAHI_YOLO_EVAL_PLAN.md` (archived, local-only — plan complete; the tools below are what it produced).
 
-**Findings from running these tools** → [`docs/mask_generation/SAHI_EVAL_RESULTS.md`](../../../docs/mask_generation/SAHI_EVAL_RESULTS.md): the confidence-floor bug that made SAHI first look worse, the single-threshold fix (SAHI now beats YOLO on recall), and the IOS/IOU/CONF merge study (IOS wins on FIP; nested-head case needs mask-based dedup, parked for phone). **SAHI eval boxes are now produced by a normal run with `only_labeled_images=true` — NOT `--config-name eval_run` (SAHI no longer has the `conf_threshold_nms_floor` key).**
+**Findings from running these tools** → `docs/mask_generation/SAHI_EVAL_RESULTS.md`: the confidence-floor bug that made SAHI first look worse, the single-threshold fix (SAHI now beats YOLO on recall), and the IOS/IOU/CONF merge study (IOS wins on FIP; nested-head case needs mask-based dedup, parked for phone). **SAHI eval boxes are now produced by a normal run with `only_labeled_images=true` — NOT `--config-name eval_run` (SAHI no longer has the `conf_threshold_nms_floor` key).**
 
 ## Prerequisite — produce boxes for BOTH methods
 

@@ -4,7 +4,7 @@
 # e.g. exp_name=run_2 → results/.../segmentation_3d/run_2/
 exp_name: "thesis_baseline"
 
-# cross-view match acceptance threshold in find_match (segmentation IoU between the rendered blob and the
+# fine-tune matching threshold in find_match (segmentation IoU between the rendered blob and the
 # best-overlapping SAM mask). 0.6 = our thesis default (stricter, matches the Wheat3DGS authors' README).
 # Higher = stricter matching = fewer matches accepted = less over-merging. Set 0.5 for the old runs.
 iou_threshold: 0.6
@@ -47,11 +47,8 @@ seg_seed: 0
 
 # frustum cull: skip rendering a head into cameras where its Gaussians don't project (per-Gaussian
 # test). Provably bit-identical (verified lossless on 7 FIP plots + phone), so it is safe either way.
-# DEFAULT ON — the thesis runs used it. But do not expect a speedup from it: FIP overhead + phone
-# close-orbit both put every head in ~every view, so there's almost nothing to skip — and the per-head
-# cull matmul made phone slightly SLOWER (5h41m off vs 5h56m on). The real seg speedups are the crop
-# cache (FIP ~7×) and inference=True (phone ~2.7×), not the cull. It only pays off on a capture where
-# heads are genuinely local to a few views (a long linear sweep).
+# DEFAULT ON — the thesis runs used it. The other seg speedups are the crop cache (FIP ~7×) and
+# inference=True (phone ~2.7×).
 frustum_cull: true
 
 # --- plot region of interest (ROI) for the 3D segmentation (phone; future-work quality fixes) ---
