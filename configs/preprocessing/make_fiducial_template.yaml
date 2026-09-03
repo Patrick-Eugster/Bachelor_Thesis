@@ -1,5 +1,5 @@
 # @package _global_
-# Config for src/preprocessing/make_fiducial_template.py — crop a REAL fiducial as a v6 template.
+# Config for src/preprocessing/markers/legacy/make_fiducial_template.py — crop a REAL fiducial as a v6 template.
 # Defaults point at the clean, frontal fiducial we picked from the v4 contact sheet
 # (IMG_20250609_112212.jpg, candidate #0). Override image/cx/cy/radius to use a different one.
 

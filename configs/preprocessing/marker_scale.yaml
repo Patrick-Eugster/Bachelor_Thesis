@@ -1,11 +1,11 @@
 # @package _global_
-# Config for src/preprocessing/marker_scale.py — Step 3 of the marker pipeline.
+# Config for src/preprocessing/markers/marker_scale.py — Step 3 of the marker pipeline.
 # Recovers metric scale (COLMAP units -> metres) from the triangulated 3D markers by comparing
 # marker-to-marker geometry against the surveyed XYZ (primary) and the tape-measure xlsx (check).
 # READ-ONLY on the data; writes logs/marker_scale.json.
 #
 # Usage:
-#   python src/preprocessing/marker_scale.py field=field_A plot=20250609
+#   python src/preprocessing/markers/marker_scale.py field=field_A plot=20250609
 
 defaults:
   - /dataset: phone
@@ -23,7 +23,7 @@ source_path: ${dataset.input_dir}/${field}/${plot}
 #   tape              = TAPE distances ONLY -> scale = median(tape_dist / our_recon_dist). No survey
 #                       needed (survey loaded only as an optional extra check if the file is present).
 #                       Gives SIZE only (no absolute world frame) — which is all phenotyping needs, and
-#                       it sidesteps the RTK-GPS ~2 cm survey error. See docs/MARKER_INTEGRATION_PLAN.md.
+#                       it sidesteps the RTK-GPS ~2 cm survey error.
 scale_source: survey
 
 # triangulated 3D points (output of triangulate_markers.py), relative to source_path
@@ -35,11 +35,11 @@ survey_file: demoanlage2025_v0/metadata/markers/field_<L>_coordinates.txt
 # CHECK: hand-measured tape distances; sheet 'plot <L>' inside this workbook.
 tape_xlsx: demoanlage2025_v0/metadata/markers/Demoanlage-2025-markers-manual-distances.xlsx
 
-# --- marker quality guard (open item (a)) ---
+# --- marker quality guard ---
 # Drop weak markers BEFORE computing the scale so they can't poison it. A marker must clear ALL three
 # gates to anchor the metric scale; set a threshold to 0 to disable that gate. Defaults are a NO-OP on
 # every good run (lowest seen: parallax 36.7deg, inliers 6, max-reproj 6.0px) and only bite the
-# ~5deg-parallax markers from a bad SfM that blew the tape CV to 196%. See docs/MARKER_INTEGRATION_PLAN.md.
+# ~5deg-parallax markers from a bad SfM that blew the tape CV to 196%.
 quality_min_parallax_deg: 10.0   # triangulation angle; < this = depth poorly constrained
 quality_min_inlier_views: 4      # inlier views backing the 3D point
 quality_max_reproj_px: 8.0       # max per-view reprojection error of the 3D point

@@ -1,12 +1,12 @@
 # @package _global_
-# Config for src/preprocessing/detect_markers_v3.py — Stage A marker localizer, VERSION 3
+# Config for src/preprocessing/markers/legacy/detect_markers_v3.py — Stage A marker localizer, VERSION 3
 # (fiducial-centric). Detects the central fiducial directly: a solid round dark disk with a
 # white center dot, on a white plate. READ-ONLY: writes overlays to marker_vis_v3/ and a JSON
 # to logs/marker_detections_v3.json. Does NOT touch v1/v2 output.
 #
 # Typical usage:
-#   python src/preprocessing/detect_markers_v3.py field=field_A plot=20250609
-#   python src/preprocessing/detect_markers_v3.py field=field_A plot=20250609 limit=5
+#   python src/preprocessing/markers/legacy/detect_markers_v3.py field=field_A plot=20250609
+#   python src/preprocessing/markers/legacy/detect_markers_v3.py field=field_A plot=20250609 limit=5
 
 defaults:
   - /dataset: phone

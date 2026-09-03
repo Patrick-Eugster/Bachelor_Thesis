@@ -1,12 +1,12 @@
 # @package _global_
-# Config for src/preprocessing/inject_markers_to_db.py — Route 2 marker tie-point injection.
+# Config for src/preprocessing/markers/inject_markers_to_db.py — Route 2 marker tie-point injection.
 # Adds the decoded marker pixels into distorted/database.db as extra keypoints + guaranteed matches,
 # AFTER feature_extractor + matcher and BEFORE the mapper, so the mapper triangulates markers inside
 # the SfM. Survey-free (tie-points only). The detections MUST be on the same image space COLMAP
 # extracted from (input_uniform) — run detect_markers_v8_cct.py image_subdir=input_uniform first.
 #
 # Usage:
-#   python src/preprocessing/inject_markers_to_db.py field=field_A plot=20250609
+#   python src/preprocessing/markers/inject_markers_to_db.py field=field_A plot=20250609
 
 defaults:
   - /dataset: phone

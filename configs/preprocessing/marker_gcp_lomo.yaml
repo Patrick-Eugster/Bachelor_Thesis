@@ -1,11 +1,11 @@
 # @package _global_
-# Config for src/preprocessing/marker_gcp_lomo.py — Arm A experiment (leave-one-marker-out).
+# Config for src/preprocessing/markers/legacy/marker_gcp_lomo.py — Arm A experiment (leave-one-marker-out).
 # Tests whether refining intrinsics in a marker-anchored bundle adjustment improves the camera model,
-# measured by held-out marker error (anchor 5, predict the 6th). Plan: docs/MARKER_COLMAP_RERUN_EXPERIMENT.md
+# measured by held-out marker error (anchor 5, predict the 6th).
 # DIAGNOSTIC only — reads sparse_metric/ + logs, writes logs/metric_gcp_lomo.json, touches nothing else.
 #
 # Usage:
-#   python src/preprocessing/marker_gcp_lomo.py field=field_A plot=20250609
+#   python src/preprocessing/markers/legacy/marker_gcp_lomo.py field=field_A plot=20250609
 
 defaults:
   - /dataset: phone

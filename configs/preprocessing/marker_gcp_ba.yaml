@@ -1,11 +1,11 @@
 # @package _global_
-# Config for src/preprocessing/marker_gcp_ba.py — Level B / Flavour 2 (GCP-constrained BA, pycolmap).
+# Config for src/preprocessing/markers/marker_gcp_ba.py — Level B / Flavour 2 (GCP-constrained BA, pycolmap).
 # Adds the 6 markers as CONSTANT 3D points at the surveyed positions + their real 2D observations,
 # then bundle-adjusts so camera poses & scene points re-optimise to honour the survey. Starts from the
 # Flavour-1 metric model. Writes a refined sparse_metric_gcp/ + logs/metric_gcp_ba.json.
 #
 # Usage:
-#   python src/preprocessing/marker_gcp_ba.py field=field_A plot=20250609
+#   python src/preprocessing/markers/marker_gcp_ba.py field=field_A plot=20250609
 
 defaults:
   - /dataset: phone

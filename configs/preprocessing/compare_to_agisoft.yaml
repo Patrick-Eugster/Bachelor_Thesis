@@ -1,7 +1,7 @@
 # @package _global_
 # Config for src/preprocessing/compare_to_agisoft.py — benchmarks our COLMAP sparse/
 # against the supervisor's Agisoft-produced agisoft/sparse/ for the same plot.
-# Typical usage:  python src/preprocessing/compare_to_agisoft.py field=field_D plot=20250523
+# Typical usage:  python src/preprocessing/compare_to_agisoft.py field=field_A plot=20250715
 
 defaults:
   - /dataset: phone
@@ -10,11 +10,11 @@ defaults:
   - _self_
 
 field: field_A
-plot: ???                                  # REQUIRED — e.g. 20250523
+plot: ???                                  # REQUIRED — e.g. 20250715
 
 source_path: ${dataset.input_dir}/${field}/${plot}
 
-# our COLMAP output (relative to source_path) — written by convert.py
+# our COLMAP output (relative to source_path) — written by run_colmap.py
 ours_sparse_dir: sparse/0
 
 # Agisoft reference sparse (relative to source_path) — the ground truth

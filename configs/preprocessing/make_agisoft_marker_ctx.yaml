@@ -1,9 +1,9 @@
 # @package _global_
-# Config for src/preprocessing/make_agisoft_marker_ctx.py — writes agisoft/logs/marker_points3d.json by
+# Config for src/preprocessing/markers/legacy/make_agisoft_marker_ctx.py — writes agisoft/logs/marker_points3d.json by
 # transforming our COLMAP-frame 3D markers into Agisoft's frame using the Umeyama alignment from
 # compare_to_agisoft.json. This lets metrics.py compute the ROI + marker-masked passes on the AGISOFT arm
 # too, so R1's ROI metrics are comparable across the COLMAP and Agisoft arms.
-# Typical usage:  python src/preprocessing/make_agisoft_marker_ctx.py field=field_D plot=20250627
+# Typical usage:  python src/preprocessing/markers/legacy/make_agisoft_marker_ctx.py field=field_D plot=20250627
 
 defaults:
   - /dataset: phone

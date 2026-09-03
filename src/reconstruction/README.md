@@ -89,9 +89,11 @@ prepend_date: false                  # true prepends today's date, e.g. 2025-04-
 allow_overwrite: false               # a named run that already exists is refused, not overwritten
 ```
 
-`thesis_baseline` can be shared across mask generation, 3DGS
-reconstruction, and 3D segmentation, so the stages find each other's outputs and chain
-automatically.
+`thesis_baseline` is the default name in mask generation, 3DGS reconstruction, and 3D
+segmentation. When the names match, the stages find each other's outputs and chain
+automatically. They may also differ, since 3D segmentation picks its mask input by name
+(`segmentation_3d.mask_gen_experiment`), so one mask generation run can feed several
+3DGS reconstruction and 3D segmentation runs without being recomputed.
 A named run that already exists on disk is **refused** with a hard error so finished
 runs are never clobbered. Set `allow_overwrite=true` to overwrite on purpose. Leave
 `experiment_name` empty (`""`) for an auto timestamp.
@@ -111,6 +113,9 @@ Set in `configs/reconstruction_seg3d/reconstruction/vanilla_3dgs.yaml`:
 | `densify_until_iter` | `11000` | Stop adding new Gaussians after this iteration. The Gaussian count peaks around here. |
 | `absgrad` | set by profile | AbsGS densification, which can help preserve finer wheat detail. FIP `true`, phone `false`. When `true` you must raise `densify_grad_threshold`. |
 | `use_principal_point` | `true` | Uses COLMAP's off-center principal point through an asymmetric frustum. A big quality gain on FIP. On phone it does nothing, since COLMAP re-centers the principal point. |
+
+These are the parameters you are most likely to change, not the full list. The config file
+holds the rest.
 
 ## Thesis baseline configuration
 

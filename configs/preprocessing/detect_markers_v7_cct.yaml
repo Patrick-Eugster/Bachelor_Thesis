@@ -1,5 +1,5 @@
 # @package _global_
-# Config for src/preprocessing/detect_markers_v7_cct.py — Stage A+B marker DETECTOR.
+# Config for src/preprocessing/markers/detect_markers_v7_cct.py — Stage A+B marker DETECTOR.
 # v7 = v6's candidate proposal (real-template NCC + fiducial-snap) → CCTDecode forced-centre
 # decode at each candidate. The decode does two jobs at once: (1) VALIDATION — a real coded
 # marker yields a valid 12-bit code, wheat/arcs yield nothing → v6's false positives are dropped
@@ -7,8 +7,8 @@
 # READ-ONLY: overlays → marker_vis_v7/, detections+IDs → logs/marker_detections_v7.json.
 #
 # Usage:
-#   python src/preprocessing/detect_markers_v7_cct.py field=field_A plot=20250609
-#   python src/preprocessing/detect_markers_v7_cct.py field=field_A plot=20250609 limit=5
+#   python src/preprocessing/markers/detect_markers_v7_cct.py field=field_A plot=20250609
+#   python src/preprocessing/markers/detect_markers_v7_cct.py field=field_A plot=20250609 limit=5
 
 defaults:
   - /dataset: phone

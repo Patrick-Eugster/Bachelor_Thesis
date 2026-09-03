@@ -1,11 +1,11 @@
 # @package _global_
-# Config for src/preprocessing/detect_markers_v2.py — Stage A marker localizer, VERSION 2
+# Config for src/preprocessing/markers/legacy/detect_markers_v2.py — Stage A marker localizer, VERSION 2
 # (ellipse-based coded-target detection). READ-ONLY: writes overlays to marker_vis_v2/ and a
 # JSON to logs/marker_detections_v2.json. Does NOT overwrite v1's marker_vis/ output.
 #
 # Typical usage:
-#   python src/preprocessing/detect_markers_v2.py field=field_A plot=20250609
-#   python src/preprocessing/detect_markers_v2.py field=field_A plot=20250609 limit=5
+#   python src/preprocessing/markers/legacy/detect_markers_v2.py field=field_A plot=20250609
+#   python src/preprocessing/markers/legacy/detect_markers_v2.py field=field_A plot=20250609 limit=5
 
 defaults:
   - /dataset: phone

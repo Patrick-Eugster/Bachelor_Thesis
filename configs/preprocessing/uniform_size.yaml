@@ -9,7 +9,7 @@ defaults:
   - override /hydra/hydra_logging: disabled
   - _self_
 
-# field subfolder (e.g. field_A) and plot leaf folder — same convention as convert.yaml
+# field subfolder (e.g. field_A) and plot leaf folder — same convention as colmap.yaml
 field: field_A
 plot: ???
 

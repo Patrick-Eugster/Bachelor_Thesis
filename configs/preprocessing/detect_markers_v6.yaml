@@ -1,5 +1,5 @@
 # @package _global_
-# Config for src/preprocessing/detect_markers_v6.py — Stage A marker localizer, VERSION 6
+# Config for src/preprocessing/markers/detect_markers_v6.py — Stage A marker localizer, VERSION 6
 # (REAL-template NCC + fiducial-snap). Match a REAL cropped fiducial (from make_fiducial_template.py)
 # at multiple scales with Normalized Cross-Correlation, NMS the peaks, gate on contrast + white
 # plate, then snap the center to the white dot inside the dark disk (v4's find_fiducial_local).
@@ -8,8 +8,8 @@
 # Prereq: run make_fiducial_template.py first (creates template_image below).
 #
 # Usage:
-#   python src/preprocessing/detect_markers_v6.py field=field_A plot=20250609
-#   python src/preprocessing/detect_markers_v6.py field=field_A plot=20250609 limit=5
+#   python src/preprocessing/markers/detect_markers_v6.py field=field_A plot=20250609
+#   python src/preprocessing/markers/detect_markers_v6.py field=field_A plot=20250609 limit=5
 
 defaults:
   - /dataset: phone

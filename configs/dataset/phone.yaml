@@ -1,7 +1,7 @@
 # dataset paths for phone camera data
-# note: run two preprocessing steps first (see src/preprocessing/README.md):
-#   python src/preprocessing/preprocess_uniform_size.py plot={date}
-#   python src/preprocessing/convert.py plot={date}
+# note: run preprocessing first (see src/preprocessing/README.md), which does the uniform-size step
+# and the COLMAP SfM for one session:
+#   python src/preprocessing/run_preprocessing.py field={field} plot={date}
 
 # short identifier used in config saving and wandb logging
 name: phone
@@ -9,7 +9,7 @@ name: phone
 # root folder containing plot subfolders — each plot has images/ and sparse/ inside
 input_dir: input_plots/phone
 
-# how deep plot folders are nested under input_dir — used by main_v1.py to glob for images/
+# how deep plot folders are nested under input_dir — used by run_mask_generation.py to glob for images/
 plot_glob: "*/*"   # phone: input_dir/field_A/20250618/images/
 
 # root folder where mask generation outputs (bboxes/, masks/) are saved

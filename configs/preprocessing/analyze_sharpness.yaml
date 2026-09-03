@@ -6,7 +6,7 @@
 # Typical usage:
 #   python src/preprocessing/analyze_sharpness.py field=field_D plot=20250530
 #   python src/preprocessing/analyze_sharpness.py field=field_A plot=20250609 image_subdir=input
-#   python src/preprocessing/analyze_sharpness.py field=field_D plot=20250523 worst_n=15
+#   python src/preprocessing/analyze_sharpness.py field=field_A plot=20250715 worst_n=15
 
 defaults:
   - /dataset: phone

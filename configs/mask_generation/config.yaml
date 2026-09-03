@@ -8,9 +8,11 @@ defaults:
   - override /hydra/hydra_logging: disabled
   - _self_
 
-# name for the detection output folder — "thesis_baseline" is the shared end-to-end name threaded
-# through mask-gen → recon → seg so the 3D-seg step finds these masks. Leave empty ("") for an auto
-# timestamp "2025-04-28_1430"; "initial" is a scratch name that overwrites silently.
+# name for the detection output folder. "thesis_baseline" is the default name in mask generation, 3DGS
+# reconstruction and 3D segmentation, so a plain run chains automatically. 3D segmentation reads these
+# masks by name through segmentation_3d.mask_gen_experiment, which may also point at a different run.
+# Leave empty ("") for an auto timestamp "2025-04-28_1430"; "initial" is a scratch name that overwrites
+# silently.
 experiment_name: "thesis_baseline"
 
 # set true to prepend today's date to experiment_name: "2025-04-28_my_run" (ignored for "initial" or "")
@@ -53,9 +55,10 @@ wandb_enabled: false
 
 # Region-of-interest masking — restrict YOLO/SAHI/SAM to the plot area bounded by the
 # ground markers, so the bad image corners (distortion, blur, neighbour-plot heads) are
-# ignored. PHONE feature. DEFAULT ON (2026-07-24, user pref): phone builds + filters the
-# marker polygon; FIP has no phone markers → the all-markers gate fails → auto-falls-back to
-# `fallback: none` → ROI disabled for the plot → byte-identical FIP output (just a WARN line).
+# ignored. PHONE feature. DEFAULT ON: phone builds + filters the marker polygon, which needs the
+# triangulated markers from preprocessing (run_markers=true). Without them, and on FIP, the
+# all-markers gate fails → auto-falls-back to `fallback: none` → ROI disabled for the plot, so the
+# run is unaffected apart from a WARN line.
 # Set roi.enabled=false to force it off. See src/mask_generation/roi_mask.py. Eyeball before a run:
 #   python src/mask_generation/roi_mask.py input_plots/phone/field_A/20250715 --buffer_px 80
 roi:

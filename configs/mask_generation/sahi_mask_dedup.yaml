@@ -3,7 +3,7 @@
 # SAHI/SAM pipeline (run_mask_generation / sahi_yolo_pipelined / sam_v1 are all untouched).
 # Flow: SAHI tiles (NO box-merge) -> SAM one clean mask per box (point + negative-neighbour prompts)
 #       -> dedup on MASK overlap -> save masks/ + bboxes/ + viz. Fixes nested diagonal heads that the
-#       normal box-IOS merge wrongly absorbs. Justification spike: docs/SAHI_EVAL_RESULTS.md §6.
+#       normal box-IOS merge wrongly absorbs.
 # Run:  python src/mask_generation/sahi_yolo_sam/sahi_mask_dedup.py plot_glob=plot_461 limit_images=1
 defaults:
   - /dataset: fip                            # input images + result paths

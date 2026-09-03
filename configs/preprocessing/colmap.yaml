@@ -1,6 +1,11 @@
 # @package _global_
 # Config for src/preprocessing/run_colmap.py — runs COLMAP SfM on phone images.
-# Typical usage:   python src/preprocessing/run_colmap.py plot=colmap_test_clean
+# Typical usage:   python src/preprocessing/run_colmap.py field=field_A plot=20250715
+#
+# NOTE FOR A NEW SETUP: aliked_cuda12_libdir near the bottom of this file points at a local folder that
+# is not part of the repo. It only matters for the ALIKED front end, and a missing folder is harmless —
+# the run continues against your system CUDA. Change it (or set it to "") if ALIKED reports a CUDA or
+# onnxruntime loading error. Everything else here works out of the box.
 
 defaults:
   - /dataset: phone           # phone-only workflow; pulls input_dir from configs/dataset/phone.yaml
@@ -8,7 +13,7 @@ defaults:
   - override /hydra/hydra_logging: disabled
   - _self_
 
-# field subfolder under {dataset.input_dir}/  (e.g. field_A, field_B, ...)
+# field subfolder under {dataset.input_dir}/  (e.g. field_A, field_D)
 field: field_A
 
 # plot name — the leaf folder under {dataset.input_dir}/{field}/. REQUIRED. Override on CLI: plot=...
@@ -23,7 +28,7 @@ source_path: ${dataset.input_dir}/${field}/${plot}
 image_subdir: input_uniform
 
 # where the COLMAP OUTPUTS (distorted/, images/, sparse/, logs/) are written, as a subfolder of
-# source_path. Empty ("") = write directly into source_path (the baseline — byte-identical to before).
+# source_path. Empty ("") = write directly into source_path (the baseline).
 # Set e.g. variant_dir=sift to run an SfM-ablation variant (front-end / matcher / camera model) WITHOUT
 # overwriting the baseline sparse/ — it lands in source_path/sift/{distorted,images,sparse/0,logs}. Input
 # images are always read from source_path/image_subdir, so all variants share the same input. Compare a
@@ -48,14 +53,13 @@ single_camera: true
 # reprojection error 1.323 -> 1.263 px. It costs a little more time and CROPS the undistorted image slightly
 # (4032->3881), which misaligns our hand-labeled GT masks, so eval_2d is validated pinhole-only — but that
 # only affects OUR GT scoring, not a new user's run. SIMPLE_PINHOLE is the lighter, crop-free fallback if you
-# don't want to model distortion. Full write-up: docs/PHONE_SFM_CAMERA_MODEL.md.
+# don't want to model distortion.
 camera: OPENCV
 
 # feature front-end: "aliked" (learned ALIKED detector + LightGlue learned matcher, DEFAULT) or "sift"
 # (classic). ALIKED closes the SIFT fragmentation gap on repetitive wheat: field_A/20250603 SIFT = 4
 # sub-models / largest 76-of-113, ALIKED = ONE model / 113-of-113 (denser than Agisoft). ALIKED needs GPU +
-# CUDA-12 onnxruntime libs (see aliked_cuda12_libdir). Set front_end=sift for the classic SIFT path. See
-# docs/PHONE_SFM_FRONTEND.md for the full benchmark.
+# CUDA-12 onnxruntime libs (see aliked_cuda12_libdir). Set front_end=sift for the classic SIFT path.
 front_end: aliked
 
 # feature matcher: "exhaustive" (all-pairs — default) or "sequential" (ordered walk/video, matches each
@@ -68,7 +72,7 @@ front_end: aliked
 # tightened the marker tape-scale (field_A/20250618 27->1.1mm; 13/14 sessions now reliable metric).
 # COST: exhaustive is O(N^2) — ~5min@64img, ~14min@113img, ~34min@183img. For LARGE sets (170+, e.g. the
 # lisa sessions) prefer sequential with a higher sequential_overlap (or add loop detection) to dodge the
-# N^2 blow-up. Use sequential for UNORDERED sets too. See docs/PHONE_SFM_POSE_ACCURACY.md.
+# N^2 blow-up. Use sequential for UNORDERED sets too.
 matcher: exhaustive
 
 # sequential only — how many next images each image is matched against (also matches symmetrically backwards)
@@ -87,19 +91,19 @@ aliked_max_num_features: 4096
 # (~10 GB) if you need more VRAM headroom / the GPU is shared. 0 = full res (only safe on an empty GPU).
 aliked_max_image_size: 2048
 # SIFT extraction downscale (front_end=sift only). 0 = COLMAP default (3200 px), byte-identical to the
-# original SIFT behavior. Set 2048 to MATCH the ALIKED front-end's downscale for a resolution-fair A1
+# original SIFT behavior. Set 2048 to MATCH the ALIKED front-end's downscale for a resolution-fair
 # comparison (otherwise SIFT extracts at 3200 while ALIKED runs at 2048 — a confound, though it favors ALIKED).
 sift_max_image_size: 0
 # CPU threads for ALIKED extraction (image decode + pre/post-proc). COLMAP's own pool ignores OMP env,
 # so cap it here to avoid pinning all cores during the ~45s extraction. -1 = all cores.
 aliked_extract_threads: 4
 # directory holding the CUDA-12 onnxruntime libs (cublas/cudart/cudnn/cufft), prepended to
-# LD_LIBRARY_PATH so COLMAP's CUDA-12-built ONNX provider loads on a CUDA-13 box. "" = leave
-# LD_LIBRARY_PATH untouched (set this empty if the system CUDA already matches, e.g. Euler). Create once:
+# LD_LIBRARY_PATH so a COLMAP built against CUDA 12 loads its ONNX provider on a CUDA-13 box.
+# Only needed when your system CUDA does not match the one COLMAP was built against. Create it once:
 #   pip install --target <dir> nvidia-cublas-cu12 nvidia-cuda-runtime-cu12 nvidia-cudnn-cu12 nvidia-cufft-cu12
-# Default points at the PERSISTENT in-repo copy (tools/cuda12libs, ~2.5 GB, gitignored) so ALIKED keeps
-# working across sessions — replaces the old ephemeral scratchpad path that every run used to reference.
-# Set "" on a box whose system CUDA already matches (e.g. Euler).
+# The default below points at a local folder that is not part of the repo (~2.5 GB, gitignored). If that
+# folder is missing the run continues against the system CUDA and only prints a note, so leave this as-is
+# unless ALIKED fails to load its GPU provider. "" = never touch LD_LIBRARY_PATH.
 aliked_cuda12_libdir: /workspace/tools/cuda12libs
 
 # threads for SIFT extraction + matching. Lower = less RAM (default 8, set -1 for all cores)

@@ -1,11 +1,11 @@
 # @package _global_
-# Config for src/preprocessing/apply_metric_transform.py — Level B / Flavour 1.
+# Config for src/preprocessing/markers/apply_metric_transform.py — Level B / Flavour 1.
 # Applies the Step-3 marker similarity transform to sparse/0 -> a metric sparse_metric/ model
 # (local origin = survey centroid, so coords stay near 0 for 3DGS float32 safety). Reconstruction
 # geometry unchanged; only gets real metres. Writes logs/metric_frame.json with the CH1903+ origin.
 #
 # Usage:
-#   python src/preprocessing/apply_metric_transform.py field=field_A plot=20250609
+#   python src/preprocessing/markers/apply_metric_transform.py field=field_A plot=20250609
 
 defaults:
   - /dataset: phone
@@ -33,8 +33,8 @@ survey_file: demoanlage2025_v0/metadata/markers/field_<L>_coordinates.txt
 # tape distances (only used when scale_source=tape); sheet 'plot <L>' inside this workbook
 tape_xlsx: demoanlage2025_v0/metadata/markers/Demoanlage-2025-markers-manual-distances.xlsx
 
-# --- marker quality guard (open item (a)) — MUST match marker_scale.yaml so the applied transform
-# is anchored on exactly the markers the report trusted. See docs/MARKER_INTEGRATION_PLAN.md. ---
+# --- marker quality guard — MUST match marker_scale.yaml so the applied transform
+# is anchored on exactly the markers the report trusted. ---
 quality_min_parallax_deg: 10.0   # triangulation angle; < this = depth poorly constrained
 quality_min_inlier_views: 4      # inlier views backing the 3D point
 quality_max_reproj_px: 8.0       # max per-view reprojection error of the 3D point

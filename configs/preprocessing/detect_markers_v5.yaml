@@ -1,5 +1,5 @@
 # @package _global_
-# Config for src/preprocessing/detect_markers_v5.py — Stage A marker localizer, VERSION 5
+# Config for src/preprocessing/markers/legacy/detect_markers_v5.py — Stage A marker localizer, VERSION 5
 # (TEMPLATE MATCHING / NCC). Build a synthetic bullseye template (white plate -> grey disk ->
 # white center dot, the rotation-invariant fiducial core, ID ring left out on purpose), slide it
 # over the image at several scales with Normalized Cross-Correlation, NMS the peaks, reject flat-
@@ -7,8 +7,8 @@
 # READ-ONLY: writes overlays to marker_vis_v5/ + logs/marker_detections_v5.json.
 #
 # Typical usage:
-#   python src/preprocessing/detect_markers_v5.py field=field_A plot=20250609
-#   python src/preprocessing/detect_markers_v5.py field=field_A plot=20250609 limit=5
+#   python src/preprocessing/markers/legacy/detect_markers_v5.py field=field_A plot=20250609
+#   python src/preprocessing/markers/legacy/detect_markers_v5.py field=field_A plot=20250609 limit=5
 
 defaults:
   - /dataset: phone

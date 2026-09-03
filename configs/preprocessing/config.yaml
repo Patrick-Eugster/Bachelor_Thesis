@@ -2,9 +2,9 @@
 # Orchestrator config for src/preprocessing/run_preprocessing.py
 # Runs all preprocessing steps for a phone session: uniform-size + COLMAP + (optional) compare to Agisoft.
 # Typical usage:
-#   python src/preprocessing/run_preprocessing.py field=field_D plot=20250523
+#   python src/preprocessing/run_preprocessing.py field=field_A plot=20250715
 #   python src/preprocessing/run_preprocessing.py field=field_A plot=20250618 run_compare=true
-#   python src/preprocessing/run_preprocessing.py field=field_D plot=20250523 run_uniform=false   # already uniform/symlinked
+#   python src/preprocessing/run_preprocessing.py field=field_A plot=20250715 run_uniform=false   # already uniform/symlinked
 
 defaults:
   - /dataset: phone
@@ -23,7 +23,7 @@ run_uniform: true   # step 1: center-crop to uniform size (creates symlink if al
 run_colmap:  true   # step 2: COLMAP SfM (feature extraction → matching → mapper → undistortion)
 run_compare: false  # step 3: compare our sparse/0/ to agisoft/sparse/0/ (only if Agisoft reference exists)
 
-# --- marker layer (phone coded-target pipeline; needs the survey file for the metric steps) ---
+# --- marker steps (phone coded-target pipeline; needs the survey file for the metric steps) ---
 # master switch: when false the whole marker block below is skipped (base pipeline unchanged).
 run_markers: false
 # sub-toggles, only consulted when run_markers=true — skip individual marker steps:
@@ -37,7 +37,7 @@ run_marker_metric:     false  # step 7: Flavour 1 — similarity → metric mode
 run_marker_gcp:        false  # step 8: Flavour 2 — GCP-constrained BA (pycolmap)   → sparse_metric_gcp/ (phenotyping only)
 # WHERE metric scale comes from (steps 6+7): 'survey' = Umeyama onto surveyed XYZ (metric + georeferenced,
 # needs the survey file); 'tape' = TAPE distances only (metric SIZE, no GPS/survey, not georeferenced).
-# tape mode also auto-SKIPS step 8 (GCP-BA is survey-anchored). See docs/MARKER_INTEGRATION_PLAN.md.
+# tape mode also auto-SKIPS step 8 (GCP-BA is survey-anchored).
 marker_scale_source: survey
 
 # ROUTE 2 (experiment): bake markers INTO the SfM. When true, a pre-COLMAP detection runs on
@@ -53,17 +53,17 @@ marker_inputspace_json: logs/marker_det_inputspace.json   # where the input_unif
 # (3 is the mathematical minimum for a unique scale+rotation+translation; 4 leaves a safety margin.)
 min_markers: 4
 
-# QUALITY GUARD (open item (a)): the failsafe above counts only markers that pass these gates, and
+# QUALITY GUARD: the failsafe above counts only markers that pass these gates, and
 # steps 6+7 drop weak markers before scaling. A marker must clear ALL three to anchor the metric scale.
 # These MUST match marker_scale.yaml / marker_metric.yaml (the orchestrator passes nothing — each step
 # reads its own config — but the failsafe count here uses these, so keep them in sync). NO-OP on good
-# runs; only the ~5deg-parallax poisoners get cut. See docs/MARKER_INTEGRATION_PLAN.md.
+# runs; only the ~5deg-parallax poisoners get cut.
 quality_min_parallax_deg: 10.0   # triangulation angle; < this = depth poorly constrained
 quality_min_inlier_views: 4      # inlier views backing the 3D point
 quality_max_reproj_px: 8.0       # max per-view reprojection error of the 3D point
 
 # TAPE GATE: auto-pick the metric model from survey trustworthiness. The LOMO experiment
-# (docs/MARKER_COLMAP_RERUN_EXPERIMENT.md) showed anchoring markers HELPS on good-survey fields and HURTS
+# showed anchoring markers HELPS on good-survey fields and HURTS
 # on bad ones — and the Step-3 tape↔survey agreement reveals which in advance. When ON: tape agrees
 # (<= threshold) → survey trusted → run Flavour 2 GCP-BA (step 8); tape disagrees → survey suspect →
 # skip step 8, keep Flavour 1 (sparse_metric/). Writes logs/metric_choice.json. Needs tape + step 6.

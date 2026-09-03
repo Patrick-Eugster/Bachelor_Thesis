@@ -76,6 +76,9 @@ Set in `configs/reconstruction_seg3d/segmentation_3d/default.yaml`:
 | `contrast_palette` | `true` | High-contrast head colors in `gaussians_colored.ply` and the 360 video. Neighbouring heads get clearly different colors. `false` gives the old plain hue ramp, where the colors of touching heads look almost the same. |
 | `seg_seed` | `0` | Fixed seed for the order the masks are processed in. The result depends on that order, so a fixed seed is what makes a run reproducible. |
 
+These are the parameters you are most likely to change, not the full list. The config file
+holds the rest.
+
 Together, `detection_method` and `mask_gen_experiment` point to the mask folder
 `results/mask_generation/<dataset>/<plot>/<detection_method>/<mask_gen_experiment>/`, so both
 are needed to identify which masks to read. They are separate from the 3DGS reconstruction's

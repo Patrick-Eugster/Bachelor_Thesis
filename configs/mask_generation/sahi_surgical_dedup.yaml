@@ -5,7 +5,6 @@
 # Flow: SAHI tiles -> TIER 2 IoU-NMS collapse (same head in 2 tiles) -> classify survivors ->
 #       TIER 1 clean singles kept as-is (NO SAM) ; TIER 3 contained pairs get SAM (point + negative
 #       neighbour) to decide split-vs-keep on MASK overlap. SAM only runs on the few ambiguous boxes.
-# Doc: docs/SAHI_SURGICAL_DEDUP.md
 # Run: python src/mask_generation/sahi_yolo_sam/sahi_surgical_dedup.py plot_glob=plot_461 limit_images=1
 defaults:
   - /dataset: fip                            # input images + result paths

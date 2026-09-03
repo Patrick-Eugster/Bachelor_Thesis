@@ -1,5 +1,5 @@
 # @package _global_
-# Config for src/preprocessing/detect_markers_v8_cct.py — v7 pipeline + CONCENTRIC-CONSENSUS
+# Config for src/preprocessing/markers/detect_markers_v8_cct.py — v7 pipeline + CONCENTRIC-CONSENSUS
 # centre finding. v6 proposes centres -> find_center_concentric locates the disk OR reconstructs
 # it from the arcs (disk+arcs share one centre) -> CCTDecode forced-centre decode. Recovers the
 # marker when v6 lands on an arc and when the disk is occluded (>=2 arcs still pin the centre).
@@ -8,7 +8,7 @@
 #  ring_to_disk_ratio.)
 #
 # Usage:
-#   python src/preprocessing/detect_markers_v8_cct.py field=field_A plot=20250609
+#   python src/preprocessing/markers/detect_markers_v8_cct.py field=field_A plot=20250609
 
 defaults:
   - /dataset: phone
@@ -24,7 +24,7 @@ source_path: ${dataset.input_dir}/${field}/${plot}
 # overlays and GT scoring stay pixel-consistent. Under SIMPLE_PINHOLE images/==input/ (no distortion,
 # byte-identical), but if the camera model ever gains distortion (SIMPLE_RADIAL/OPENCV) input/ would be
 # the WRONG frame. EXCEPTION: COLMAP-DB injection / GCP-BA needs image_subdir=input_uniform (distorted
-# feature space) — see configs/preprocessing/inject_markers.yaml. See docs/MARKER_INTEGRATION_PLAN.md.
+# feature space) — see configs/preprocessing/inject_markers.yaml.
 image_subdir: images
 output_vis_dir: marker_vis_v8
 output_json: logs/marker_detections_v8.json
@@ -55,7 +55,7 @@ min_rel_contrast: 0.15
 # the NCC proposal stage. OFF by default = byte-identical (frontal bank only). On field_D/20250722 it
 # lifted NCC recall 82%→89% (+7 markers; code 113 18/22→22/22) with only ~1.4× candidates — BUT it
 # multiplies matchTemplate cost by 1+len(ratios)*len(rotations) (~9× → detection ~30s→~4-5min), so use
-# it only on hard sessions where marker recall matters. See docs/MARKER_DETECTOR_LATE_SEASON.md §7.
+# it only on hard sessions where marker recall matters.
 oblique_templates: false
 oblique_ratios: [0.6, 0.42]            # minor/major ellipse ratio (≈ cos of view-from-normal: 0.6≈53°, 0.42≈65°)
 # WHY NOT a rounder ratio (e.g. 0.8 ≈37°): tested on 0722 — recall 89%→92% (+3) BUT candidates
@@ -75,7 +75,7 @@ min_white_surround: 0.65
 # plate reads as "not white" (white_surround_frac ~0) and a plainly-visible marker is rejected. On
 # field_D/20250722 the white gate killed 57 of the 75 markers NCC found; lowsat recovers ~all of
 # them (GT recall 13%->79%). FP control is downstream (CCT decode + manifest + multi-view
-# triangulation consensus + quality guard), not this gate. See docs/MARKER_DETECTOR_LATE_SEASON.md.
+# triangulation consensus + quality guard), not this gate.
 # DEFAULT = lowsat: validated across all 14 sessions as a strict superset of "white" — byte-identical
 # on the genuinely-bright sessions, and rescues the two late-season 0722 sessions (field_D 2/6->6/6,
 # field_A 5/6->6/6) with ZERO new false positives anywhere. Set plate_gate=white for the legacy A/B.
@@ -106,13 +106,13 @@ decode_require_valid_cct: false  # bypass CCTDecode's internal check (fill gate 
 # --- ID filter (drops junk / non-deployed codes; dropped dets kept with locations in JSON) ---
 # mode 'manifest' (default): keep ONLY the codes actually deployed in this plot. This is the
 #   principled filter — it drops wheat-junk AND near-neighbour misreads (e.g. 117 = 1-bit misread
-#   of 85). The manifest below is the 6 demoanlage markers, decoded from the Agisoft spec PDF
-#   (docs/reference/agisoft/Coded_12bit_15cm-square_13cm-outer-circle_.pdf) = ground truth. Override
+#   of 85). The manifest below is the 6 demoanlage markers, decoded from the official Agisoft
+#   coded-target spec = ground truth. Override
 #   plot_manifest=[...] per plot if a different marker set was used.
 # mode 'view': legacy heuristic — keep the keep_top_k most-seen IDs (fragile: a systematic misread
 #   seen in many views sneaks in). mode 'none': keep everything.
 # NOTE: a "legal 12-bit code" dictionary does NOT filter junk (all decoded codes are legal
-# necklaces) — the manifest is what works. See docs/MARKER_CODE_STRUCTURE.md.
+# necklaces) — the manifest is what works.
 id_filter: manifest
 plot_manifest: [77, 85, 89, 101, 105, 113]
 keep_top_k: ${expected_markers}   # only used by mode 'view'

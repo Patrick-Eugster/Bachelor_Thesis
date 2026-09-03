@@ -75,6 +75,9 @@ directly.
 | `no_gpu` | `false` | Force CPU features. Only needed if your COLMAP build lacks CUDA |
 | `variant_dir` | `""` | Write COLMAP output into a subfolder instead of overwriting the baseline, for SfM A/B tests |
 
+These are the options you are most likely to change, not the full list. The config file
+holds the rest.
+
 A few defaults are worth explaining, since they carry the phone pipeline:
 
 - **ALIKED + LightGlue** keeps repetitive wheat in one connected model where **SIFT** fragments

@@ -6,7 +6,7 @@ name: fip
 # root folder containing plot subfolders — each plot has images/ and sparse/ inside
 input_dir: input_plots/fip
 
-# how deep plot folders are nested under input_dir — used by main_v1.py to glob for images/
+# how deep plot folders are nested under input_dir — used by run_mask_generation.py to glob for images/
 plot_glob: "*"     # fip: input_dir/plot_461/images/
 
 # root folder where mask generation outputs (bboxes/, masks/) are saved

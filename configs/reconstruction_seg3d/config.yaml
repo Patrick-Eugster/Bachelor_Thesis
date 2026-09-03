@@ -11,9 +11,11 @@ defaults:
 # sensible default plot differs per dataset. Override on CLI as usual: plot=field_A date=20250715 (phone),
 # plot=plot_461 (fip).
 
-# name for the 3DGS training output folder — "thesis_baseline" is the shared end-to-end name threaded
-# through mask-gen → recon → seg so the stages chain automatically. A named run is refused if it already
-# exists (set allow_overwrite=true to overwrite). Leave empty ("") for an auto timestamp "2025-04-28_1430".
+# name for the 3DGS training output folder. "thesis_baseline" is the default name in mask generation,
+# 3DGS reconstruction and 3D segmentation, so when the names match the stages find each other's outputs
+# and chain automatically. They may also differ, since 3D segmentation picks its masks by name
+# (segmentation_3d.mask_gen_experiment). A named run is refused if it already exists (set
+# allow_overwrite=true to overwrite). Leave empty ("") for an auto timestamp "2025-04-28_1430".
 experiment_name: "thesis_baseline"
 
 # set true to prepend today's date to experiment_name: "2025-04-28_my_run" (ignored for "initial" or "")
@@ -72,7 +74,8 @@ render_360_downscale: 2
 render_360_distance_mult: 2.0
 
 # viewer settings
-# "full" = colored segmentation viewer (needs step 4 output), "single" = plain Gaussian viewer (works after step 1)
+# "full" = colored 3D segmentation viewer (needs step 4 output). "single" = plain Gaussian viewer,
+# currently broken — use "full".
 viewer_type: "full"
 
 # bake HSV colors at startup for fast interactive rendering (~300 FlashSplat renders/frame otherwise makes it unusable)

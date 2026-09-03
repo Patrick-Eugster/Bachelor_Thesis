@@ -70,11 +70,14 @@ Set these in `configs/mask_generation/config.yaml` and the method files under
 | `profile` | `phone` | Dataset and per-dataset best settings. `phone` or `fip` |
 | `method` | `yolo_sam_v1` | Which detector runs. See the table above |
 | `dataset.plot_glob` | all | Which plots or sessions to process. Set one to target it, e.g. `field_A/20250715` |
-| `experiment_name` | `thesis_baseline` | Names the output folder. The shared name that lets 3D segmentation find these masks |
+| `experiment_name` | `thesis_baseline` | Names the output folder. 3D segmentation reads these masks by that name, see the outputs section |
 | `roi.enabled` | `true` | Marker region of interest. On for phone, does nothing on FIP (see below) |
 | `method.only_yolo` | `false` | Skip SAM and write only the boxes. Handy for box-level metrics |
 | `method.sam_backend` | set by profile | Which SAM turns boxes into masks. Phone uses `sam2`, FIP uses `sam1`. Also accepts `sam3` |
 | `method.sam_crop_mode` | set by profile | How much of the image SAM encodes per head. Phone uses `per_tile`, FIP uses `full_frame`. Also `per_head` |
+
+These are the options you are most likely to change, not the full list. The config files
+hold the rest.
 
 The phone profile already sets the values we settled on for phone data, so a plain
 `profile=phone` run uses full-resolution 4032 px input, per-tile SAM2, and a strict 0.70 confidence threshold. The FIP profile keeps the settings of 1280 px input,
@@ -111,6 +114,15 @@ results/mask_generation/<dataset>/<plot>/<method>/<experiment_name>/
 For phone `<plot>` is `<field>/<session>`, and for FIP it is the plot name. The stage also
 writes visual overlays and a per-run summary next to these, and prints a boxed summary
 report at the end with the head counts and timing.
+
+3D segmentation reads its masks from that folder by name, through
+`segmentation_3d.detection_method` (the `<method>` part) and
+`segmentation_3d.mask_gen_experiment` (the `<experiment_name>` part). Their defaults are
+`yolo_sam_v1` and `thesis_baseline`, which is what this stage writes by default, so a
+plain run chains automatically. They are
+separate settings from this stage's own `experiment_name`, so the names may also differ,
+which lets one mask generation run feed several 3D segmentation runs without being
+recomputed.
 
 ## Ground-truth labeling tool
 
