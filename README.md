@@ -81,18 +81,17 @@ Phone-Wheat3DGS/
 ## Where to read more
 
 Every stage folder has its own README with how to run that stage, what it needs on
-disk, what it writes, and the settings you are most likely to change. Start there
-when you want to change how a stage behaves.
+disk, what it writes, and the settings you are most likely to change.
 
 | README | What it covers |
 |--------|----------------|
-| [src/preprocessing/](src/preprocessing/README.md) | Stage 1: uniform cropping and COLMAP SfM for phone sessions. |
-| [src/preprocessing/markers/](src/preprocessing/markers/README.md) | The coded ground markers: detection, triangulation, and what they are used for. Off by default. |
-| [src/mask_generation/](src/mask_generation/README.md) | Stage 2: the detectors, the SAM step, and the mask granularity options. |
-| [src/reconstruction/](src/reconstruction/README.md) | Stage 3: 3DGS training, plus the eight steps of the orchestrator that runs stages 3 and 4. |
-| [src/segmentation_3d/](src/segmentation_3d/README.md) | Stage 4: the match-and-fine-tune loop, its outputs, and the two evaluation steps. |
+| [src/preprocessing/](src/preprocessing/README.md) | Stage 1: the SfM steps that recover the camera calibration and poses and undistort the images, and the COLMAP settings behind them. |
+| [src/preprocessing/markers/](src/preprocessing/markers/README.md) | The coded markers: how they are detected and decoded, triangulated to 3D points, and used to give the model a metric scale. Off by default. |
+| [src/mask_generation/](src/mask_generation/README.md) | Stage 2: the detectors, the shared SAM step, the mask granularity options, and the ground-truth labeling tool. |
+| [src/reconstruction/](src/reconstruction/README.md) | Stage 3: how the 3DGS model is trained, the key training parameters, and the orchestrator's full step list. |
+| [src/segmentation_3d/](src/segmentation_3d/README.md) | Stage 4: the match-and-fine-tune loop that gives every Gaussian a wheat head instance ID, its outputs, and the two evaluations of the result. |
 | [src/viewer/](src/viewer/README.md) | The browser viewer and the 360 flyaround video. |
-| [src/analysis/](src/analysis/README.md) | Standalone analysis scripts, not part of a run. Read the notes at its top before running one. |
+| [src/analysis/](src/analysis/README.md) | Standalone analysis and QA scripts, grouped by stage. Not part of a run — read the notes at its top before running one. |
 
 ## Data layout
 
