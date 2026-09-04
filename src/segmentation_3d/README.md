@@ -6,7 +6,7 @@ It takes the trained 3DGS model from the 3DGS reconstruction stage and the 2D ma
 the mask generation stage, and works out which Gaussians belong to which head.
 
 This folder holds the 3D segmentation scripts. You do not launch them directly. You run
-the conductor `src/run_reconstruction.py` (at the top of `src/`) with `run_seg=true`,
+the orchestrator `src/run_reconstruction.py` (at the top of `src/`) with `run_seg=true`,
 and it launches `run_3d_seg.py` for you. As with the other stages, you pick the dataset
 with `profile=phone` (the default) or `profile=fip`.
 
@@ -132,7 +132,7 @@ shown here, and the folder holds a few smaller files besides, such as the run me
 
 ## Evaluation
 
-Two evaluation steps run through the same conductor.
+Two evaluation steps run through the same orchestrator.
 
 - **Step 6** (`run_eval`, `eval_wheatgs.py`) renders the 3D segmentation back to 2D and
   writes an overlay image and a binary segmentation mask per camera. Step 6b needs this
@@ -168,7 +168,7 @@ projection one-to-one against the phone per-head ground-truth instance masks
 (`manual_label/<stem>_sets/`, from the [ground-truth tool](../mask_generation/gt_tool/README.md))
 and reports head-count precision/recall/F1, matched-mask IoU, and merge/split counts, so
 it catches the over-merging the union score cannot. It runs on its own, not through the
-conductor, and is described in [src/analysis/README.md](../analysis/README.md). FIP has
+orchestrator, and is described in [src/analysis/README.md](../analysis/README.md). FIP has
 union ground truth only, so this is phone-only.
 
 These two scripts stay in `src/analysis/` and were not moved into this folder, so the
@@ -179,7 +179,7 @@ near the top of the file, so it needs to be adjusted as well.
 
 ## Viewing the result
 
-Two more steps show the segmented field, both run through the same conductor and both
+Two more steps show the segmented field, both run through the same orchestrator and both
 built on the tools in [src/viewer/](../viewer/):
 
 - **Step 5** (`run_render_360`) renders a 360 degree flyaround video of the per-head

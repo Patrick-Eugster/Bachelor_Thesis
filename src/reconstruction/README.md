@@ -6,7 +6,7 @@ segmentation stage later lifts the 2D masks into, so 3DGS reconstruction always 
 before 3D segmentation.
 
 This folder holds the training-side scripts (`train_vanilla_3dgs.py`, `render.py`,
-`metrics.py`, plus a couple of small helpers). You do not launch them directly. You run the conductor
+`metrics.py`, plus a couple of small helpers). You do not launch them directly. You run the orchestrator
 `src/run_reconstruction.py`, which sits at the top of `src/`, and it launches each
 step as its own process.
 
@@ -36,9 +36,9 @@ or run name is just an extra argument:
 python src/run_reconstruction.py run_train=true plot=field_A date=20250627 experiment_name=my_run
 ```
 
-## Steps the conductor runs
+## Steps the orchestrator runs
 
-The conductor `src/run_reconstruction.py` drives the whole 3DGS reconstruction and 3D
+The orchestrator `src/run_reconstruction.py` drives the whole 3DGS reconstruction and 3D
 segmentation flow. Each step is a separate process, and each one reuses the output
 of the steps before it, so run them in order the first time. After that you can
 re-run any single step on the already-trained model.

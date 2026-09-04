@@ -7,7 +7,7 @@ neither needs the other, so you can run either one on its own.
 
 ## How to run
 
-Both run through the conductor `src/run_reconstruction.py` (at the top of `src/`), which
+Both run through the orchestrator `src/run_reconstruction.py` (at the top of `src/`), which
 resolves all the paths for you. Use the same names you trained and segmented with, and pick
 the dataset with `profile=phone` (the default) or `profile=fip`:
 

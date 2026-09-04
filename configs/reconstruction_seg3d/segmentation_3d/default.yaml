@@ -23,7 +23,7 @@ mask_gen_experiment: "thesis_baseline"
 # true = each head's hue hops by the golden-ratio conjugate (0.618) with alternating saturation/brightness,
 # so neighbouring head IDs look clearly different. false = the old plain hue ramp (head_id / n_heads), where
 # consecutive IDs get nearly the same color and touching heads are impossible to tell apart by eye.
-# The conductor exports this as WHEAT_SEG_CONTRAST_PALETTE for every step it launches, so a standalone
+# The orchestrator exports this as WHEAT_SEG_CONTRAST_PALETTE for every step it launches, so a standalone
 # script call can set that env var directly (WHEAT_SEG_CONTRAST_PALETTE=0 forces the old ramp).
 contrast_palette: true
 
